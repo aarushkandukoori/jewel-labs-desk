@@ -1,0 +1,42 @@
+# Runs the packaged Windows app's own self-check on a real Windows machine: start, load the SAMPLE shipment,
+# let the agents read it, OCR the phone photo with the unpacked tesseract worker, draw a PDF page, quit.
+# The AI stays off (no key on the runner), so the offline reader does the reading.
+# Run it from the Actions tab (Windows self-check > Run workflow) after changing anything in src/ or packaging.
+name: Windows self-check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install
+        run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Build the self-check app (same app, test switches kept)
+        run: npx electron-builder --win --x64 --dir --publish never -c.extraMetadata.selfCheck=true
+      - name: Run the packaged app's self-check
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'selfcheck.json'
+          $env:JL_E2E = '1'
+          $env:JL_E2E_REPORT = $report
+          $env:JL_E2E_QUIT = '1'
+          $env:JL_USER_DATA = Join-Path $env:RUNNER_TEMP 'jl-data'
+          $app = Join-Path $PWD 'dist\win-unpacked\Jewel Labs.exe'
+          $p = Start-Process -FilePath $app -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw 'The app did not finish its self-check in 5 minutes.' }
+          if (-not (Test-Path $report)) { throw "No report was written (exit code $($p.ExitCode))." }
+          Get-Content $report
+          node -e "const r = require(process.argv[1]); for (const [n, s] of Object.entries(r.steps || {})) console.log((s.ok ? 'ok   ' : 'FAIL ') + n); if (!r.ok) process.exit(1)" $report
