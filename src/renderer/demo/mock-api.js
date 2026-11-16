@@ -148,6 +148,11 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
 
   const ready = (async () => {
     run = await loadRun();
+    // A recorded run carries its own SAMPLE house (name, city, letterhead): show that one.
+    if (run?.meta?.recorded && run.workspace) {
+      const w = workspaces.get(HOUSE.id);
+      workspaces.set(HOUSE.id, { ...w, ...run.workspace, id: HOUSE.id });
+    }
     if (autoStart) applyInstant();
     else resetSample();
   })();
@@ -171,7 +176,9 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
   }
 
   async function paperBytes(paper) {
-    const cached = files.get(`${paper.id}:${paper.version}:${paper.status}`);
+    // Recorded runs ship the real PDFs; fetch them by "<paperId>:<version>:<status>".
+    const cached = await fileOf(`${paper.id}:${paper.version}:${paper.status}`)
+      || (paper.status === 'signed' ? null : await fileOf(`${paper.id}:${paper.version}:ready_to_sign`).catch(() => null));
     if (cached) return cached;
     const s = shipmentData(paper.shipmentId);
     if (!s) throw new Error('This paper has no file in the demo.');
@@ -481,7 +488,8 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
         const key = String(reportNumber || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
         const stone = all('stones').find((s) => String(s.reportNumber || '').toUpperCase().replace(/[^0-9A-Z]/g, '') === key || s.id === reportNumber);
         if (!stone) return { stone: null, shipment: null, events: [] };
-        return { stone, shipment: get('shipments', stone.shipmentId), events: sampleHistory(stone, { documents: all('documents'), papers: all('papers') }) };
+        const events = Array.isArray(stone.history) && stone.history.length ? stone.history : sampleHistory(stone, { documents: all('documents'), papers: all('papers') });
+        return { stone, shipment: get('shipments', stone.shipmentId), events };
       }),
       verify: ok(async (stoneId) => {
         const stone = get('stones', stoneId);

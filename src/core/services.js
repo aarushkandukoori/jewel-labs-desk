@@ -17,11 +17,12 @@ import { createFolderState } from './pipeline/folder-state.js';
 /**
  * store, ai, sanctionsLoader, ocr, labsVerify?, rasterize?, notify?, paths, deviceId, clock?, lease? as in ARCHITECTURE.md.
  * Extra, optional: pace (ms between live field events, 0 in tests), modules (fake core modules for tests),
- * pollMinutes (worker interval), getMembers (the house's logins, for metrics).
+ * pollMinutes (worker interval), getMembers (the house's logins, for metrics), parallel (how many papers are read at
+ * once; the demo recording reads one at a time so the replay follows them in order).
  */
 export function createServices({
   store, ai, sanctionsLoader, ocr, labsVerify, rasterize, notify, paths = {}, deviceId = 'this-computer', clock, lease,
-  pace = 120, modules = {}, pollMinutes = MAILBOX_POLL_MINUTES, getMembers,
+  pace = 120, modules = {}, pollMinutes = MAILBOX_POLL_MINUTES, getMembers, parallel,
 }) {
   if (!store) throw new Error('createServices needs a store.');
   const load = createModuleLoader(modules);
@@ -29,7 +30,7 @@ export function createServices({
   let mailConfig = null; // the mailbox login, kept in memory only (main stores the app password with safeStorage)
 
   const isAutopilot = async () => (await store.workspace()).autopilot !== false;
-  const runner = createRunner(ctx, { lease, isAutopilot });
+  const runner = createRunner(ctx, { lease, isAutopilot, parallel }); // parallel: papers read at once (default 3)
   const run = (options) => runner.run(options || {});
   const build = (shipmentId, options) => buildPapers(ctx, shipmentId, options);
 
@@ -226,7 +227,8 @@ export function createServices({
     mail,
     folder,
     worker: { start: worker.start, stop: worker.stop, status: worker.status, tick: worker.tick },
-    loadSample: () => loadSample(ctx, { addFiles: addAndRun, samplesDir: paths.samples || SAMPLES_DIR }),
+    // loadSample() adds the SAMPLE papers except the late ones; loadSample({ later: true }) delivers those.
+    loadSample: (options = {}) => loadSample(ctx, { addFiles: addAndRun, samplesDir: paths.samples || SAMPLES_DIR, later: Boolean(options?.later) }),
     resetSample: () => resetSample(ctx),
     async shutdown() {
       worker.stop();

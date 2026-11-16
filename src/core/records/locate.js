@@ -142,16 +142,57 @@ function matchOnPage(quote, onePage) {
 
   const pairs = alignTokens(quote, onePage.tokens);
   const found = new Set(pairs.map((pair) => pair.quoteIndex));
-  if (!isEnough(quote, found)) return null;
-  return { score: found.size / quote.length, words: pairs.map((pair) => pair.token.word) };
+  if (isEnough(quote, found)) return { score: found.size / quote.length, words: pairs.map((pair) => pair.token.word) };
+
+  const lines = quote.length >= LONG_QUOTE_TOKENS ? matchByLines(quote, onePage.tokens) : null;
+  return lines ? { score: 0.9, words: lines } : null;
 }
 
 // The quote's tokens one after another on the page, the usual case.
 function findRun(quote, tokens) {
+  return findRuns(quote, tokens)[0] || null;
+}
+
+function findRuns(quote, tokens) {
+  const runs = [];
   for (let start = 0; start + quote.length <= tokens.length; start++) {
-    if (quote.every((token, k) => sameToken(token, tokens[start + k]))) return tokens.slice(start, start + quote.length);
+    if (quote.every((token, k) => sameToken(token, tokens[start + k]))) runs.push(tokens.slice(start, start + quote.length));
   }
-  return null;
+  return runs;
+}
+
+const MAX_LINES = 4;
+
+/**
+ * A quote printed over a few lines of one column, such as an address next to another column: in reading order
+ * the other column's words sit between its lines. Each piece of the quote is found whole, on the line just below
+ * the piece before it and starting near the same left edge. Returns the matched words, or null.
+ */
+function matchByLines(quote, tokens) {
+  const words = [];
+  let rest = quote;
+  let previous = null;
+  for (let lineCount = 0; rest.length; lineCount++) {
+    if (lineCount >= MAX_LINES) return null;
+    let piece = null;
+    for (let length = rest.length; length >= 1 && !piece; length--) {
+      piece = findRuns(rest.slice(0, length), tokens).find((run) => !previous || justBelow(previous, run)) || null;
+      if (piece) rest = rest.slice(length);
+    }
+    if (!piece) return null;
+    words.push(...piece.map((token) => token.word));
+    previous = piece;
+  }
+  return words;
+}
+
+/** Is this run on the next line or two below the previous one, starting near its left edge? */
+function justBelow(previous, run) {
+  const top = previous[0].word;
+  const first = run[0].word;
+  const lineHeight = Math.max(0.004, top.y1 - top.y0);
+  const gap = first.y0 - top.y0;
+  return gap > lineHeight * 0.5 && gap < lineHeight * 3.5 && Math.abs(first.x0 - top.x0) < 0.12;
 }
 
 // Lines the quote up with the best stretch of the page, allowing missing, extra or misread words

@@ -69,7 +69,7 @@ function App() {
   stateRef.current = state;
   const reloadTimers = useRef({});
 
-  const toast = (title, text, tone = 'info', action) => dispatch({ type: 'toast', toast: { title, text, tone, action } });
+  const toast = (title, text, tone = 'info', action, key) => dispatch({ type: 'toast', toast: { title, text, tone, action, key } });
 
   // ---------- loading ----------
 
@@ -161,6 +161,15 @@ function App() {
       jl.on('agent', (event) => dispatch({ type: 'agent', event })),
       jl.on('activity', (entry) => entry?.id && dispatch({ type: 'upsert', collection: 'activity', value: entry })),
       jl.on('change', (change) => {
+        if (change?.collection === 'workspace') {
+          if (change.value) dispatch({ type: 'workspace', workspace: { ...stateRef.current.workspace, ...change.value } });
+          clearTimeout(reloadTimers.current.workspaces);
+          reloadTimers.current.workspaces = setTimeout(async () => {
+            const list = await call(jl.workspaces.list(), { quiet: true });
+            if (Array.isArray(list)) dispatch({ type: 'workspaces', workspaces: list });
+          }, 350);
+          return;
+        }
         if (!change || !COLLECTIONS.includes(change.collection)) return;
         if (change.op === 'remove') dispatch({ type: 'remove', collection: change.collection, id: change.id });
         else if (change.value) dispatch({ type: 'upsert', collection: change.collection, value: change.value });
@@ -170,7 +179,7 @@ function App() {
         if (!n) return;
         const title = typeof n === 'string' ? 'Jewel Labs' : n.title || 'Jewel Labs';
         const text = typeof n === 'string' ? n : n.body || n.message || n.text || '';
-        toast(title, text, n.kind === 'error' ? 'error' : 'ok');
+        toast(title, text, n.kind === 'error' ? 'error' : 'ok', undefined, n.shipmentId ? `shipment:${n.shipmentId}` : undefined);
       }),
       jl.on('auth', (auth) => {
         if (auth) dispatch({ type: 'auth', auth });

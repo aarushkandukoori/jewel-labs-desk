@@ -49,7 +49,10 @@ export async function buildPapers(ctx, shipmentId, { kinds, by } = {}) {
   if (!shipment) throw new Error('That shipment is no longer there.');
   const papersModule = await ctx.load('papers');
   const house = await store.workspace();
-  const documents = await store.list('documents', (d) => d.shipmentId === shipmentId && d.status === 'read');
+  const records = await ctx.load('records').catch(() => null);
+  const onFile = await store.list('documents', (d) => d.shipmentId === shipmentId && d.status === 'read');
+  // A packing list the agents drafted is left out of the pack once the house's own packing list arrived.
+  const documents = records?.withoutReplacedDrafts ? records.withoutReplacedDrafts(onFile) : onFile;
   const stones = await store.list('stones', (s) => s.shipmentId === shipmentId);
   const checks = await store.list('checks', (c) => c.shipmentId === shipmentId);
   const status = paperStatus(ctx, house, checks, shipment);

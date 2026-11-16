@@ -5,7 +5,7 @@ import { useApp } from '../lib/context.js';
 import { Section, Chip, Empty, Skeleton, Button } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
 import { Timeline } from '../components/timeline.js';
-import { carat, growthLabel, labCheckStatus, country, route } from '../lib/format.js';
+import { carat, growthLabel, labCheckStatus, country, route, shortLab } from '../lib/format.js';
 import { squash } from '../lib/search.js';
 
 export function StonesView({ reportNumber }) {
@@ -72,7 +72,7 @@ export function StonesView({ reportNumber }) {
         <div class="panel stone-list">
           ${!stones.length ? html`<${Empty} title=${state.data.stones.length ? 'No stone matches' : 'No stones yet'}>${state.data.stones.length ? 'Press Enter to look the number up anyway.' : 'Stones appear once an invoice or packing list is read.'}<//>`
             : stones.slice(0, 60).map((s) => html`<button type="button" key=${s.id} class=${`stone-item${stone?.id === s.id ? ' active' : ''}`} onClick=${() => nav.stone(s.reportNumber || s.id)}>
-                <span class="rn">${s.reportNumber || s.ref}</span><span class="muted tiny">${s.lab || ''}</span>
+                <span class="rn" title=${s.reportNumber || s.ref}>${s.reportNumber || s.ref}</span><span class="muted tiny" title=${s.lab || ''}>${shortLab(s.lab)}</span>
                 <span class="grades">${[carat(s.carat), s.color, s.clarity, s.shape].filter(Boolean).join(' · ')}</span>
                 <span>${s.growth ? html`<${Chip} small tone=${/lab/i.test(s.growth) ? 'info' : 'plain'}>${growthLabel(s.growth)}<//>` : null}</span>
               </button>`)}
@@ -105,7 +105,7 @@ export function StonesView({ reportNumber }) {
                 <${Chip} tone=${check.tone}>${check.text}<//>
                 ${stone.labCheck?.diffs?.length ? html`<span class="small fail">${stone.labCheck.diffs.map((d) => `${d.field}: ours ${d.ours}, lab ${d.lab}`).join('; ')}</span>` : null}
                 <span class="spacer" style=${{ flex: 1 }}></span>
-                <${Button} size="sm" onClick=${() => verify(stone)} icon=${Icon.shield}>Verify on ${stone.lab || 'the lab'}<//>
+                <${Button} size="sm" onClick=${() => verify(stone)} icon=${Icon.shield} title=${`Open ${stone.lab || 'the lab'}'s own report check`}>Verify on ${shortLab(stone.lab) || 'the lab site'}<//>
               </div>
             </div>
             <${Section} title="History">

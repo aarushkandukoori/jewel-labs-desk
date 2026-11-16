@@ -46,7 +46,7 @@ export function DeskDashboard({ onOnboard }) {
     <${Pipeline} />
     <div class="grid-main-side">
       <${ShipmentRecords} onOnboard=${onOnboard} filter=${filter} />
-      <div><${TellTheAgents} title="Compliance agent" placeholder="Ask about a shipment, or tell the agents what to prepare" /></div>
+      <div><${TellTheAgents} title="Compliance agent" placeholder="Ask the agents, or tell them what to prepare" /></div>
     </div>
   </div>`;
 }
@@ -63,16 +63,16 @@ function MailChip() {
 function CompanyBar() {
   const { state, jl, call, dispatch, toast } = useApp();
   const ws = state.workspace || {};
-  const [form, setForm] = useState({ legalName: '', address: '', city: '', eori: '' });
-  if (!ws.id || (ws.legalName && ws.address)) return null;
+  const [form, setForm] = useState({ legalEntity: '', address: '', city: '', eori: '' });
+  if (!ws.id || (ws.legalEntity && (ws.address || ws.letterhead?.address))) return null;
   const set = (k) => (e) => setForm({ ...form, [k]: e.currentTarget.value });
   async function save() {
-    const saved = await call(jl.workspaces.update({ legalName: form.legalName || undefined, address: form.address || undefined, city: form.city || undefined, eori: form.eori || undefined }));
+    const saved = await call(jl.workspaces.update({ legalEntity: form.legalEntity || undefined, address: form.address || undefined, city: form.city || undefined, eori: form.eori || undefined }));
     if (saved) { dispatch({ type: 'workspace', workspace: { ...ws, ...saved } }); toast('Company details saved', 'They go on every statement.', 'ok'); }
   }
   return html`<div class="company-bar">
     <div class="t">Your company details go on every statement. Papers are filed under <b>${ws.name}</b> until you set them.</div>
-    <input class="input input-sm" placeholder="Company name" value=${form.legalName} onInput=${set('legalName')} aria-label="Company name" />
+    <input class="input input-sm" placeholder="Company name" value=${form.legalEntity} onInput=${set('legalEntity')} aria-label="Company name" />
     <input class="input input-sm" placeholder="Registered address" value=${form.address} onInput=${set('address')} aria-label="Registered address" />
     <input class="input input-sm hide-narrow" placeholder="City, country" value=${form.city} onInput=${set('city')} aria-label="City and country" />
     <input class="input input-sm hide-narrow" placeholder="EORI number (EU imports)" value=${form.eori} onInput=${set('eori')} aria-label="EORI number" />
@@ -143,9 +143,9 @@ function FilterRow({ filter, setFilter }) {
   const [screen, setScreen] = useState(null);
   const ws = state.workspace || {};
   useEffect(() => {
-    const name = ws.legalName || ws.name;
+    const name = ws.legalEntity || ws.name;
     if (name) call(jl.sanctions.screen(name), { quiet: true }).then(setScreen);
-  }, [ws.id, ws.legalName]);
+  }, [ws.id, ws.legalEntity]);
   const s = screeningStatus(screen?.status);
   async function switchHouse(id) {
     if (!id || id === ws.id) return;

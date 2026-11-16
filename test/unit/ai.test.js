@@ -199,14 +199,32 @@ test('direct mode posts to OpenAI with the key, a strict schema and GPT-5 settin
 test('proxy mode sends the same body to the proxy with the user token', async () => {
   const fetch = fakeFetch(() => ok({ intent: 'status', shipmentRef: null, kinds: [], reply: 'Nothing on file yet.' }));
   const proxyUrl = 'https://example.test/functions/v1/ai';
-  const ai = createAI({ mode: 'proxy', proxyUrl, getAccessToken: async () => 'user-session-token', fetch, retryBaseMs: 0 });
+  const house = '00000000-0000-4000-8000-000000000001';
+  const ai = createAI({ mode: 'proxy', proxyUrl, getAccessToken: async () => 'user-session-token', workspaceId: () => house, fetch, retryBaseMs: 0 });
   assert.equal(ai.available, true);
   const answer = await ai.route('Where is my parcel?', { shipments: [] });
   assert.equal(answer.intent, 'status');
   assert.equal(fetch.calls[0].url, proxyUrl);
   assert.equal(fetch.calls[0].headers.Authorization, 'Bearer user-session-token');
+  assert.equal(fetch.calls[0].headers['x-jl-workspace'], house); // the proxy counts the call against this house
   assert.equal(fetch.calls[0].body.response_format.json_schema.name, 'route');
   assert.ok(Array.isArray(fetch.calls[0].body.messages));
+});
+
+test('proxy mode without a house id says so and reads offline', async () => {
+  const fetch = fakeFetch(() => ok({ intent: 'status', shipmentRef: null, kinds: [], reply: 'x' }));
+  const ai = createAI({ mode: 'proxy', proxyUrl: 'https://example.test/ai', getAccessToken: async () => 'token', fetch, retryBaseMs: 0 });
+  const answer = await ai.route('What is still missing?', { shipments: [] });
+  assert.equal(answer.intent, 'whats_missing');
+  assert.equal(fetch.calls.length, 0);
+  assert.equal(ai.lastError.code, 'no_house');
+});
+
+test('direct mode never sends a house header', async () => {
+  const fetch = fakeFetch(() => ok({ ok: true }));
+  const ai = directAI(fetch, { workspaceId: 'some-house' });
+  await ai.check();
+  assert.equal(fetch.calls[0].headers['x-jl-workspace'], undefined);
 });
 
 test('proxy mode without a token falls back offline and says why', async () => {

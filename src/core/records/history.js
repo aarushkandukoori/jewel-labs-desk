@@ -1,7 +1,7 @@
 // A stone's history: every step from the mine to the signed statement, each tied to the paper that proves it.
 // Steps follow the stage order below. Within a stage, dated steps come first (oldest first) and steps
 // whose date is unknown keep at = null and come after them.
-import { getField, parseDate, parseNumber, parseCurrency, formatDate, formatCarat, formatMoney } from '../rules/fields.js';
+import { getField, parseDate, parseNumber, parseCurrency, formatDate, formatCarat, formatMoney, normalizeRef } from '../rules/fields.js';
 import { countryName, normalizeCountry } from '../rules/formats.js';
 import { PAPER_KIND_LABELS } from '../types.js';
 import { shipmentDocuments } from './stones.js';
@@ -42,24 +42,28 @@ export function buildHistory({ stone, shipment, documents = [], papers = [] }) {
     add('mined', null, 'Mined', detail, kpSource ? kpSource.docId : null, 'kp.countriesOfMining');
   }
 
-  // Rough bought from the supplier.
+  // Rough bought from the supplier. The factory record that names this invoice says which rough lot it was.
+  const factoryDocs = sourcesOf('factory_record').map((source) => byId.get(source.docId));
   for (const source of sourcesOf('supplier_invoice')) {
     const doc = byId.get(source.docId);
     const supplier = getField(doc, 'supplier.name') || getField(doc, 'exporter.name') || 'the supplier';
-    const printedCountry = getField(doc, 'supplier.country');
+    const printedCountry = getField(doc, 'supplier.country') || getField(doc, 'exporter.country');
     const country = printedCountry ? countryName(normalizeCountry(printedCountry)) || printedCountry : null;
     const number = getField(doc, 'invoice.number') || getField(doc, 'doc.number');
     const carats = parseNumber(getField(doc, 'goods.totalCarats'));
-    const detail = `Rough bought from ${supplier}${country ? `, ${country},` : ''}${number ? ` on invoice ${number}` : ''}`
-      + `${carats !== null ? `, ${formatCarat(carats)} ct in the lot` : ''}.`;
+    const factory = factoryDocs.find((f) => number && normalizeRef(getField(f, 'invoice.number')) === normalizeRef(number))
+      || (factoryDocs.length === 1 ? factoryDocs[0] : null);
+    const lot = factory ? lotNumber(factory) : null;
+    const detail = `${lot ? `Rough lot ${lot}` : 'Rough'} bought from ${supplier}${country ? `, ${country},` : ''}`
+      + `${number ? ` on invoice ${number}` : ''}${carats !== null ? `, ${formatCarat(carats)} ct` : ''}.`;
     add('rough_purchased', dateOf(doc, ['invoice.date', 'doc.date']), 'Rough purchased', detail, doc.id, 'invoice.date');
   }
 
-  // Cut and polished at the factory.
+  // Cut and polished at the factory (the house's or its manufacturer's, never the rough supplier's).
   for (const source of sourcesOf('factory_record')) {
     const doc = byId.get(source.docId);
-    const lot = getField(doc, 'doc.number');
-    const where = getField(doc, 'exporter.name') || getField(doc, 'supplier.name');
+    const lot = lotNumber(doc);
+    const where = getField(doc, 'exporter.name');
     const detail = `Cut and polished${lot ? ` from rough lot ${lot}` : ''}${where ? ` at ${where}` : ''}`
       + `${source.lineNo ? ` (line ${source.lineNo} of the factory record)` : ''}.`;
     add('cut_and_polished', dateOf(doc, ['doc.date']), 'Cut and polished', detail, doc.id, 'doc.date');
@@ -90,9 +94,14 @@ export function buildHistory({ stone, shipment, documents = [], papers = [] }) {
       + `${buyer ? ` to ${buyer}` : ''}${amount}.`;
     add('invoiced', dateOf(doc, ['invoice.date', 'doc.date']), 'Invoiced', detail, doc.id, 'invoice.date');
   }
-  for (const source of sourcesOf('packing_list')) {
+  // A packing list the agents drafted counts only until the house's own packing list is on file.
+  const packingLists = sourcesOf('packing_list');
+  const drafted = (source) => byId.get(source.docId)?.source?.kind === 'generated';
+  const realLists = packingLists.filter((source) => !drafted(source));
+  for (const source of realLists.length ? realLists : packingLists) {
     const doc = byId.get(source.docId);
-    add('packed', dateOf(doc, ['doc.date', 'invoice.date']), 'Packed', `Line ${source.lineNo} of the packing list for ${shipment.ref}.`, doc.id, 'doc.date');
+    const what = drafted(source) ? 'the packing list the agents drafted' : 'the packing list';
+    add('packed', dateOf(doc, ['doc.date', 'invoice.date']), 'Packed', `Line ${source.lineNo} of ${what} for ${shipment.ref}.`, doc.id, 'doc.date');
   }
 
   // Customs and transport papers cover every stone in the parcel.
@@ -145,6 +154,12 @@ export function sortEvents(events) {
       return a.index - b.index;
     })
     .map((item) => item.event);
+}
+
+/** The rough lot number of a factory record: "LOT R-118" -> "R-118". */
+function lotNumber(doc) {
+  const value = getField(doc, 'doc.number');
+  return value ? value.replace(/^lot\s*(?:no\.?|number|#)?\s*[:.]?\s*/i, '') || value : null;
 }
 
 function dateOf(doc, keys) {

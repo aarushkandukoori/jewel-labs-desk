@@ -339,8 +339,11 @@ test('history runs from the mine to the signed statement in stage order', () => 
   assert.equal(byKind.mined.detail, 'Countries of mining: Botswana and Namibia, per KP certificate AE 0457123.');
   assert.equal(byKind.mined.docId, 'kp1');
   assert.equal(byKind.rough_purchased.at, '2026-06-15');
-  assert.match(byKind.rough_purchased.detail, /Rough bought from Sample Rough DMCC, United Arab Emirates, on invoice SUP-26-0012, 152\.40 ct in the lot\./);
+  // The factory record that names the supplier invoice gives the rough lot.
+  assert.equal(byKind.rough_purchased.detail, 'Rough lot R-118 bought from Sample Rough DMCC, United Arab Emirates, on invoice SUP-26-0012, 152.40 ct.');
   assert.equal(byKind.cut_and_polished.at, '2026-08-02');
+  assert.match(byKind.cut_and_polished.detail, /^Cut and polished from rough lot R-118\b/);
+  assert.doesNotMatch(byKind.cut_and_polished.detail, /Sample Rough/, 'the rough supplier is not where the stone was cut');
   assert.equal(byKind.graded.at, '2026-09-12');
   assert.equal(byKind.graded.detail, 'GIA report 2141438171: 1.01 ct, Round, G, VS1.');
   assert.equal(byKind.invoiced.detail, 'Line 1 of invoice KG/26-27/041 to Example Diamonds BV, USD 9,800.00.');

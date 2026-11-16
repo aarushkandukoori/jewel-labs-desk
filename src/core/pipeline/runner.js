@@ -16,7 +16,8 @@ const LEASE_RENEW_MS = 60 * 1000;
  * lease (cloud only): { acquire(workspaceId, holder, ttlSeconds) -> boolean, release(workspaceId, holder) },
  * or just an acquire function. It stops two installs of the same house from working on the same papers.
  */
-export function createRunner(ctx, { lease, isAutopilot, parallel = AI_MAX_PARALLEL }) {
+export function createRunner(ctx, { lease, isAutopilot, parallel }) {
+  parallel = parallel || AI_MAX_PARALLEL;
   let running = null; // the run in progress
   let next = null; // { options, promise } for the one run waiting behind it
   let blockedBefore = false;

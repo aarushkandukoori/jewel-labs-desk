@@ -13,7 +13,7 @@ function Toast({ toast, onClose }) {
     <span class=${`dot ${dot}`}></span>
     <div class="body">
       ${toast.title ? html`<div class="title">${toast.title}</div>` : null}
-      ${toast.text ? html`<div class="text">${toast.text}</div>` : null}
+      ${toast.text ? html`<div class="text" title=${toast.text}>${toast.text}</div>` : null}
       ${toast.action ? html`<div class="mt-8"><button class="btn btn-sm" onClick=${() => { toast.action.run(); onClose(); }}>${toast.action.label}</button></div>` : null}
     </div>
     <button class="close" type="button" onClick=${onClose} aria-label="Dismiss">${Icon.x()}</button>

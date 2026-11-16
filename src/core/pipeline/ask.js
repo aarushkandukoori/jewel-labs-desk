@@ -24,13 +24,14 @@ export async function ask(ctx, deps, text, { shipmentId = null, by } = {}) {
 
   const steps = ['Sending your request'];
   const shipments = await store.list('shipments');
+  const documents = await store.list('documents', (d) => d.status === 'read');
   const openQuestions = await store.list('questions', (q) => q.status === 'open');
   const ai = await ctx.getAI();
   const route = (await ai.route(request, {
-    shipments: shipments.map(brief),
+    shipments: shipments.map((s) => brief(s, documents)),
     openQuestions: openQuestions.map((q) => ({ id: q.id, shipmentId: q.shipmentId, text: q.text })),
   })) || {};
-  const shipment = findShipment(shipments, route.shipmentRef, shipmentId);
+  const shipment = pickShipment(route.intent, { request, route, shipments, shipmentId, documents });
   const handler = HANDLERS[route.intent] || replyOnly;
 
   let out;
@@ -78,10 +79,86 @@ function refKey(value) {
   return String(value).toUpperCase().replace(/[^0-9A-Z]/g, '');
 }
 
-function brief(s) {
+const ABOUT_EVERY_SHIPMENT = ['whats_missing', 'status'];
+const SAYS_LATEST = /\b(?:latest|last|newest|recent|current)\b/i;
+
+/**
+ * Which shipment a request is about:
+ * 1. the shipment open on screen (shipmentId), or one whose number is typed in the message;
+ * 2. one the model recognised from other words ("the Antwerp parcel"), when the message names its buyer or city;
+ * 3. no shipment for "What is still missing?" or a status question: they are about every open shipment;
+ * 4. for a packing list drafted from the chat, the shipment whose stones were typed in the chat;
+ * 5. otherwise the latest open shipment: the one whose papers arrived last.
+ * A number typed in the message that matches nothing gives null, so the reply can say so.
+ */
+export function pickShipment(intent, { request, route = {}, shipments = [], shipmentId = null, documents = [] }) {
+  const byId = shipmentId ? shipments.find((s) => s.id === shipmentId) : null;
+  if (byId) return byId;
+  const typed = typedShipment(request, shipments);
+  if (typed) return typed;
+  const saysLatest = SAYS_LATEST.test(request);
+  const byModel = route.shipmentRef ? findShipment(shipments, route.shipmentRef) : null;
+  if (byModel && !saysLatest && describes(request, byModel)) return byModel;
+  if (route.shipmentRef && !byModel && refKey(request).includes(refKey(route.shipmentRef))) return null; // typed, not on file
+  if (ABOUT_EVERY_SHIPMENT.includes(intent) && !saysLatest) return null;
+  if (intent === 'build_packing_list') return packingListShipment(shipments, documents) || latestOpen(shipments, documents);
+  return latestOpen(shipments, documents);
+}
+
+/** A shipment whose ref, invoice, shipping bill or air waybill number is typed in the message. */
+function typedShipment(request, shipments) {
+  const typedText = refKey(request);
+  const numbers = (s) => [s.ref, s.invoiceNumber, s.shippingBillNumber, s.hawb, s.mawb].filter(Boolean).map(refKey).filter((n) => n.length >= 5);
+  return shipments.find((s) => numbers(s).some((n) => typedText.includes(n))) || null;
+}
+
+// Words that say nothing about which shipment is meant.
+const PLAIN_WORDS = new Set(['sample', 'gems', 'diamond', 'diamonds', 'trading', 'jewels', 'fine', 'crystals', 'limited',
+  'private', 'company', 'street', 'tower', 'suite', 'unit', 'plot', 'zone', 'free', 'avenue', 'road']);
+
+/** Does the message name something of this shipment: its buyer, consignee, city or destination country? */
+function describes(request, shipment) {
+  const words = (text) => String(text || '').toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4 && !PLAIN_WORDS.has(w));
+  const asked = words(request);
+  const known = words([shipment.consignee?.name, shipment.consignee?.address, shipment.buyer?.name, shipment.consignee?.country,
+    shipment.destinationCountry && shipment.destinationCountry.length > 3 ? shipment.destinationCountry : null].join(' '));
+  return asked.some((a) => known.some((k) => a === k || (Math.min(a.length, k.length) >= 5 && (a.startsWith(k) || k.startsWith(a)))));
+}
+
+/** When the papers of each open shipment last arrived (or when it was started). */
+function lastPaperAt(shipment, documents) {
+  const times = documents.filter((d) => d.shipmentId === shipment.id).map((d) => String(d.createdAt || ''));
+  return times.sort().pop() || String(shipment.createdAt || '');
+}
+
+/** The open shipment whose papers arrived last (falls back to any shipment when all are signed or sent). */
+export function latestOpen(shipments, documents = []) {
+  const open = shipments.filter((s) => !CLOSED.includes(s.status));
+  const list = open.length ? open : shipments;
+  return [...list].sort((a, b) => lastPaperAt(b, documents).localeCompare(lastPaperAt(a, documents)))[0] || null;
+}
+
+/** The shipment whose stones were typed in a chat or email, preferring one with no packing list on file yet. */
+function packingListShipment(shipments, documents) {
+  const open = shipments.filter((s) => !CLOSED.includes(s.status));
+  const found = [];
+  for (const doc of documents.filter((d) => d.docType === 'whatsapp_chat' || d.docType === 'email')) {
+    for (const group of doc.insights?.packing || []) {
+      if (!group.lines?.length) continue;
+      const shipment = (group.ref && findShipment(open, group.ref)) || open.find((s) => s.id === doc.shipmentId) || null;
+      if (shipment && !found.includes(shipment)) found.push(shipment);
+    }
+  }
+  const hasList = (s) => documents.some((d) => d.shipmentId === s.id && d.docType === 'packing_list' && d.source?.kind !== 'generated');
+  return found.find((s) => !hasList(s)) || found[0] || null;
+}
+
+function brief(s, documents = []) {
   return {
     id: s.id, ref: s.ref, status: s.status, invoiceNumber: s.invoiceNumber || null, shippingBillNumber: s.shippingBillNumber || null,
-    hawb: s.hawb || null, destinationCountry: s.destinationCountry || null, consignee: s.consignee?.name || null, updatedAt: s.updatedAt || null,
+    hawb: s.hawb || null, destinationCountry: s.destinationCountry || null, consignee: s.consignee?.name || null,
+    // "latest" means the shipment whose papers arrived last, not the record a run touched last.
+    updatedAt: lastPaperAt(s, documents) || s.updatedAt || null,
   };
 }
 
@@ -174,10 +251,12 @@ async function buildPackingList(ctx, deps, { route, shipment, steps, by }) {
   const docs = await store.list('documents', (d) => d.status === 'read');
   const own = docs.filter((d) => d.shipmentId === shipment.id);
   const linked = (d) => d.shipmentId === shipment.id || mentions(d, shipment);
-  const chatLines = docs.filter((d) => d.kind === 'chat' && linked(d)).flatMap((d) => [
-    ...(d.insights?.relevant || []).map((line) => ({ ...line, docId: d.id })),
-    ...(d.insights?.packing || []).map((p) => ({ text: `Packing notes for ${p.ref || name}`, ref: p.ref || null, lines: p.lines || [], docId: d.id })),
-  ]);
+  // Stone lists typed in the chat come first: they are the stones. The other chat lines are context only.
+  const chats = docs.filter((d) => d.kind === 'chat' && linked(d));
+  const chatLines = [
+    ...chats.flatMap((d) => (d.insights?.packing || []).map((p) => ({ text: `Packing notes for ${p.ref || name}`, ref: p.ref || null, lines: p.lines || [], docId: d.id }))),
+    ...chats.flatMap((d) => (d.insights?.relevant || []).map((line) => ({ ...line, docId: d.id }))),
+  ];
   const emails = docs.filter((d) => d.kind === 'email' && linked(d)).map((d) => ({ docId: d.id, ...(d.content?.email || {}), relevant: d.insights?.relevant || [] }));
   const documents = own.filter((d) => d.kind !== 'chat' && d.kind !== 'email')
     .map((d) => ({ id: d.id, fileName: d.fileName, docType: d.docType, fields: d.fields, lines: d.lines }));

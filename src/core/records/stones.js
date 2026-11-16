@@ -54,10 +54,20 @@ export function matchStones({ shipment, documents = [] }) {
   return { stones, issues: findStoneIssues({ stones, documents, shipment }) };
 }
 
-/** The shipment's own papers: listed in shipment.documentIds or filed under the shipment. */
+/**
+ * The shipment's own papers: listed in shipment.documentIds or filed under the shipment. A packing list the agents
+ * drafted stops counting once the house's own packing list is on file (it stays on record, but the real one rules).
+ */
 export function shipmentDocuments(shipment, documents) {
   const ids = new Set(shipment.documentIds || []);
-  return documents.filter((doc) => ids.has(doc.id) || (doc.shipmentId && doc.shipmentId === shipment.id));
+  return withoutReplacedDrafts(documents.filter((doc) => ids.has(doc.id) || (doc.shipmentId && doc.shipmentId === shipment.id)));
+}
+
+/** Leaves out packing list drafts made by the agents when a packing list from the house is among the papers. */
+export function withoutReplacedDrafts(docs) {
+  const drafted = (doc) => doc.docType === 'packing_list' && doc.source && doc.source.kind === 'generated';
+  const realList = docs.some((doc) => doc.docType === 'packing_list' && !drafted(doc));
+  return realList ? docs.filter((doc) => !drafted(doc)) : docs;
 }
 
 // ---------- readings: what one paper says about one stone ----------
@@ -271,7 +281,8 @@ export function findStoneIssues({ stones = [], documents = [], shipment = {} }) 
     if (weighed.length > 1) {
       const carats = weighed.map((s) => s.carat);
       if (round(Math.max(...carats) - Math.min(...carats), 3) > CARAT_TOLERANCE) {
-        add('carat_mismatch', `${label} weighs ${describe(weighed, 'carat', (v) => `${formatCarat(v)} ct`)}.`, weighed.map((s) => s.docId), { field: 'carat' });
+        const values = [...new Set(carats.map(formatCarat))].sort();
+        add('carat_mismatch', `${label} weighs ${describe(weighed, 'carat', (v) => `${formatCarat(v)} ct`)}.`, weighed.map((s) => s.docId), { field: 'carat', values });
       }
     }
 
@@ -279,7 +290,8 @@ export function findStoneIssues({ stones = [], documents = [], shipment = {} }) 
     for (const [field, word] of [['color', 'colour'], ['clarity', 'clarity'], ['shape', 'shape']]) {
       const graded = sources.filter((s) => s[field]);
       if (new Set(graded.map((s) => s[field])).size > 1) {
-        add('grade_mismatch', `${label} has ${word} ${describe(graded, field, (v) => v)}.`, graded.map((s) => s.docId), { field });
+        const values = [...new Set(graded.map((s) => s[field]))].sort();
+        add('grade_mismatch', `${label} has ${word} ${describe(graded, field, (v) => v)}.`, graded.map((s) => s.docId), { field, values });
       }
     }
 

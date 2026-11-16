@@ -103,6 +103,8 @@ export function evaluate({ shipment, documents = [], stones = [], house = null, 
   });
   // key is a field key: the pipeline writes the answer into that field (of docId when given), so it is
   // only set when the answer is the field's value. check names the rule that asked.
+  // dedupeKey says when two questions are the same one, so a question whose wording changes as papers arrive
+  // ("... on the invoice" becomes "... on the packing list and the invoice") is not asked again.
   const ask = (code, kind, text, extra = {}) => questions.push({
     shipmentId: shipment.id,
     check: code,
@@ -112,6 +114,7 @@ export function evaluate({ shipment, documents = [], stones = [], house = null, 
     docId: extra.docId || null,
     options: extra.options || null,
     docType: extra.docType || null,
+    dedupeKey: extra.dedupeKey || null,
     status: 'open',
   });
   const evidenceOf = (problem) => problem.docIds.filter(Boolean).map((docId) => ({ docId, key: problem.keys ? problem.keys[0] : undefined }));
@@ -245,7 +248,10 @@ export function evaluate({ shipment, documents = [], stones = [], house = null, 
       check('lab_reports_for_half_carat', 'warn', 'Grading reports', `${missing.length} of ${big.length} stones of 0.50 ct or more have no grading report.`,
         missing.flatMap((stone) => (stone.sources || []).map((s) => ({ docId: s.docId }))));
       for (const stone of missing) {
-        ask('lab_reports_for_half_carat', 'missing_document', `${stoneLabel(stone)} on ${ref} has no grading report. Upload it or add its report number.`, { docId: firstDoc(stone) });
+        ask('lab_reports_for_half_carat', 'missing_document', `${stoneLabel(stone)} on ${ref} has no grading report. Upload it or add its report number.`, {
+          docId: firstDoc(stone),
+          dedupeKey: `lab_reports_for_half_carat|${formatCarat(perStoneCarat(stone))}|${stone.shape || ''}|${stone.color || ''}|${stone.clarity || ''}`,
+        });
       }
     } else {
       check('lab_reports_for_half_carat', 'pass', 'Grading reports', big.length
@@ -366,8 +372,12 @@ export function evaluate({ shipment, documents = [], stones = [], house = null, 
     check(code, 'warn', title, problems.map(words).join(' '), problems.flatMap(evidenceOf));
     for (const problem of problems) {
       const question = makeQuestion(problem);
+      // A stone's problem is the same question while the same values disagree, whatever papers name them.
+      const dedupeKey = problem.stoneId
+        ? [code, problem.code, problem.ref, problem.field || '', (problem.values || []).join(',')].join('|')
+        : null;
       // No field key here: "Which is right?" answers are not a value to write into a paper.
-      ask(code, question.kind, question.text, { docId: problem.docIds[problem.docIds.length - 1], options: question.options });
+      ask(code, question.kind, question.text, { docId: problem.docIds[problem.docIds.length - 1], options: question.options, dedupeKey });
     }
   }
 

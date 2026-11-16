@@ -127,7 +127,7 @@ function readTsv(tsv, text, page) {
   const height = imageRow ? Number(imageRow[9]) : 0;
   const words = [];
   for (const row of rows) {
-    const wordText = (row[11] || '').trim();
+    const wordText = plainDashes((row[11] || '').trim());
     const conf = Number(row[10]);
     if (row[0] !== '5' || !wordText || conf < 0 || !width || !height) continue;
     const [left, top, boxWidth, boxHeight] = row.slice(6, 10).map(Number);
@@ -141,7 +141,13 @@ function readTsv(tsv, text, page) {
       conf: round(conf / 100, 2),
     });
   }
-  return { text: String(text || '').trim(), words, width, height };
+  return { text: plainDashes(String(text || '').trim()), words, width, height };
+}
+
+// OCR reads rules, borders and smudges as long dashes. Papers print plain hyphens in numbers and ranges, and the
+// app never shows an em dash, so any dash OCR returns becomes a hyphen.
+function plainDashes(text) {
+  return text.replace(/[\u2010-\u2015\u2212]/g, '-');
 }
 
 function emptyResult(error) {

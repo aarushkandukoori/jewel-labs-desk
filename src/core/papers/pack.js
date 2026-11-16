@@ -1,6 +1,7 @@
 // The export or import pack: handover cover, what is inside the envelope, origin statements, stone list,
 // evidence index, sources, then every original document in the order customs reads them.
 import { PAPER_KIND_LABELS } from '../types.js';
+import { normalizeLab } from '../rules/formats.js';
 import { SOURCES, WORDING_VERSION } from './templates.js';
 import { nextRef } from './refs.js';
 import {
@@ -160,12 +161,16 @@ function envelopeRows(job, places) {
     const attached = row.items.filter((item) => item.original.type !== 'none');
     const labs = {};
     row.items.forEach((item) => {
-      const lab = fieldOf(item.original.doc, 'lab.name') || 'lab not read';
+      const lab = normalizeLab(fieldOf(item.original.doc, 'lab.name')) || 'lab not read';
       labs[lab] = (labs[lab] || 0) + 1;
     });
     const missingCount = row.items.length - attached.length;
+    const count = row.items.length;
+    const title = Object.keys(labs).length === 1
+      ? `Grading reports, ${count}, all from ${Object.keys(labs)[0]}`
+      : `Grading reports, ${count} (${Object.entries(labs).map(([lab, n]) => `${lab} ${n}`).join(', ')})`;
     return {
-      title: `Grading reports, ${row.items.length} (${Object.entries(labs).map(([lab, n]) => `${lab} ${n}`).join(', ')})`,
+      title,
       sub: missingCount ? `In report number order. ${missingCount} not attached, see the evidence index.` : 'In report number order, one per stone.',
       pages: attached.length
         ? pageText({ first: attached[0].range.first, last: attached[attached.length - 1].range.last })

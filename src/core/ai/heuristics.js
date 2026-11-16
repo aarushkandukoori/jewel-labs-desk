@@ -18,7 +18,8 @@ const LOOSE = 0.45; // value recognised by its shape only
 
 // Between a label and its value: a closing bracket, dot leaders ("Carat Weight ....... 1.02"), spaces,
 // one of : - = and at most one line break.
-const SEP = '[)\\]]?[ \\t]*(?:[.…]{2,}[ \\t]*)?[:\\-–=]?[ \\t]*\\.?[ \\t]*(?:\\r?\\n[ \\t]*)?';
+// Between a label and its value: a colon, dots or a dash. OCR often reads the colon as "+", ";" or "©".
+const SEP = '[)\\]]?[ \\t]*(?:[.…]{2,}[ \\t]*)?[:\\-–=+;©]?[ \\t]*\\.?[ \\t]*(?:\\r?\\n[ \\t]*)?';
 const REF = '([A-Z0-9][A-Z0-9/\\-.]*\\d[A-Z0-9/\\-]*)'; // a reference with at least one digit
 const DATE = `(${DATE_PATTERN})`;
 const NUMBER = '((?:\\d{1,3}(?:,\\d{2,3})+|\\d+)(?:\\.\\d+)?)';
@@ -59,6 +60,7 @@ export function cleanValue(value) {
     if (cut > 0 && cut < words.length) s = words.slice(0, cut).join(' ');
   }
   s = s.replace(/^[\s:.\-–]+|[\s,;:\-–/]+$/g, '').replace(/\s+/g, ' ');
+  s = s.replace(/(\))\s+[^\s\w(]?\w?$/, '$1'); // OCR specks after a closing bracket: "Ltd (SAMPLE) 5"
   return s || null;
 }
 
@@ -87,6 +89,11 @@ function currencyIn(text) {
 
 // Simple "Label : value" fields. [key, label, value pattern, how to normalize, families it applies to]
 const SIMPLE_FIELDS = [
+  // A factory record's own number is its rough lot and its own date the record date (it also prints the
+  // supplier invoice and KP numbers and dates, which must not be taken for its own).
+  ['doc.number', '(?:rough\\s+)?lot\\s*(?:no\\b\\.?|number|#)', REF, oneLine, ['factory']],
+  ['doc.date', '(?:record|production|assortment|manufactur(?:ing|e)|polishing)\\s+date', DATE, parseDate, ['factory']],
+  ['doc.date', '(?:date\\s+of\\s+issue|issue\\s+date)', DATE, parseDate, ['insurance']],
   ['invoice.number', '(?:commercial\\s+|export\\s+|tax\\s+|proforma\\s+)?inv(?:oice)?\\.?\\s*(?:no\\b\\.?|number|num|#)', REF, oneLine],
   ['invoice.date', 'inv(?:oice)?\\.?\\s*(?:date|dt)\\b\\.?', DATE, parseDate],
   ['po.number', '(?:p\\.?\\s?o\\.?|purchase\\s+order)\\s*(?:no\\b\\.?|number|#)', REF, oneLine],
@@ -98,6 +105,11 @@ const SIMPLE_FIELDS = [
   ['leo.number', 'LEO\\s*(?:no\\b\\.?|number)', '([A-Z0-9][A-Z0-9/\\-]*)', oneLine],
   ['billOfEntry.number', '(?:b\\.?\\s?e\\.?|bill\\s+of\\s+entry)\\s*(?:no\\b\\.?|number)', '(\\d{5,8})', oneLine],
   ['billOfEntry.date', '(?:b\\.?\\s?e\\.?|bill\\s+of\\s+entry)\\s*date', DATE, parseDate],
+  // "MAWB / HAWB No. : 176-12345678 / 99000012345": both numbers under one label.
+  ['awb.mawb', 'm\\.?a\\.?w\\.?b\\.?\\s*/\\s*h\\.?a\\.?w\\.?b\\.?\\s*(?:no\\b\\.?|number|#)?', '(\\d{3}[\\s-]?\\d{4}[\\s-]?\\d{4})',
+    (v) => { const d = v.replace(/\D/g, ''); return `${d.slice(0, 3)}-${d.slice(3)}`; }],
+  ['awb.hawb', 'm\\.?a\\.?w\\.?b\\.?\\s*/\\s*h\\.?a\\.?w\\.?b\\.?\\s*(?:no\\b\\.?|number|#)?',
+    '(?:\\d{3}[\\s-]?\\d{4}[\\s-]?\\d{4})\\s*/\\s*([A-Z0-9]{5,20})', (v) => v.toUpperCase()],
   ['awb.mawb', '(?:m\\.?a\\.?w\\.?b\\.?|master\\s+air\\s*way\\s*bill)(?:\\s*/\\s*mbl)?\\s*(?:no\\b\\.?|number|#)?',
     '(\\d{3}[\\s-]?\\d{4}[\\s-]?\\d{4})', (v) => { const d = v.replace(/\D/g, ''); return `${d.slice(0, 3)}-${d.slice(3)}`; }],
   ['awb.mawb', '(?:awb|air\\s*way\\s*bill)\\s*(?:no\\b\\.?|number|#)', '(\\d{3}[\\s-]?\\d{4}[\\s-]?\\d{4})',
@@ -172,6 +184,7 @@ const NEEDS_DIGIT = new Set([
 const NEEDS_NAME = new Set(['insurer.name', 'carrier.name', 'broker.name']);
 // The paper's own number and date, by family (a shipping bill also prints the invoice number).
 const MAIN_NUMBER = {
+  factory: [],
   customs: ['shippingBill.number', 'billOfEntry.number', 'invoice.number'],
   air_waybill: ['awb.hawb', 'awb.mawb'],
   kp: ['kp.certificateNumber'],
@@ -181,6 +194,7 @@ const MAIN_NUMBER = {
     'lab.reportNumber', 'insurance.policyNumber', 'po.number'],
 };
 const MAIN_DATE = {
+  factory: [],
   customs: ['shippingBill.date', 'billOfEntry.date', 'leo.date', 'invoice.date'],
   air_waybill: ['awb.date'],
   kp: ['kp.issueDate'],
@@ -354,6 +368,15 @@ function findLabName(text) {
     const m = String(text).match(re);
     if (m) return { value, quote: m[0] };
   }
+  // Any other lab prints its name near the top: "Northbridge Gem Laboratory (SAMPLE)", "... Gemological Laboratory".
+  const lab = /([A-Z][A-Za-z&.'-]*(?:[ \t]+[A-Z][A-Za-z&.'-]*){0,4}[ \t]+(?:Gem(?:ological)?[ \t]+)?(?:Laboratory|Laboratories|Lab)\b(?:[ \t]*\(SAMPLE\))?)/i;
+  const other = String(text).split(/\r?\n/).slice(0, 8).map((line) => line.match(lab)).find(Boolean);
+  if (other) {
+    const name = other[1].trim();
+    // Printed in capitals on the report: shown in title case so it reads like a name.
+    const shown = name === name.toUpperCase() ? name.toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase()).replace(/\(Sample\)/, '(SAMPLE)') : name;
+    return { value: shown, quote: name };
+  }
   return null;
 }
 
@@ -453,6 +476,12 @@ export function readDocument({ text = '', pageTexts = null, docType = 'other', s
     if (lab) add('lab.name', lab.value, lab.quote, LABELED);
     const report = full.match(/(?<![\w.])(LG\d{9}|\d{10}|\d{9})(?![\w.])/);
     if (report) add('lab.reportNumber', report[1].toUpperCase(), report[1], LOOSE);
+    // OCR can cut the last digits off the labelled number; the full number is usually printed again
+    // (inscription, QR link), so a longer number that starts with it wins.
+    const labelled = fields.find((f) => f.key === 'lab.reportNumber');
+    const longer = labelled && [...full.matchAll(/(?<!\d)\d{9,12}(?!\d)/g)].map((m) => m[0])
+      .find((n) => n.length > labelled.value.length && n.startsWith(labelled.value));
+    if (longer) labelled.value = longer;
     const method = full.match(/\b(CVD|HPHT)\b/);
     if (method) add('lab.growthMethod', method[1], method[0], LABELED);
     const firstDate = findDates(full)[0]; // reports print their date near the top without a label

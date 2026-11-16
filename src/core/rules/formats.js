@@ -355,12 +355,19 @@ const LAB_NAMES = [
   ['EGL', /\bEGL\b/],
 ];
 
-/** 'GIA', 'IGI', 'HRD', 'GCAL', ... from a printed lab name. Other labs keep their printed name. */
+/**
+ * 'GIA', 'IGI', 'HRD', 'GCAL', ... from a printed lab name. Other labs keep their printed name; one printed in
+ * capitals reads as a name ("NORTHBRIDGE GEM LABORATORY (SAMPLE)" -> "Northbridge Gem Laboratory (SAMPLE)").
+ */
 export function normalizeLab(text) {
   if (!text) return null;
   const upper = String(text).toUpperCase();
   for (const [lab, pattern] of LAB_NAMES) if (pattern.test(upper)) return lab;
-  return String(text).trim() || null;
+  const name = String(text).trim();
+  if (name.length > 5 && name === upper && /[A-Z]{4}/.test(name)) {
+    return name.replace(/\(([^)]*)\)|([A-Z])([A-Z']*)/g, (all, inBrackets, first, rest) => (inBrackets !== undefined ? all : first + rest.toLowerCase()));
+  }
+  return name || null;
 }
 
 /** Remove spaces and labels: "GIA # 2141 438 171" -> "2141438171". */
@@ -429,9 +436,14 @@ export function normalizeColor(text) {
 
 const CLARITIES = ['FL', 'IF', 'VVS1', 'VVS2', 'VS1', 'VS2', 'SI1', 'SI2', 'SI3', 'I1', 'I2', 'I3'];
 
-/** 'VS 1', 'vs-1' -> 'VS1'. */
+/** 'VS 1', 'vs-1' -> 'VS1'. A lot's range stays a range: 'VS1-VS2', 'vs1 to vs2' -> 'VS1-VS2'. */
 export function normalizeClarity(text) {
   if (!text) return null;
+  const range = String(text).toUpperCase().match(/^\s*([A-Z]{1,3}\s?\d?)\s*(?:-|–|\/|TO)\s*([A-Z]{1,3}\s?\d?)\s*$/);
+  if (range) {
+    const [from, to] = [range[1], range[2]].map((grade) => grade.replace(/\s/g, ''));
+    if (CLARITIES.includes(from) && CLARITIES.includes(to) && from !== to) return `${from}-${to}`;
+  }
   const compact = String(text).toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (CLARITIES.includes(compact)) return compact;
   const found = CLARITIES.slice().sort((a, b) => b.length - a.length).find((grade) => compact.startsWith(grade));

@@ -9,3 +9,6 @@ out/
 /tmp/
 test/.tmp/
 coverage/
+site-dist/
+backend/supabase/.env
+backend/supabase/.temp/

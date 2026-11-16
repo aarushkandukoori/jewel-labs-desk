@@ -203,6 +203,26 @@ export function plural(count, word) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
+/**
+ * True when two records hold the same facts (times and the workspace id aside). Saving an unchanged record would
+ * only bump its updatedAt, which reorders lists, and costs a write on a cloud house.
+ */
+export function sameRecord(a, b) {
+  const strip = (r) => {
+    const { updatedAt, createdAt, workspaceId, ...rest } = r || {};
+    return rest;
+  };
+  return stableJson(strip(a)) === stableJson(strip(b));
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).filter((k) => value[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
 /** Newest first, by updatedAt then createdAt. */
 export function byNewest(a, b) {
   return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));

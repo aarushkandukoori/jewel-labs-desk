@@ -11,6 +11,8 @@ const METHODS = {
   docs: ['pick', 'add', 'list', 'get', 'file', 'remove'],
   shipments: ['list', 'get', 'update'],
   stones: ['list', 'history', 'verify'],
+  checks: ['list'],
+  parties: ['list'],
   questions: ['list', 'answer', 'dismiss'],
   papers: ['list', 'build', 'file', 'open', 'print', 'sign', 'send', 'save'],
   agents: ['run', 'ask', 'autopilot'],

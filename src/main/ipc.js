@@ -223,6 +223,8 @@ export function createHandlers({
     'stones.list': (q) => state.list('stones', optionalObject(q, 'filter')),
     'stones.history': async (reportNumber) => (await services()).history(needString(reportNumber, 'report number', { max: 100 })),
     'stones.verify': (stoneId) => state.verifyStone(needString(stoneId, 'stone')),
+    'checks.list': (q) => state.list('checks', optionalObject(q, 'filter')),
+    'parties.list': (q) => state.list('parties', optionalObject(q, 'filter')),
 
     // ----- questions -----
     'questions.list': (q) => state.list('questions', optionalObject(q, 'filter')),
@@ -348,7 +350,7 @@ export function createHandlers({
     'settings.get': () => state.publicSettings(),
     'settings.set': (patch) => settingsPatch(patch),
     'metrics.get': async () => (await services()).metrics(),
-    'demo.load': () => state.loadSample(),
+    'demo.load': (options) => state.loadSample({ later: optionalObject(options, 'sample options').later === true }),
     'demo.reset': () => state.resetSample(),
   };
 }

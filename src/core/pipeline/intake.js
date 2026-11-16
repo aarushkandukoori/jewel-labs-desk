@@ -6,6 +6,7 @@ const MAX_OCR_PAGES = 8; // a scanned PDF longer than this is only read on its f
 const MAX_HINT_CHARS = 24000; // text sent to the model with each request
 const MAX_SAVED_TEXT = 20000; // text kept on the document for search and for people to read; the store copies it often
 const MIN_TEXT_LAYER_CHARS = 40; // a "text layer" shorter than this is really a scan
+const CHAT_KEPT = 40; // messages of a read chat kept on its record, for the chat view
 
 /** Reads documents, at most `parallel` at a time. */
 export async function readDocuments(ctx, docs, { parallel = 3 } = {}) {
@@ -40,7 +41,7 @@ export async function readOneDocument(ctx, doc) {
     else if (doc.kind === 'email') result = await readEmail(ctx, ai, doc);
     else result = await readPaper(ctx, ai, doc, bytes);
 
-    const done = { ...doc, ...result, status: 'read', error: null, readBy: readerName(ai), readAt: ctx.nowIso() };
+    const done = { ...doc, ...result, status: 'read', error: null, readBy: result.readBy || readerName(ai), readAt: ctx.nowIso() };
     await store.put('documents', done);
     await ctx.log(ctx.agentActor('intake'), 'read', describe(done), { docId: doc.id });
     // Work is done and saved; now show it. The field events play on their own paced queue.
@@ -60,24 +61,92 @@ async function readPaper(ctx, ai, doc, bytes) {
   const page = await pageText(ctx, doc, bytes);
   const item = { name: doc.fileName, mime: doc.mime, kind: doc.kind, bytes };
   const textHint = page.text.slice(0, MAX_HINT_CHARS);
+  const house = await ctx.store.workspace();
   const classified = (await ai.classify(item, { textHint })) || {};
-  const docType = classified.docType || 'other';
-  const extraction = (await ai.extract(item, docType, { textHint, pageTexts: page.pageTexts, pageImages: page.pageImages })) || {};
+  const extraction = (await ai.extract(item, classified.docType || 'other', {
+    textHint, pageTexts: page.pageTexts, pageImages: page.pageImages, textSource: page.ocrUsed ? 'ocr' : 'layer', house: houseBrief(house),
+  })) || {};
   const records = await ctx.load('records');
+  // Who sells to whom decides between the house's own invoice and its supplier's (see invoiceTypeForHouse).
+  const settled = invoiceTypeForHouse(classified.docType || 'other', splitJointNames(extraction.fields || [], house, records), house, records);
   return {
-    docType,
+    docType: settled.docType,
     classifyConfidence: classified.confidence ?? 0,
-    classifyReason: classified.reason || null,
+    classifyReason: settled.reason || classified.reason || null,
     summary: extraction.summary || null,
-    fields: placeFields(records.locate, extraction.fields || [], page.words),
+    fields: placeFields(records.locate, settled.fields, page.words),
     lines: extraction.lines || [],
     declarations: extraction.declarations || [],
+    warnings: extraction.warnings || [],
+    readBy: extraction.readBy ? readerLabel(extraction.readBy) : null,
     pages: page.pages,
     hasTextLayer: page.hasTextLayer,
     pageSizes: page.pageSizes,
     ocrUsed: page.ocrUsed,
     text: page.text.slice(0, MAX_SAVED_TEXT),
   };
+}
+
+/** What the reader is told about the house that received the paper. */
+function houseBrief(house) {
+  if (!house) return null;
+  return { name: house.legalEntity || house.letterhead?.companyName || house.name || null, role: house.role || null, country: house.country || null };
+}
+
+const JOINT = /\s+and\s*\/\s*or\s+/i;
+
+/**
+ * "Kavya Gems LLP and/or Lumen Diamant BV" (an insurance certificate "for account of" both) read as one party:
+ * the house keeps its own role (exporter, supplier) and the other company takes the other (consignee, buyer).
+ * Without a house name the last company is taken for the consignee, the first for the exporter.
+ */
+export function splitJointNames(fields, house, records) {
+  const names = records?.houseNames ? records.houseNames(house) : [];
+  const isHouse = (name) => names.some((houseName) => records.namesMatch(name, houseName));
+  return fields.map((field) => {
+    if (!/\.name$/.test(String(field.key)) || !JOINT.test(String(field.value))) return field;
+    const parts = String(field.value).split(JOINT).map((part) => part.trim()).filter(Boolean);
+    const ours = ['exporter', 'supplier'].includes(String(field.key).split('.')[0]);
+    const value = ours
+      ? parts.find(isHouse) || parts[0]
+      : (names.length && parts.find((part) => !isHouse(part))) || parts[parts.length - 1];
+    return { ...field, value };
+  });
+}
+
+const INVOICE_TYPES = ['commercial_invoice', 'proforma_invoice', 'supplier_invoice'];
+const PARTY_PARTS = ['name', 'address', 'country', 'taxId'];
+
+/**
+ * An invoice says who sells to whom. For a house that exports or manufactures, an invoice where another company
+ * sells to the house is a purchase: a supplier invoice (rough or polished bought in). One where the house sells is
+ * its own commercial invoice. An importer's or trader's purchases stay as they were read (they are the invoices of
+ * its imports). On a supplier invoice the seller is the supplier, so the seller's fields move to supplier.*.
+ */
+export function invoiceTypeForHouse(docType, fields, house, records) {
+  const keep = { docType, fields, reason: null };
+  if (!INVOICE_TYPES.includes(docType) || !records?.namesMatch || !records?.houseNames) return keep;
+  const names = records.houseNames(house);
+  if (!names.length) return keep;
+  const value = (key) => fields.find((f) => f.key === key && f.value)?.value || null;
+  const isHouse = (name) => Boolean(name) && names.some((houseName) => records.namesMatch(name, houseName));
+  const seller = value('supplier.name') || value('exporter.name');
+  const buyer = value('consignee.name') || value('buyer.name');
+  const houseSells = isHouse(value('exporter.name')) || isHouse(value('supplier.name'));
+  const houseBuys = isHouse(buyer);
+  const buysIn = ['exporter', 'manufacturer'].includes(String(house?.role || 'exporter').toLowerCase());
+  if (docType !== 'supplier_invoice' && buysIn && houseBuys && !houseSells && seller) {
+    const moved = fields.map((f) => {
+      const [role, part] = String(f.key).split('.');
+      const free = !fields.some((x) => x.key === `supplier.${part}`);
+      return role === 'exporter' && PARTY_PARTS.includes(part) && free ? { ...f, key: `supplier.${part}` } : f;
+    });
+    return { docType: 'supplier_invoice', fields: moved, reason: `Supplier invoice: ${seller} sells to the house` };
+  }
+  if (docType === 'supplier_invoice' && houseSells && !houseBuys) {
+    return { docType: 'commercial_invoice', fields, reason: 'Commercial invoice: the house is the seller' };
+  }
+  return keep;
 }
 
 /** Text and word boxes for one document, from its text layer or OCR. */
@@ -162,9 +231,10 @@ async function readChat(ctx, ai, doc) {
     summary: allowed ? `${total} messages, ${(insight.relevant || []).length} about shipments` : `${total} messages (reading chats is off for this house)`,
     insights: { relevant: insight.relevant || [], requests: insight.requests || [], packing: insight.packing || [] },
     refs: insight.refs || [],
-    // Once read, the insights hold what matters; the full chat stays in the original _chat.txt file.
-    // (A chat that failed keeps its messages, so a retry can read it again.)
-    content: allowed ? { chat: { title: chat.title, messageCount: total } } : doc.content,
+    // Once read, the insights hold what matters and the full chat stays in the original _chat.txt file; the
+    // last messages stay on the record so the chat can be shown. (A chat that failed keeps all its messages,
+    // so a retry can read it again.)
+    content: allowed ? { chat: { title: chat.title, messageCount: total, messages: (chat.messages || []).slice(-CHAT_KEPT) } } : doc.content,
   };
 }
 
@@ -184,7 +254,8 @@ async function readEmail(ctx, ai, doc) {
 async function saveRequests(ctx, doc, requests, channel) {
   for (const request of requests) {
     if (!request?.text) continue;
-    const author = doc.source?.chatAuthor || doc.content?.email?.from || 'House';
+    // Each chat request names who wrote it; an email's requests come from its sender.
+    const author = request.author || doc.source?.chatAuthor || doc.content?.email?.from || 'House';
     await ctx.postMessage({
       from: { type: 'person', name: author, role: 'house' }, to: 'desk', text: request.text,
       kind: 'request', channel, docId: doc.id, ref: request.ref || null, status: 'open',
@@ -214,4 +285,10 @@ function describe(doc) {
 
 function readerName(ai) {
   return ai.mode === 'off' ? 'Offline reader' : ai.model || 'AI reader';
+}
+
+/** extraction.readBy is 'ai:<model>', 'offline' or 'mock'. */
+function readerLabel(readBy) {
+  if (readBy === 'offline') return 'Offline reader';
+  return String(readBy).replace(/^ai:/, '');
 }

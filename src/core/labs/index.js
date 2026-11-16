@@ -69,6 +69,9 @@ export function detectLab(reportNumber, labHint) {
   if (fromHint) return fromHint;
   const fromPrefix = labFromText(String(reportNumber ?? '').replace(/[\d\s.#:/-]+$/, ''));
   if (fromPrefix) return fromPrefix;
+  // The paper names a lab we have no online check for (a local lab, or the SAMPLE lab): never guess another
+  // lab from the number's shape, or its report would be looked up on the wrong lab's site.
+  if (/[A-Za-z]{2}/.test(String(labHint ?? ''))) return null;
 
   const number = cleanReportNumber(reportNumber);
   if (/^\d{10}$/.test(number)) return 'GIA';

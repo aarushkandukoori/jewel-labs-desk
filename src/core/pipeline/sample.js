@@ -14,15 +14,53 @@ async function sandboxCheck(ctx) {
   if (real.length) throw new Error('This workspace has real papers. Switch to the sandbox to use the sample shipment.');
 }
 
-/** Reads every file under the samples folder and adds it as source kind 'sample'. */
-export async function loadSample(ctx, { addFiles, samplesDir }) {
+// The fictional house the SAMPLE papers are made out to (samples/lib/facts.js). Without it the agents could not
+// tell that these are the house's exports, and every sample shipment would ask "export or import?".
+export const SAMPLE_HOUSE = {
+  legalEntity: 'Kavya Gems LLP (SAMPLE)',
+  country: 'India',
+  city: 'Surat',
+  role: 'exporter',
+  letterhead: {
+    companyName: 'Kavya Gems LLP (SAMPLE)', address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
+    cityCountry: 'Surat, India', iec: 'SAMPLE00012', email: 'ops@kavya-gems.example.com', phone: '+91 555 010 0012',
+  },
+};
+
+// The order a house usually sends them: the WhatsApp export, the buyer's email, then the dropped files.
+// Papers under later/ (the late packing list) come only when asked for: loadSample({ later: true }).
+const CHANNEL_ORDER = ['whatsapp', 'email', 'drop'];
+const LATER = 'later';
+
+/**
+ * Reads the files under the samples folder and adds them as source kind 'sample'. later: true adds only the
+ * papers that arrive late (later/), so the house first sees what is missing, then sees it arrive.
+ */
+export async function loadSample(ctx, { addFiles, samplesDir, later = false }) {
   await sandboxCheck(ctx);
-  const files = await listFiles(samplesDir).catch(() => []);
-  if (!files.length) throw new Error('The sample shipment is missing from this copy of the app.');
+  await giveSampleIdentity(ctx);
+  const all = await listFiles(samplesDir).catch(() => []);
+  if (!all.length) throw new Error('The sample shipment is missing from this copy of the app.');
+  const top = (file) => file.rel.split('/')[0];
+  const files = all.filter((file) => (top(file) === LATER) === later);
+  if (!files.length) throw new Error(later ? 'The sample shipment has no late papers.' : 'The sample shipment is missing from this copy of the app.');
+  const rank = (file) => {
+    const at = CHANNEL_ORDER.indexOf(top(file));
+    return at === -1 ? CHANNEL_ORDER.length : at;
+  };
+  files.sort((a, b) => rank(a) - rank(b) || a.rel.localeCompare(b.rel));
   const batch = await sampleBatch(samplesDir, files);
   const result = await addFiles(batch);
-  await ctx.log(ctx.systemActor(), 'sample', `Loaded the SAMPLE shipment: ${plural(batch.length, 'file')}`);
-  return { ...result, files: batch.length };
+  const what = later ? `Delivered the late SAMPLE papers: ${plural(batch.length, 'file')}` : `Loaded the SAMPLE shipment: ${plural(batch.length, 'file')}`;
+  await ctx.log(ctx.systemActor(), 'sample', what);
+  return { ...result, files: batch.length, later };
+}
+
+/** A sample workspace that has no house of its own yet becomes the SAMPLE house. Its name is kept. */
+async function giveSampleIdentity(ctx) {
+  const workspace = await ctx.store.workspace();
+  if (workspace.sample !== true || workspace.legalEntity) return;
+  await ctx.store.updateWorkspace({ ...SAMPLE_HOUSE, letterhead: { ...(workspace.letterhead || {}), ...SAMPLE_HOUSE.letterhead } });
 }
 
 /**
@@ -33,6 +71,7 @@ async function sampleBatch(samplesDir, files) {
   const chatFolders = [...new Set(files.filter((f) => path.basename(f.rel) === '_chat.txt').map((f) => path.dirname(f.rel)))]
     .filter((dir) => dir !== '.');
   const batch = [];
+  // An unzipped chat folder goes in first, zipped as one export; then the other files in the order given.
   for (const dir of chatFolders) {
     const zip = new JSZip();
     for (const file of files.filter((f) => path.dirname(f.rel) === dir)) zip.file(path.basename(file.rel), await readBytes(file.full));

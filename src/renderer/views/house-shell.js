@@ -98,7 +98,7 @@ function WorkspaceMenu() {
   return html`<div class="no-drag" style=${{ position: 'relative' }} ref=${box}>
     <button type="button" class="topbar-workspace" onClick=${() => setOpen(!open)} aria-haspopup="menu" aria-expanded=${open ? 'true' : 'false'} title="Switch workspace">
       <span class="ellipsis" style=${{ maxWidth: '240px' }}>${current?.name || 'Workspace'}</span>
-      ${current?.sample ? html`<span class="chip chip-warn chip-sm">Sample</span>` : null}
+      ${current?.sample && !/sample/i.test(current?.name || '') ? html`<span class="chip chip-warn chip-sm">Sample</span>` : null}
       ${Icon.chevronDown({ class: 'muted' })}
     </button>
     ${open ? html`<div class="panel" role="menu" style=${{ position: 'absolute', top: '36px', left: 0, minWidth: '260px', zIndex: 40, boxShadow: '0 20px 50px rgba(0,0,0,0.6)' }}>

@@ -11,6 +11,27 @@ export const LOCAL_WORKSPACE_NAME = 'Local workspace';
 export const SAMPLE_WORKSPACE_NAME = 'Sample workspace';
 export const DESK_ONLY = 'Only Jewel Labs desk staff can do this.';
 
+// The fictional house the SAMPLE papers belong to (samples/answers.json). The agents need it to tell an
+// export from an import and to put the right name on the papers.
+export const SAMPLE_HOUSE = {
+  name: 'Kavya Gems LLP (SAMPLE)',
+  legalEntity: 'Kavya Gems LLP (SAMPLE)',
+  address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
+  taxId: 'SAMPLE00012',
+  city: 'Surat',
+  country: 'India',
+  role: 'exporter',
+  environment: 'sandbox',
+  letterhead: {
+    companyName: 'Kavya Gems LLP (SAMPLE)',
+    address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
+    cityCountry: 'Surat, India',
+    iec: 'SAMPLE00012',
+    email: 'ops@kavya-gems.example.com',
+    phone: '+91 555 010 0012',
+  },
+};
+
 // Record fields the screens may never overwrite.
 const PROTECTED_FIELDS = ['id', 'workspaceId', 'createdAt', 'updatedAt'];
 // Settings the app manages itself; the screens cannot set them as preferences.
@@ -30,6 +51,7 @@ export function createAppState({
   labsVerify = null,
   system = {}, // { setLaunchAtLogin(on), getLaunchAtLogin(), onAutopilotChange(on) } from main.js
   devApiKey = null, // OPENAI_API_KEY from the environment, used in development only
+  ofacDownload = true, // false in tests: use the OFAC list on this computer, never download it
   log = console,
   now = () => new Date(),
 }) {
@@ -117,7 +139,7 @@ export function createAppState({
         labsVerify: labsVerify || undefined,
         rasterize: rasterize || undefined,
         notify,
-        paths: { ...paths },
+        paths: { ...paths, samples: paths.samplesDir },
         deviceId: settings.get().deviceId,
         lease: ref.kind === 'cloud' ? cloud.lease : undefined,
         getMembers: ref.kind === 'cloud' ? () => cloud.workspaces.members(ref.id) : undefined,
@@ -213,12 +235,16 @@ export function createAppState({
     const model = settings.get().model || undefined;
     const apiKey = (await secrets.get('openai')) || devApiKey;
     if (apiKey) return core.ai.createAI({ mode: 'direct', apiKey, model });
-    if (cloud && session) {
+    // The Jewel Labs service counts each call against a house the person belongs to: the open one, or
+    // their first house while a local workspace is open.
+    const houseId = current?.kind === 'cloud' ? current.id : cloudWorkspaces[0]?.id;
+    if (cloud && session && houseId) {
       return core.ai.createAI({
         mode: 'proxy',
         proxyUrl: cloud.aiProxyUrl || `${config.SUPABASE_URL}/functions/v1/ai`,
         getAccessToken: () => cloud.accessToken(),
         model,
+        workspaceId: houseId, // sent as x-jl-workspace
       });
     }
     return core.ai.createAI({ mode: 'off', model });
@@ -588,19 +614,46 @@ export function createAppState({
 
   // ---------- OFAC sanctions list ----------
 
+  // The copy on this computer (the last download, or the snapshot that ships with the app) is ready at
+  // once. A download from treasury.gov takes about a minute, so it runs in the background and replaces
+  // the list when it arrives; the agents never wait for it. force (Settings, Refresh) waits for it.
   function loadSanctions({ force = false } = {}) {
     const maxAgeMs = config.OFAC_MAX_AGE_HOURS * 3600 * 1000;
-    const stale = !sdn || Date.now() - sdn.at > maxAgeMs;
-    if (stale || force) {
-      const promise = Promise.resolve().then(() =>
-        core.sanctions.loadSdn({ cacheDir: path.join(paths.cacheDir, 'ofac'), maxAgeHours: force ? 0 : config.OFAC_MAX_AGE_HOURS }),
-      );
+    const cacheDir = path.join(paths.cacheDir, 'ofac');
+    if (force) {
+      const promise = Promise.resolve().then(() => core.sanctions.loadSdn({ cacheDir, maxAgeHours: 0 }));
+      return promise.then((index) => {
+        sdn = { promise, at: Date.now() };
+        return index;
+      });
+    }
+    if (!sdn || Date.now() - sdn.at > maxAgeMs) {
+      const first = !sdn;
+      const promise = first
+        ? Promise.resolve().then(() => core.sanctions.loadSdn({ cacheDir, fetch: null }))
+        : sdn.promise; // keep using the list we have while a fresh one downloads
       sdn = { promise, at: Date.now() };
       promise.catch(() => {
         if (sdn?.promise === promise) sdn = null; // try again next time
       });
+      if (ofacDownload) refreshSanctionsInBackground(cacheDir);
     }
     return sdn.promise;
+  }
+
+  let sdnRefreshing = false;
+  function refreshSanctionsInBackground(cacheDir) {
+    if (sdnRefreshing) return;
+    sdnRefreshing = true;
+    Promise.resolve()
+      .then(() => core.sanctions.loadSdn({ cacheDir, maxAgeHours: config.OFAC_MAX_AGE_HOURS }))
+      .then((index) => {
+        if (index?.count) sdn = { promise: Promise.resolve(index), at: Date.now() };
+      })
+      .catch((e) => log.warn('The OFAC list did not refresh; the copy on this computer is used:', e?.message || e))
+      .finally(() => {
+        sdnRefreshing = false;
+      });
   }
 
   async function sanctionsStatus() {
@@ -716,8 +769,22 @@ export function createAppState({
     return (await ready()).services;
   }
 
-  async function loadSample() {
-    return (await openSample()).loadSample();
+  // options.later: true delivers the papers that arrive late in the sample's story (the packing list).
+  async function loadSample(options = {}) {
+    const svc = await openSample();
+    await useSampleHouse();
+    return svc.loadSample({ later: options?.later === true });
+  }
+
+  // Gives the sample workspace the SAMPLE house's name and details the first time, so the agents can tell
+  // its exports from its imports. Details already there (from an earlier load, or typed in) are kept.
+  async function useSampleHouse() {
+    const { store: s } = await ready();
+    const workspace = await s.workspace();
+    if (workspace.legalEntity) return;
+    const patch = { ...SAMPLE_HOUSE, sample: true };
+    if (workspace.name && workspace.name !== SAMPLE_WORKSPACE_NAME) delete patch.name; // keep a name the person chose
+    await s.updateWorkspace(patch);
   }
 
   async function resetSample() {
@@ -739,7 +806,7 @@ export function createAppState({
       signedIn: Boolean(session),
       role: role(),
       deskAllowed: deskAllowed(),
-      ai: ai ? { mode: ai.mode, model: ai.model || null, available: Boolean(ai.available) } : { mode: 'off', model: null, available: false },
+      ai: ai ? aiInfo(ai) : { mode: 'off', model: null, available: false, calls: 0, lastError: null },
       autopilot: autopilotOn(),
       secureStorage: secrets.available(),
     };
@@ -790,6 +857,25 @@ export function createAppState({
     updateSettings,
     loadSample,
     resetSample,
+  };
+}
+
+// What the screens may know about the AI: its mode and model, how many calls it made, and its last problem
+// in plain words (a bad key, no credit, offline ...). Never the key.
+function aiInfo(ai) {
+  let calls = 0;
+  try {
+    calls = ai.usage?.().calls || 0;
+  } catch {
+    calls = 0;
+  }
+  const last = ai.lastError;
+  return {
+    mode: ai.mode,
+    model: ai.model || null,
+    available: Boolean(ai.available),
+    calls,
+    lastError: last ? { code: last.code || null, message: last.message || null, at: last.at || null } : null,
   };
 }
 

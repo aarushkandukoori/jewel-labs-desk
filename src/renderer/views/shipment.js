@@ -9,7 +9,7 @@ import { DocumentViewer, DocItem } from '../components/doc-viewer.js';
 import { QuestionRow } from '../components/questions.js';
 import { useUpload } from '../components/upload.js';
 import { usePaperActions, PaperButtons, paperNote } from '../components/paper-actions.js';
-import { shipmentStatus, paperStatus, paperKindLabel, route, money, number, carat, growthLabel, labCheckStatus, severityTone, dayTime, plural } from '../lib/format.js';
+import { shipmentStatus, paperStatus, paperKindLabel, route, money, number, carat, growthLabel, labCheckStatus, severityTone, dayTime, plural, shortLab } from '../lib/format.js';
 import { activityChip, actorName } from '../lib/reading.js';
 import { FIELD_LABELS } from '../lib/labels.js';
 
@@ -161,13 +161,13 @@ export function StonesTable({ stones }) {
     <tbody>${stones.map((s) => {
       const check = labCheckStatus(s.labCheck);
       return html`<tr key=${s.id}>
-        <td><button class="link-btn mono" type="button" onClick=${() => nav.stone(s.reportNumber || s.id)} title="Open this stone’s history">${s.reportNumber || s.ref || '–'}</button></td>
-        <td>${s.lab || '–'}</td><td>${s.shape || ''}</td><td class="num">${s.carat != null ? Number(s.carat).toFixed(2) : ''}</td>
+        <td class="nowrap"><button class="link-btn mono" type="button" onClick=${() => nav.stone(s.reportNumber || s.id)} title="Open this stone’s history">${s.reportNumber || s.ref || '–'}</button></td>
+        <td title=${s.lab || ''}>${shortLab(s.lab) || '–'}</td><td>${s.shape || ''}</td><td class="num">${s.carat != null ? Number(s.carat).toFixed(2) : ''}</td>
         <td>${s.color || ''}</td><td>${s.clarity || ''}</td>
         <td>${s.growth ? html`<${Chip} small tone=${/lab/i.test(s.growth) ? 'info' : 'plain'}>${growthLabel(s.growth)}<//>` : ''}</td>
         <td class="num">${(s.sources || []).length}</td>
         <td><${Chip} small tone=${check.tone}>${check.text}<//></td>
-        <td class="right"><button class="btn btn-sm" type="button" onClick=${() => verify(s)} disabled=${!s.reportNumber}>Verify on ${s.lab || 'the lab'}</button></td>
+        <td class="right"><button class="btn btn-sm" type="button" onClick=${() => verify(s)} disabled=${!s.reportNumber} title=${`Open ${s.lab || 'the lab'}'s own report check`}>Verify on ${shortLab(s.lab) || 'the lab site'}</button></td>
       </tr>`;
     })}</tbody>
   </table></div></div>`;

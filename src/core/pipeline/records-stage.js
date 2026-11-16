@@ -1,6 +1,6 @@
 // Records agent: puts every read document under the right shipment, then traces every stone
 // (lab report, invoice line, packing list line, KP rough source, export clearance, air waybill).
-import { newId, reportKey, plural } from './context.js';
+import { newId, reportKey, plural, sameRecord } from './context.js';
 import { saveShipment } from './shipment-save.js';
 
 const CLOSED = ['signed', 'sent'];
@@ -99,7 +99,7 @@ async function matchShipmentStones(ctx, records, shipment, documents) {
       labCheck: stone.labCheck || old?.labCheck || null, // keep a lab check a person already did
     };
     merged.history = (await records.buildHistory({ stone: merged, shipment, documents, papers })) || [];
-    await store.put('stones', merged);
+    if (!old || !sameRecord(old, merged)) await store.put('stones', merged);
     keep.add(merged.id);
   }
   for (const old of oldStones) if (!keep.has(old.id)) await store.remove('stones', old.id);

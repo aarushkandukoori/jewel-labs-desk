@@ -1,5 +1,6 @@
 // Turns raw record values into the words printed on the papers: dates, carats, countries, document titles.
 import { DOC_TYPE_LABELS, EU_MEMBER_STATES } from '../types.js';
+import { normalizeLab } from '../rules/formats.js';
 
 export const NOT_ON_FILE = 'Not on file';
 
@@ -118,10 +119,12 @@ export function isEuCountry(value) {
   return Object.values(EU_MEMBER_STATES).includes(name);
 }
 
-/** One line for a party: "Name, address, country". */
+/** One line for a party: "Name, address, country" (the country only when the address does not end with it). */
 export function partyLine(party) {
   if (!party || isBlank(party.name)) return NOT_ON_FILE;
-  const parts = [party.name, party.address, countryName(party.country)].filter((part) => !isBlank(part));
+  const country = countryName(party.country);
+  const inAddress = !isBlank(country) && !isBlank(party.address) && String(party.address).toLowerCase().includes(String(country).toLowerCase());
+  const parts = [party.name, party.address, inAddress ? null : country].filter((part) => !isBlank(part));
   return parts.join(', ');
 }
 
@@ -165,9 +168,10 @@ export function docTitle(doc) {
       return parts.length ? `${label}, ${parts.join(', ')}` : label;
     }
     case 'insurance_certificate':
-      return join(label, f('insurance.policyNumber') || f('doc.number'));
+      // The certificate's own number names this parcel; the policy number is shared by a year of parcels.
+      return join(label, f('doc.number') || f('insurance.policyNumber'));
     case 'lab_report':
-      return join(label, f('lab.name'), f('lab.reportNumber') || f('doc.number'));
+      return join(label, normalizeLab(f('lab.name')), f('lab.reportNumber') || f('doc.number'));
     case 'kp_certificate':
       return join(label, f('kp.certificateNumber') || f('doc.number'));
     case 'supplier_declaration':

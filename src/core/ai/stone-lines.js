@@ -7,6 +7,8 @@ import { parseNumber, oneLine } from './text.js';
 const REPORT_RE = /(?<![\w.,])(LG\s?\d{8,10}|\d{9,10})(?![\w]|[.,]\d)/i;
 const LAB_RE = /\b(GIA|IGI|HRD|GCAL|GSI|AGS|EGL|IIDGR|SGL)\b/;
 const CLARITY_RE = /\b(VVS[12]|VS[12]|SI[123]|I[123])\b/i;
+// A lot's clarity range: "VS1-VS2", "VS2/SI1".
+const CLARITY_RANGE_RE = /\b((?:VVS|VS|SI|I)[123]|IF)\s*[-–/]\s*((?:VVS|VS|SI|I)[123])\b/i;
 const CLARITY_TOP_RE = /\b(FL|IF)\b/; // upper case only: "if" is also an English word
 const COLOR_RE = /^(?:[D-Z](?:[-/][D-Z])?|FANCY|FCY)$/;
 const SHAPE_WORDS_RE = new RegExp(
@@ -89,7 +91,10 @@ export function parseStoneLine(raw) {
 
   const tokens = row.split(/\s+/).filter(Boolean);
   const numbers = numbersIn(tokens);
-  const clarity = ((row.match(CLARITY_RE) || row.match(CLARITY_TOP_RE)) || [])[1]?.toUpperCase() || null;
+  const range = row.match(CLARITY_RANGE_RE);
+  const clarity = range
+    ? `${range[1]}-${range[2]}`.toUpperCase()
+    : ((row.match(CLARITY_RE) || row.match(CLARITY_TOP_RE)) || [])[1]?.toUpperCase() || null;
 
   // Carat, rate and amount: a printed unit wins; otherwise three numbers where carat x rate = amount.
   let carat = null;
@@ -144,14 +149,19 @@ export function parseStoneLine(raw) {
   let pieces = piecesMatch ? Number(piecesMatch[1]) : null;
   const description = (quote.match(DESCRIPTION_RE) || [])[1]?.trim().replace(/[\s,]+$/, '') || null;
 
+  // The piece count when no "pcs" is printed: the only whole number left on the row once the serial number and
+  // numbers that name something ("lot 1", "box 2") are left out.
+  const named = (n) => /^(?:lot|box|no\.?|#|sr\.?|packet|parcel)$/i.test(cleanToken(tokens[n.index - 1] || ''));
+  const whole = numbers.filter((n) => n.decimals === 0 && n.index !== 0 && n.value > 0 && n.value < 100000 && !named(n)
+    && n.value !== rate && n.value !== amount);
+  const piecesGuess = whole.length === 1 ? whole[0].value : null;
+
   const isStone = Boolean(reportNumber && (carat !== null || color || clarity)) || Boolean(carat !== null && color && clarity);
-  const isLot = !isStone && carat !== null && (pieces !== null || description || hs) && (amount !== null || unit);
+  // A lot row has a piece count; a sentence that only mentions "0.50 ct" is not a row.
+  const isLot = !isStone && carat !== null && (pieces !== null || piecesGuess !== null) && (description || hs || pieces !== null)
+    && (amount !== null || unit);
   if (!isStone && !isLot) return null;
-  if (isLot && pieces === null) {
-    // On a lot row the only other whole number is usually the piece count.
-    const whole = numbers.filter((n) => n.decimals === 0 && n.index !== 0 && n.value > 0 && n.value < 100000);
-    if (whole.length === 1) pieces = whole[0].value;
-  }
+  if (pieces === null) pieces = piecesGuess;
 
   const shape = (quote.match(SHAPE_WORDS_RE) || quote.match(SHAPE_CODES_RE) || [])[1] || null;
   const lab = (quote.match(LAB_RE) || [])[1] || (/^LG\d/.test(reportNumber || '') ? 'IGI' : null);

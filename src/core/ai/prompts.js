@@ -12,7 +12,11 @@ each diamond came from, so being right matters more than being complete.
 
 Rules
 1. Read only what is printed on this paper. Never guess, never fill a value from general knowledge or from other papers.
-   If a value is not printed, leave that key out.
+   If a value is not printed, leave that key out. Go through the key list one key at a time: every key whose value is
+   printed on the paper must be in the answer.
+   doc.number and doc.date are the paper's own number and date: the invoice number on an invoice, the report number
+   on a grading report, the certificate number on a certificate, the house air waybill number on an air waybill, the
+   lot number on a factory record.
 2. value is the normalized value:
    - Dates as yyyy-mm-dd. Numeric dates on Indian, EU, UAE, Israeli and Hong Kong papers are day/month/year
      (05/11/2026 is 5 November 2026). Read month/day/year only when the paper is clearly from the US.
@@ -29,8 +33,10 @@ Rules
 4. page is the page number where the quote is printed (the first page is 1).
 5. confidence: 0.95 or more when printed clearly; 0.7 to 0.9 when hard to read or when you chose between candidates;
    below 0.6 when unsure.
-6. lines: one per stone or lot row, in printed order. Report numbers without spaces. Never invent or merge rows.
-   A grading report has exactly one line (its stone). A paper without stone or lot rows has no lines.
+6. lines: one per stone or lot row, in printed order. Report numbers without spaces; reportNumber is null when the
+   row prints none ("No report", "-"). Never invent or merge rows. A lot row keeps colour and clarity as printed,
+   ranges included ("E-G", "VS1-VS2"), and pieces is its stone count. A grading report has exactly one line (its
+   stone). A paper without stone or lot rows has no lines.
    growth on a line is "natural" or "lab-grown" only with evidence, else null.
 7. declarations: copy every declaration sentence exactly (System of Warranties, "not of Russian origin",
    G7 or other origin statements), one string each.
@@ -110,29 +116,34 @@ exactly as printed (it may say Mixed). kp.carats and kp.value are the totals as 
 and the importer in consignee.*. Lines: one per HS code row if a table is printed.`,
   customs: `A customs paper (an Indian shipping bill with its Let Export Order, a bill of entry, or another
 declaration). The SB No line often reads "7812345 / 03/11/2026": number, then date. leo.date is the Let Export Order
-date. The CHA (customs house agent) is broker.name; drop any code printed before its name. Read the exporter and
+date. exporter.taxId is the IEC code, without the word IEC. The CHA (customs house agent) is broker.name; drop any code
+printed before its name. Read the exporter and
 consignee blocks, the invoice number and date, the invoice or FOB value with its currency, the ports, the country of
 destination and the weights. Lines: one per item row of the invoice details, if printed.`,
   air_waybill: `An air waybill (house or master). awb.hawb is the house number; awb.mawb is the master number (airline
 prefix and 8 digits, written 176-12345678). awb.route is the airports from and to, as printed. The shipper is
 exporter.*; carrier.name is the issuing carrier or the secure courier. No lines.`,
-  insurance: `An insurance certificate. The policy number, insured value (currency in goods.currency), the insurer,
-the consignee, the shipper as exporter.name, air waybill numbers and flight if printed, and the goods description and
-carats from the insured interest. No lines.`,
+  insurance: `An insurance certificate. The certificate number (doc.number), the policy number, insured value (currency
+in goods.currency), the insurer, the consignee, the shipper as exporter.name, the invoice number and air waybill numbers
+and flight if printed, and the goods description and carats from the insured interest. carrier.name only when a company
+is named, never the way the parcel travels ("air freight"). No lines.`,
   declaration: `A supplier declaration, System of Warranties, or G7 / grandfathered declaration. Copy each declaration
 sentence into declarations and the main one into declaration.text. Read the parties, the invoice it covers and any mining
 countries. Lines only if stones are listed.`,
-  factory: `A factory or manufacturing record (rough issued, polished output, assortment). Read the supplier, any KP
-certificate number and mining countries, and the lots as lines (description, pieces, carats).`,
+  factory: `A factory or manufacturing record (rough issued, polished output, assortment). doc.number is the rough lot
+number and doc.date the record date. exporter.name is the company whose factory it is (its name is printed at the top).
+Read the rough supplier, the supplier invoice number (invoice.number), any KP certificate number and mining countries,
+and one line per polished stone or lot (report number, shape, polished carats, colour, clarity, pieces).`,
   other: 'Read whatever applies from the key list. Papers like trade licences or emails often have few keys.',
 };
 
 /** The user message for one extraction: what the paper should be, which keys matter, and the text layer. */
-export function extractPrompt({ fileName, docType, family, textHint, textSource }) {
-  const keys = KEYS[family] || [];
+export function extractPrompt({ fileName, docType, family, textHint, textSource, house }) {
+  const keys = ['doc.number', 'doc.date', ...(KEYS[family] || []).filter((k) => k !== 'doc.number' && k !== 'doc.date')];
   const parts = [
     `Paper: ${fileName || 'unnamed'}`,
     `Expected type: ${DOC_TYPE_LABELS[docType] || docType} (${docType})`,
+    house?.name ? `The house that received this paper: ${house.name}${house.role ? `, a diamond ${house.role}` : ''}${house.country ? ` in ${house.country}` : ''}.` : '',
     NOTES[family] || NOTES.other,
     keys.length ? `Keys that usually matter on this paper: ${keys.join(', ')}. Use other keys from the schema only if clearly printed.` : '',
   ];
@@ -193,7 +204,7 @@ Return:
   requests) and one line per stone with what is typed (report number without spaces, carat, colour, clarity, shape,
   lab); quote is that chat line exactly. Never invent a stone.
 - refs: every shipment-level reference typed in the chat, as printed: invoice numbers, parcel refs, air waybill,
-  shipping bill and KP certificate numbers. Not grading report numbers.
+  shipping bill and KP certificate numbers. Not grading report numbers, and not the names of attached files.
 Copy refs exactly as typed.`;
 
 export function chatPrompt({ title, lines }) {
@@ -230,8 +241,9 @@ A clerk typed a message under "Tell the agents". Decide what they want:
 - status: where a shipment stands.
 - explain: a question about a check, a rule or a paper.
 - other: anything else.
-shipmentRef: the ref of the shipment meant, copied from the list (match a typed invoice number, ref or air waybill;
-"latest" means the most recently updated). null when none fits.
+shipmentRef: the ref of the shipment the message points at, copied from the list (a typed invoice number, ref or air
+waybill, a buyer or city it names, or "latest" for the most recently updated). null when the message does not point at
+one shipment: "What is still missing?" asks about all of them.
 kinds: the papers named: export_pack, import_pack, eu_dds (EU statement), us_cbp_certificate, g7_gf_declaration,
 packing_list_draft. Leave it empty when no paper is named; the agents then build what the shipment needs.
 reply: one or two short plain sentences to the clerk: what happens next, or the answer for status and explain.

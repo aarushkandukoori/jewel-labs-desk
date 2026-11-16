@@ -80,6 +80,10 @@ test('detectLab prefers the lab name, then a prefix, then the number shape', () 
   assert.equal(detectLab('12345'), null);
   assert.equal(detectLab(''), null);
   assert.equal(detectLab(undefined, 'some local lab'), null);
+  // A lab the papers name but that has no online check is never taken for GIA because of the number's shape.
+  assert.equal(detectLab('7391020001', 'Northbridge Gem Laboratory (SAMPLE)'), null);
+  assert.equal(detectLab('7391020001', 'NGL'), null);
+  assert.equal(detectLab('7391020001', null), 'GIA', 'no lab named: the number shape is the only clue');
 });
 
 // ---------- report-check links ----------

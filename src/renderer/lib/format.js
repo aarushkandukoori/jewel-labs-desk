@@ -83,9 +83,10 @@ export function confidence(value) {
 }
 
 export function initials(name) {
-  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return '?';
-  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+  // Words that start with a letter, so "Ravi Mehta (SAMPLE)" gives RM.
+  const words = String(name || '').trim().split(/\s+/).filter((w) => /^\p{L}/u.test(w));
+  if (!words.length) return '?';
+  return (words[0][0] + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase();
 }
 
 export function docTypeLabel(type) {
@@ -186,3 +187,11 @@ export function maskEmail(email) {
   return `${user.slice(0, 1)}${'•'.repeat(Math.max(2, Math.min(4, user.length - 1)))}@${domain}`;
 }
 
+/** A lab's short name for tight places: GIA stays GIA; "Northbridge Gem Laboratory (SAMPLE)" becomes NGL. */
+export function shortLab(lab) {
+  const name = String(lab || '').replace(/\(.*?\)/g, '').trim();
+  if (!name) return '';
+  if (name.length <= 6) return name;
+  const words = name.split(/\s+/).filter((w) => /^\p{Lu}/u.test(w));
+  return words.length >= 2 ? words.map((w) => w[0]).join('').toUpperCase() : name;
+}

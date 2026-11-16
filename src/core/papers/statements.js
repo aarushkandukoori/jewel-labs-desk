@@ -207,7 +207,7 @@ function drawEuDds(ctx, { shipment, stones, house, status, documents, evidenceNo
     { label: t.fields.eori, value: head.eori },
     { label: t.fields.vat, value: head.vat },
     { label: t.fields.hawb, value: facts.hawb },
-    { label: t.fields.shipmentRef, value: [shipment?.ref, facts.invoiceNumber].filter((v) => !isBlank(v)).join(' / ') },
+    { label: t.fields.shipmentRef, value: [...new Set([shipment?.ref, facts.invoiceNumber].filter((v) => !isBlank(v)))].join(' / ') },
     { label: t.fields.date, value: isBlank(facts.invoiceDate) ? null : formatSlashDate(facts.invoiceDate) },
     { label: 'Customs office', value: customsOffice(shipment) },
     { label: 'Exporter', value: facts.exporter },

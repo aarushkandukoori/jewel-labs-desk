@@ -35,7 +35,12 @@ export function usePaperActions() {
   async function download(paper) {
     if (!state.demo) {
       const result = await call(jl.papers.save(paper.id));
-      if (result?.path) toast('Saved', result.path, 'ok');
+      if (result?.path) {
+        const parts = result.path.split(/[\\/]/);
+        const where = parts.length > 1 ? ` in ${parts[parts.length - 2]}` : '';
+        const label = /Mac/i.test(navigator.platform || navigator.userAgent || '') ? 'Show in Finder' : 'Show in folder';
+        toast('Saved', `${parts[parts.length - 1]}${where}`, 'ok', { label, run: () => call(jl.app.showItem(result.path)) });
+      }
       return;
     }
     const file = await paperFile(paper).catch((e) => (toast('Could not download', e.message, 'error'), null));
@@ -78,7 +83,7 @@ export function PaperButtons({ paper, actions, compact }) {
 
 export function SignModal({ paper, onClose, onSigned }) {
   const { jl, call, state, toast } = useApp();
-  const house = state.workspace?.legalName || state.workspace?.name || 'the house';
+  const house = state.workspace?.legalEntity || state.workspace?.name || 'the house';
   const [name, setName] = useState(state.settings?.userName || state.auth?.user?.name || '');
   const [title, setTitle] = useState(state.settings?.signerTitle || 'Director');
   const [signature, setSignature] = useState(null);

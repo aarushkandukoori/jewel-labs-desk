@@ -32,6 +32,11 @@ asarUnpack:
   - node_modules/tesseract.js/**
   - node_modules/tesseract.js-core/**
   - node_modules/@tesseract.js-data/**
+  # The OCR worker thread also loads these four from outside the archive.
+  - node_modules/bmp-js/**
+  - node_modules/is-url/**
+  - node_modules/regenerator-runtime/**
+  - node_modules/wasm-feature-detect/**
   - node_modules/pdfjs-dist/**
 
 # Everything here is plain JavaScript and WebAssembly: there are no native modules to rebuild.

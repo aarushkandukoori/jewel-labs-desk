@@ -40,13 +40,13 @@ function OnboardButton({ form, kyc, onDone }) {
     const list = (text) => String(text || '').split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
     const emails = list(form.contactEmails).filter((e) => e.includes('@'));
     const profile = {
-      name: form.name.trim(), legalName: form.legalName.trim() || undefined, country: form.country.trim() || undefined,
+      name: form.name.trim(), legalEntity: form.legalName.trim() || undefined, country: form.country.trim() || undefined,
       city: form.city.trim() || undefined, role: form.role, commodities: form.commodities,
       contactEmails: emails, contactName: form.contactName.trim() || undefined,
       emailDomains: [...new Set(emails.map((e) => e.split('@')[1]))],
-      whatsapp: list(form.whatsapp).map(phoneDigits).filter(Boolean),
+      whatsappNumbers: list(form.whatsapp).map(phoneDigits).filter(Boolean),
       portal: form.portalEmail ? { userName: form.portalUser.trim() || undefined, email: form.portalEmail.trim() } : undefined,
-      permissions: { searchMailbox: form.may.mailbox, readWhatsapp: form.may.whatsapp, draftRequests: form.may.drafts, screenOfac: form.may.ofac },
+      permissions: { searchMailbox: form.may.mailbox, readWhatsApp: form.may.whatsapp, draftRequests: form.may.drafts, ofacScreen: form.may.ofac },
       autopilot: form.autopilot,
     };
     const r = await call(jl.desk.onboard(profile));

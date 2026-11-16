@@ -39,6 +39,7 @@ export function createClient({
   apiKey = '',
   proxyUrl = '',
   getAccessToken = null,
+  workspaceId = null,
   model = null,
   models = AI_MODELS,
   fetch: fetchFn = globalThis.fetch,
@@ -187,14 +188,24 @@ export function createClient({
     return new AIError('http_error', `${service} answered ${status}: ${raw}`, opts);
   }
 
+  // The proxy counts each call against one house, named by the x-jl-workspace header (a string or a function).
+  async function headersFor(token) {
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+    if (mode !== 'proxy') return headers;
+    const house = typeof workspaceId === 'function' ? await workspaceId() : workspaceId;
+    if (!house) throw new AIError('no_house', 'Open a shared house first: the Jewel Labs AI works for one house at a time.');
+    return { ...headers, 'x-jl-workspace': String(house) };
+  }
+
   async function sendOnce(body) {
     const token = await bearer();
+    const headers = await headersFor(token);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetchFn(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });

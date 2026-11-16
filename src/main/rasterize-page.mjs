@@ -61,7 +61,7 @@ window.raster = {
     while (docs.size > KEEP_OPEN) {
       const [oldKey, oldDoc] = docs.entries().next().value;
       docs.delete(oldKey);
-      oldDoc.then((d) => d.destroy()).catch(() => {});
+      oldDoc.then((d) => d.loadingTask.destroy()).catch(() => {});
     }
     return (await docs.get(key)).numPages;
   },
@@ -89,7 +89,7 @@ window.raster = {
       document.body.append(img);
     }
     const pages = doc.numPages;
-    await doc.destroy();
+    await doc.loadingTask.destroy();
     return pages;
   },
 };

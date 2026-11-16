@@ -519,6 +519,8 @@ const CONTRACT = {
   papers: ['list', 'build', 'file', 'open', 'print', 'sign', 'send', 'save'],
   agents: ['run', 'ask', 'autopilot'],
   activity: ['list'],
+  checks: ['list'],
+  parties: ['list'],
   messages: ['list', 'send'],
   desk: ['queue', 'approve', 'hold', 'houses', 'onboard'],
   sanctions: ['status', 'screen', 'refresh'],

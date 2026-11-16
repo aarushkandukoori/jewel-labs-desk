@@ -292,6 +292,9 @@ export function draftPackingListOffline({ shipment = null, chatLines = [], email
     sources.push(source);
   };
 
+  // When the chat reader already found the typed stone lists (packing notes), those are the stones; the other
+  // chat lines are only context and are not read as stones (a flattened message would read wrongly).
+  const hasNotes = chatLines.some((message) => Array.isArray(message.lines) && message.lines.length);
   for (const message of chatLines) {
     const ref = [message.author, message.at].filter(Boolean).join(', ') || message.ref || 'chat';
     // Packing notes from readChat come with their stone lines already read; otherwise read the message text.
@@ -299,6 +302,7 @@ export function draftPackingListOffline({ shipment = null, chatLines = [], email
       for (const line of message.lines) add(line, { kind: 'chat', ref, quote: line.quote || '' });
       continue;
     }
+    if (hasNotes) continue;
     for (const piece of String(message.text || '').split(/\r?\n|;/)) {
       const line = parseStoneLine(piece);
       if (line) add(line, { kind: 'chat', ref, quote: oneLine(piece) });

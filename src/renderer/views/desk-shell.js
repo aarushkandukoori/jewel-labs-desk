@@ -87,7 +87,7 @@ function Sidebar({ page }) {
     <div class="sidebar-top drag"><a class="brand" href="#/desk"><span class="brand-mark">${Icon.logo()}</span>Jewel Labs</a></div>
     <div class="sidebar-house">
       <div class="name ellipsis">${ws.name || 'No house open'}</div>
-      <div class="meta ellipsis">${ws.legalName || (ws.city ? `${ws.city}${ws.country ? `, ${ws.country}` : ''}` : 'Not set')}</div>
+      <div class="meta ellipsis">${ws.city ? `${ws.city}${ws.country ? `, ${ws.country}` : ''}` : ws.legalEntity && ws.legalEntity !== ws.name ? ws.legalEntity : 'Not set'}</div>
       <select class="select input-sm" value="" onChange=${(e) => switchHouse(e.currentTarget.value)} aria-label="Switch company you file for">
         <option value="">Switch company you file for</option>
         ${(state.workspaces || []).map((w) => html`<option value=${w.id}>${w.name}${w.sample ? ' (sample)' : ''}</option>`)}

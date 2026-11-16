@@ -3,7 +3,8 @@
 //
 // Modes:
 //   direct  the house's own OpenAI key, straight to OpenAI
-//   proxy   the Jewel Labs proxy, with the signed-in user's token (no key on the machine)
+//   proxy   the Jewel Labs proxy, with the signed-in user's token (no key on the machine). It also needs the
+//           house id (workspaceId: a string, or a function returning the open house's id) for x-jl-workspace.
 //   off     no AI: the offline reader (regular expressions) does the work, less accurately
 //   mock    for tests: mockHandler(task, args) returns the answer; task is 'classify', 'extract', 'readChat',
 //           'readEmail', 'route' or 'draftPackingList'. Return undefined to use the offline reader instead.
@@ -17,11 +18,12 @@ import {
 } from './schemas.js';
 import * as prompts from './prompts.js';
 import { classifyByRules, familyOf } from './classify.js';
+import { parseStoneLine } from './stone-lines.js';
 import { readDocument } from './heuristics.js';
 import {
   isFluff, readChatOffline, readEmailOffline, routeOffline, draftPackingListOffline, newPartOfEmail,
 } from './conversation.js';
-import { normalizeExtraction, normalizeClassification, normalizeRoute, normalizeLine, crossCheck } from './normalize.js';
+import { normalizeExtraction, normalizeClassification, normalizeRoute, normalizeLine, crossCheck, fillOwnNumber } from './normalize.js';
 import { capText, containsLoose, squash, oneLine, plainCopy } from './text.js';
 
 export { AIError } from './client.js';
@@ -52,6 +54,7 @@ export function createAI(options = {}) {
       apiKey,
       proxyUrl,
       getAccessToken,
+      workspaceId: options.workspaceId,
       model: options.model,
       models: options.models,
       fetch: options.fetch,
@@ -164,7 +167,9 @@ export function createAI(options = {}) {
       if (!hint.trim() && !documentParts(item, opts).length) {
         throw new AIError('no_content', 'Nothing to read: no text layer and no page image.');
       }
-      const prompt = prompts.extractPrompt({ fileName: item?.name, docType, family: familyOf(docType), textHint: hint, textSource: opts.textSource });
+      const prompt = prompts.extractPrompt({
+        fileName: item?.name, docType, family: familyOf(docType), textHint: hint, textSource: opts.textSource, house: opts.house,
+      });
       const { value, model } = await askDocument({
         system: prompts.READER_SYSTEM, text: prompt, item, pageImages: opts.pageImages,
         schema: EXTRACTION_SCHEMA, name: 'extraction', maxTokens: 16_000, detail: 'high',
@@ -175,6 +180,7 @@ export function createAI(options = {}) {
       const ocr = opts.textSource ? opts.textSource === 'ocr' : item?.kind === 'image' || Boolean(opts.pageImages?.length);
       const verifyQuotes = !ocr;
       const warnings = crossCheck(result, offline, { text: text.plain, verifyQuotes });
+      fillOwnNumber(result.fields, docType); // again: the cross-check may have added the paper's own number or date
       return { ...result, readBy: `ai:${model}`, warnings };
     } catch (err) {
       remember(err);
@@ -301,6 +307,7 @@ export function createAI(options = {}) {
           continue;
         }
         if (line.reportNumber && lines.some((l) => l.reportNumber === line.reportNumber)) continue;
+        fillFromSource(line, source.text);
         line.lineNo = lines.length + 1;
         if (!line.quote || !containsLoose(source.text, line.quote)) line.quote = source.quote;
         lines.push(line);
@@ -427,7 +434,19 @@ function mergeChatAnswer(result, value, original) {
     }
     group.lines.push(...lines);
   }
-  result.refs = uniqueLoose([...result.refs, ...(value.refs || []).filter(typed).map(oneLine)]);
+  result.refs = uniqueLoose([...result.refs, ...(value.refs || []).filter((ref) => typed(ref) && !isFileName(ref)).map(oneLine)]);
+}
+
+/** "Invoice KG-26-27-041.pdf" is an attachment's name, not a reference typed in the chat. */
+function isFileName(text) {
+  return /\.(?:pdf|jpe?g|png|heic|webp|tiff?|xlsx?|csv|docx?|zip|eml|txt)$/i.test(String(text || '').trim());
+}
+
+/** A drafted line keeps what its own source line types: a shape, colour or clarity the model left out is read back. */
+function fillFromSource(line, text) {
+  const typed = parseStoneLine(text);
+  if (!typed || typed.carat === null || line.carat === null || Math.abs(typed.carat - line.carat) > 0.005) return;
+  for (const key of ['shape', 'color', 'clarity']) if (!line[key] && typed[key]) line[key] = typed[key];
 }
 
 /** True when the line's report number, or else its carat weight, is written in the text. */

@@ -79,7 +79,14 @@ async function syncQuestions(ctx, shipment, drafts) {
       opened.push(reopened);
       continue;
     }
-    if (same) continue; // open, answered by a person, or dismissed by a person: never ask twice
+    // Still open: keep it, in the newest wording (more papers can name the same problem).
+    if (same && same.status === 'open') {
+      if (same.text !== draft.text || same.docId !== (draft.docId ?? same.docId)) {
+        await store.put('questions', { ...same, text: draft.text, docId: draft.docId ?? same.docId, options: draft.options ?? same.options });
+      }
+      continue;
+    }
+    if (same) continue; // answered or dismissed by a person: never ask twice
     const question = { ...draft, id: newId('qst'), shipmentId: shipment.id, status: 'open', askedAt: ctx.nowIso(), askedBy: REVIEW_AGENT };
     await store.put('questions', question);
     opened.push(question);
@@ -114,7 +121,10 @@ async function report(ctx, shipment, checks, opened) {
   for (const check of checks.filter((c) => c.severity === 'warn' || c.severity === 'fail')) {
     ctx.agentEvent('origin', 'check', `${check.title}${check.detail ? `: ${check.detail}` : ''}`, { shipmentId: shipment.id });
   }
-  const passed = checks.filter((c) => c.severity === 'pass').length;
+  // The same count the papers print ("Consistent 17 of 18 checks"): passes and notes, out of every check.
+  const passed = shipment.summary?.total === checks.length
+    ? shipment.summary.passed
+    : checks.filter((c) => c.severity === 'pass' || c.severity === 'info').length;
   const summary = `Checked ${name}: ${passed} of ${checks.length} checks consistent. ${SHIPMENT_STATUS_LABELS[shipment.status] || shipment.status}.`;
   ctx.agentEvent('origin', 'done', summary, { shipmentId: shipment.id });
   await ctx.log(ctx.agentActor('origin'), 'checked', summary, { shipmentId: shipment.id });

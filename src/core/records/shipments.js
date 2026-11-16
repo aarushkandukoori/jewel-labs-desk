@@ -451,7 +451,8 @@ export function decideDirection(anchors, house) {
   return 'unknown';
 }
 
-function houseNames(house) {
+/** Every name the house goes by: its name, legal entity, letterhead and aliases. */
+export function houseNames(house) {
   if (!house) return [];
   const profile = house.profile || {};
   const letterhead = house.letterhead || {};

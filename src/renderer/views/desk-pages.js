@@ -139,7 +139,7 @@ export function MetricsPage() {
   return html`<div>
     <${Head} eyebrow="06 Metrics" title="How the houses use Jewel Labs" sub="Sandbox houses get a row but stay out of the totals. Test logins are listed, never counted." />
     ${!metrics ? html`<${Skeleton} lines=${6} />` : html`
-      <div class="stats mb-16">${tiles.map(([label, value, note]) => html`<div class="stat"><div class="label">${label}</div>
+      <div class="stats six mb-16">${tiles.map(([label, value, note]) => html`<div class="stat"><div class="label">${label}</div>
         <div class="v">${value === null || value === undefined ? '–' : label === 'Autonomy rate' ? percent(value) : label === 'Minutes to sign' ? html`${number(value)}<small>min</small>` : number(value)}</div>
         <div class="d">${note}</div></div>`)}</div>
       <div class="panel"><div class="table-wrap"><table class="table house-table">

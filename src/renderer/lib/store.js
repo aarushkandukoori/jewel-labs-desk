@@ -4,7 +4,7 @@
 export const COLLECTIONS = ['documents', 'shipments', 'stones', 'checks', 'questions', 'papers', 'parties', 'activity', 'messages'];
 const KEEP = { activity: 600, messages: 400 }; // long lists are cut to the newest rows
 const MAX_AGENT_EVENTS = 200;
-const MAX_TOASTS = 4;
+const MAX_TOASTS = 3;
 
 export function initialState() {
   return {
@@ -96,7 +96,8 @@ export function reducer(state, action) {
       const toast = { id: action.toast.id || `t${Date.now()}${Math.random().toString(36).slice(2, 6)}`, ...action.toast };
       const same = state.toasts.find((t) => t.title === toast.title && t.text === toast.text);
       if (same) return state; // the same notice twice in a row shows once
-      return { ...state, toasts: [...state.toasts, toast].slice(-MAX_TOASTS) };
+      const others = toast.key ? state.toasts.filter((t) => t.key !== toast.key) : state.toasts;
+      return { ...state, toasts: [...others, toast].slice(-MAX_TOASTS) };
     }
     case 'dismiss-toast':
       return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) };

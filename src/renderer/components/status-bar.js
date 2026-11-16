@@ -17,7 +17,7 @@ function modelText(info) {
 export function StatusBar() {
   const { state, dispatch } = useApp();
   const info = state.info || {};
-  const sample = info.sample || state.workspace?.sample;
+  const sample = info.sample || state.workspace?.sample || state.workspace?.environment === 'sandbox';
   const env = state.demo ? 'Demo' : sample ? 'Sandbox' : 'Live';
   const busy = busyAgents(state);
   const busyNames = Object.keys(busy).map((id) => agentOf(id).name);

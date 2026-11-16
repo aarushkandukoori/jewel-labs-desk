@@ -37,15 +37,20 @@ function Profile() {
   const ws = state.workspace || {};
   const [form, setForm] = useState({});
   useEffect(() => {
+    const letterhead = ws.letterhead && typeof ws.letterhead === 'object' ? ws.letterhead : {};
     setForm({
-      name: ws.name || '', legalName: ws.legalName || '', address: ws.address || '', city: ws.city || '', country: ws.country || '',
-      eori: ws.eori || '', taxId: ws.taxId || '', letterhead: ws.letterhead || '', brokerEmail: ws.brokerEmail || '',
+      name: ws.name || '', legalEntity: ws.legalEntity || '', address: ws.address || letterhead.address || '', city: ws.city || '',
+      country: ws.country || '', eori: ws.eori || letterhead.eori || '', taxId: ws.taxId || letterhead.iec || letterhead.gstin || '',
+      tagline: letterhead.tagline || '', brokerEmail: ws.brokerEmail || '',
     });
   }, [ws.id, ws.updatedAt]);
   const set = (k) => (e) => setForm({ ...form, [k]: e.currentTarget.value });
 
   async function save() {
-    const saved = await call(jl.workspaces.update(form));
+    const { tagline, ...fields } = form;
+    // The papers read the top-level fields; the letterhead keeps the same values for the statement header.
+    const letterhead = { companyName: fields.legalEntity || fields.name, address: fields.address, eori: fields.eori, tagline };
+    const saved = await call(jl.workspaces.update({ ...fields, letterhead }));
     if (saved) {
       dispatch({ type: 'workspace', workspace: { ...ws, ...saved } });
       toast('Profile saved', 'It goes on every statement and pack the agents build.', 'ok');
@@ -57,13 +62,13 @@ function Profile() {
     <div class="section-body">
       <div class="form-grid">
         <${Field} label="House name"><input class="input" value=${form.name} onInput=${set('name')} /><//>
-        <${Field} label="Legal entity"><input class="input" value=${form.legalName} onInput=${set('legalName')} placeholder="As registered" /><//>
+        <${Field} label="Legal entity"><input class="input" value=${form.legalEntity} onInput=${set('legalEntity')} placeholder="As registered" /><//>
         <${Field} label="Registered address" class="span-2"><input class="input" value=${form.address} onInput=${set('address')} /><//>
         <${Field} label="City"><input class="input" value=${form.city} onInput=${set('city')} /><//>
-        <${Field} label="Country"><input class="input" value=${form.country} onInput=${set('country')} placeholder="IN" /><//>
+        <${Field} label="Country"><input class="input" value=${form.country} onInput=${set('country')} placeholder="India" /><//>
         <${Field} label="EORI number" hint="Needed for imports into the EU"><input class="input input-mono" value=${form.eori} onInput=${set('eori')} /><//>
         <${Field} label="Tax or exporter ID" hint="IEC, GSTIN, VAT or EIN"><input class="input input-mono" value=${form.taxId} onInput=${set('taxId')} /><//>
-        <${Field} label="Letterhead line" class="span-2" hint="One line under your name at the top of each paper"><input class="input" value=${form.letterhead} onInput=${set('letterhead')} placeholder="Diamond exporters since 1998 · Surat" /><//>
+        <${Field} label="Letterhead line" class="span-2" hint="One line under your name at the top of each paper"><input class="input" value=${form.tagline} onInput=${set('tagline')} placeholder="Diamond exporters since 1998, Surat" /><//>
         <${Field} label="Your broker's email" class="span-2" hint="Filled in when you send a signed pack"><input class="input" type="email" value=${form.brokerEmail} onInput=${set('brokerEmail')} /><//>
       </div>
       <div class="form-actions"><${Button} kind="primary" size="sm" onClick=${save}>Save the profile<//></div>
@@ -135,7 +140,9 @@ function AISettings() {
   return html`<section class="section" id="settings-ai" aria-label="AI">
     <div class="section-head"><div class="label">AI</div><div class="right-side"><${Chip} small tone=${ai.mode === 'off' ? 'warn' : 'ok'}>${modeText}<//></div></div>
     <div class="setting-row">
-      <div><div class="t">Who reads the papers</div><div class="d">Signed in, the agents use the Jewel Labs cloud (OpenAI, billed to Jewel Labs). With your own OpenAI key, calls go straight from this computer to OpenAI. With neither, an offline reader reads the text layer and OCR; it is less accurate.</div></div>
+      <div><div class="t">Who reads the papers</div><div class="d">Signed in, the agents use the Jewel Labs cloud (OpenAI, billed to Jewel Labs). With your own OpenAI key, calls go straight from this computer to OpenAI. With neither, an offline reader reads the text layer and OCR; it is less accurate.</div>
+        ${ai.calls ? html`<div class="d mt-8">${ai.calls} ${ai.calls === 1 ? 'call' : 'calls'} to the AI since the app started.</div>` : null}
+        ${ai.lastError?.message ? html`<div class="form-error mt-8" role="status">Last problem: ${ai.lastError.message} The agents read with the offline reader meanwhile.</div>` : null}</div>
     </div>
     <div class="setting-row">
       <div style=${{ flex: 1 }}><div class="t">Your own OpenAI key</div><div class="d">${s.hasOpenAIKey ? 'A key is saved, encrypted on this computer.' : 'Optional. Stored encrypted with the system keychain, never in plain text.'}</div>

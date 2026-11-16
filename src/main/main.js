@@ -123,6 +123,7 @@ async function startApp() {
   const rasterizer = createRasterizer({ BrowserWindow, htmlPath: PAGES_FILE, wasmDir });
   const printer = createPrinter({ BrowserWindow, htmlPath: PAGES_FILE, wasmDir });
   const core = await loadCore();
+  const testHooks = IS_E2E ? await import('./e2e.js') : null; // test-only helpers, never loaded otherwise
 
   state = createAppState({
     core,
@@ -134,7 +135,8 @@ async function startApp() {
     notify: notifier.notify,
     rasterize: rasterizer.rasterize,
     labsVerify: core.labs ? createLabsVerify({ BrowserWindow, labs: core.labs, session }) : null,
-    devApiKey: IS_DEV && !IS_E2E ? process.env.OPENAI_API_KEY || null : null, // a developer's own key, never in tests
+    devApiKey: readDevApiKey(), // a developer's own key; a packaged app never reads one
+    ofacDownload: !IS_E2E, // test runs use the OFAC list that ships with the app
     system: {
       setLaunchAtLogin,
       getLaunchAtLogin,
@@ -153,7 +155,7 @@ async function startApp() {
   const handlers = createHandlers({
     state,
     appInfo,
-    dialog,
+    dialog: testHooks ? testHooks.createTestDialogs(dialog) : dialog, // tests: dialogs answer on their own
     shell,
     getWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
     printer,
@@ -192,12 +194,43 @@ async function startApp() {
   mainWindow = openMainWindow({ show: !(openedAtLogin() && state.autopilotOn()) });
   tray = makeTray();
 
-  state.start().catch((error) => {
+  const started = state.start().catch((error) => {
     if (!core.error) log.error('The agents did not start:', error); // a core load error was logged above
     sendEvent('sync', { reason: 'error', message: error.message });
   });
 
-  if (IS_E2E) globalThis.__jlTest = { rasterize: rasterizer.rasterize, info: () => ({ ...appInfo(), ...state.info() }), quit: () => app.quit() };
+  if (testHooks) {
+    globalThis.__jlTest = { rasterize: rasterizer.rasterize, info: () => ({ ...appInfo(), ...state.info() }), quit: () => app.quit(), state, core };
+    const reportFile = process.env.JL_E2E_REPORT;
+    if (reportFile) {
+      started
+        .then(() => testHooks.runSelfCheck({ state, core, rasterize: rasterizer.rasterize, appInfo, file: reportFile, log }))
+        .catch((error) => log.error('The self-check stopped:', error))
+        .finally(() => process.env.JL_E2E_QUIT === '1' && app.quit());
+    }
+  }
+}
+
+// Development only: a developer's own OpenAI key, so the agents read with the real AI ('direct' mode).
+// JL_DEV_OPENAI_KEY_FILE names a file holding the key (used by the end-to-end tests); OPENAI_API_KEY works
+// too outside tests. A packaged app ignores both. The key is kept in memory: never logged, never saved.
+function readDevApiKey() {
+  if (!IS_DEV) return null;
+  const file = process.env.JL_DEV_OPENAI_KEY_FILE;
+  if (file) {
+    try {
+      const key = fs.readFileSync(file.replace(/^~(?=$|[\\/])/, os.homedir()), 'utf8').trim();
+      if (key) {
+        log.info('Development: the agents use the OpenAI key from JL_DEV_OPENAI_KEY_FILE.');
+        return key;
+      }
+      log.warn('Development: the JL_DEV_OPENAI_KEY_FILE file is empty, so the AI stays off.');
+    } catch (error) {
+      log.warn(`Development: could not read the JL_DEV_OPENAI_KEY_FILE file (${error.code || 'unreadable'}), so the AI stays off.`);
+    }
+    return null;
+  }
+  return IS_E2E ? null : process.env.OPENAI_API_KEY || null;
 }
 
 // The core modules (src/core) are loaded here rather than imported at the top, so a broken core file
