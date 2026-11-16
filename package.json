@@ -1,7 +1,7 @@
 {
   "name": "jewel-labs-desk",
   "productName": "Jewel Labs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Jewel Labs desktop app: AI agents read a diamond shipment's papers, trace every stone's history, check origin and build the customs pack ready to sign.",
   "author": "Jewel Labs <hello@jewellabs.io>",
   "homepage": "https://aarushkandukoori.github.io/jewel-labs-desk/",

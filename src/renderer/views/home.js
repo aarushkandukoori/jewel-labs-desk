@@ -2,6 +2,7 @@
 // 3. Tell the agents, 4. Back from Jewel Labs. Laid out like the walkthrough video.
 import { html, useEffect, useMemo, useRef, useState } from '../vendor/preact-htm.mjs';
 import { useApp } from '../lib/context.js';
+import { jl, call } from '../api.js';
 import { Section, Button, Chip, Dot, Field, Check, StatusChip } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
 import { AgentsReading } from '../components/reader.js';
@@ -15,15 +16,25 @@ import { activityChip, actorName } from '../lib/reading.js';
 import { plural, clock, ago, paperStatus, shipmentStatus, folderProblem, domainList } from '../lib/format.js';
 
 export function HomeView() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, startSample } = useApp();
   const upload = useUpload();
   const name = state.workspace?.name || 'Your house';
+  const sample = Boolean(state.workspace?.sample);
   useReaderScroll(state, dispatch);
+  // The SAMPLE workspace can be wiped and played again from the start (the reset button in the demo plan).
+  async function startOver() {
+    if (!window.confirm('Start the sample over? Its papers, answers and signed packs are cleared, then the agents read it again.')) return;
+    if ((await call(jl.demo.reset())) === null) return;
+    await startSample();
+  }
   return html`<div class="page-inner">
     ${upload.input}
     <header class="portal-head">
-      <div class="eyebrow">Customer portal${state.workspace?.sample ? ' · Sample workspace' : ''}</div>
-      <h1>${name}</h1>
+      <div class="eyebrow">Customer portal${sample ? ' · Sample workspace' : ''}</div>
+      <div class="portal-head__row">
+        <h1>${name}</h1>
+        ${sample ? html`<${Button} size="sm" onClick=${startOver} title="Clear the sample and let the agents read it again">Start the sample over<//>` : null}
+      </div>
     </header>
     <${ConnectSection} upload=${upload} />
     <${DocumentsSection} upload=${upload} />
