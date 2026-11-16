@@ -10,6 +10,7 @@ import { initDemo } from './demo.js';
 import { initHistory } from './history.js';
 import { initTeam } from './team.js';
 import { initWatch } from './watch.js';
+import { initClosingStone } from './closing.js';
 
 window.jlStarted = true; // tells the fail-safe timer in index.html that the script is running
 
@@ -59,7 +60,8 @@ start('downloads', () => initDownloads());
 start('download pill', () => initDownloadPill());
 start('statement', () => initStatement(reduced));
 start('agents', () => initAgentRun(reduced));
-start('demo', () => initDemo());
+start('demo', () => initDemo(reduced));
 start('history', () => initHistory({ reduced, small }));
 start('team', () => initTeam(reduced));
 start('watch', () => initWatch());
+start('closing stone', () => initClosingStone({ reduced, small }));

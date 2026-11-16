@@ -1,26 +1,19 @@
 // "Watch it work": the walkthrough video.
 // The build sets data-video="ready" on the section once site/media/demo.mp4 exists. Until then the
-// section shows a placeholder and the hero's "Watch it work" link goes to the live demo instead.
-// If the video file still fails to load, the whole section is hidden.
+// stylesheet hides the whole section and the hero's "Watch it work" link goes to the live demo.
+// If the video file still fails to load, the section hides itself again.
 
 export function initWatch() {
   const section = document.getElementById('watch');
   const video = document.getElementById('watch-video');
   const play = document.getElementById('watch-play');
   const heroLink = document.getElementById('watch-link');
-  if (!section || !video) return;
+  if (!section || !video || section.dataset.video !== 'ready') return; // the hero link already points to #demo
 
-  const useLiveDemoInstead = () => {
-    if (heroLink) heroLink.href = '#demo';
-  };
-  if (section.dataset.video !== 'ready') {
-    useLiveDemoInstead();
-    return;
-  }
-
+  if (heroLink) heroLink.href = '#watch';
   video.addEventListener('error', () => {
     section.hidden = true;
-    useLiveDemoInstead();
+    if (heroLink) heroLink.href = '#demo';
   });
 
   // Nothing is fetched until the section comes near: browsers download a poster as soon as it is set.

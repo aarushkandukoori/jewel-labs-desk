@@ -84,6 +84,9 @@ ul, ol { list-style: none; }
 
 [hidden] { display: none !important; }
 .mono { font-family: var(--mono); letter-spacing: 0.01em; }
+.nowrap { white-space: nowrap; }
+/* text for screen readers only */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .skip { position: absolute; left: -9999px; top: 12px; z-index: 300; padding: 10px 16px; border-radius: 10px; background: #fff; color: #000; font-size: 14px; }
 .skip:focus { left: 12px; }
 #main:focus { outline: none; }
@@ -475,6 +478,25 @@ ul, ol { list-style: none; }
 .demo__caption { margin: 22px auto 0; max-width: 640px; text-align: center; font-size: 13px; line-height: 1.6; color: var(--text-3); }
 @media (max-width: 560px) { .window__title { display: none; } }
 
+/* three small facts about the recording, under the window (like the cards under the staged demo on jewellabs.io) */
+.facts { max-width: 920px; margin: 40px auto 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.fact { padding: 18px 18px 20px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.025); transition: border-color 0.3s, background 0.3s; }
+.fact:hover { border-color: var(--line-2); background: rgba(255, 255, 255, 0.04); }
+.fact__k { margin-bottom: 9px; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
+.fact__v { font-size: 13.5px; line-height: 1.6; color: var(--text-2); text-wrap: pretty; }
+.demo__actions {
+  max-width: 1120px; margin: 30px auto 0;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;
+}
+.demo__more { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.demo__link { font-size: 13.5px; color: var(--text-2); border-bottom: 1px solid var(--line-2); padding-bottom: 2px; transition: color 0.2s, border-color 0.2s; }
+.demo__link:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.4); }
+@media (max-width: 760px) {
+  .facts { grid-template-columns: 1fr; }
+  .demo__actions { justify-content: center; }
+  .demo__more { justify-content: center; }
+}
+
 /* ── Stone history ── */
 .history__grid { display: grid; grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr); gap: 64px; align-items: start; }
 .history__aside { position: sticky; top: calc(var(--nav-h) + 24px); }
@@ -510,9 +532,15 @@ ul, ol { list-style: none; }
   background: linear-gradient(to bottom, rgba(255, 255, 255, 0.35), #fff);
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.45);
 }
-.timeline__step { position: relative; padding: 0 0 44px 44px; opacity: 0.36; transition: opacity 0.5s var(--ease); }
+.timeline__step { position: relative; padding: 0 0 44px 44px; }
 .timeline__step:last-child { padding-bottom: 0; }
-.timeline__step.is-on { opacity: 1; }
+/* Steps the stone has not reached yet are dimmed with a darker grey instead of transparency,
+   so they stay readable (--text-3 is 5.6:1 on black). */
+.timeline__title, .timeline__text, .timeline__paper { transition: color 0.5s var(--ease), border-color 0.5s var(--ease); }
+.timeline__step:not(.is-on) .timeline__title,
+.timeline__step:not(.is-on) .timeline__text,
+.timeline__step:not(.is-on) .timeline__paper { color: var(--text-3); }
+.timeline__step:not(.is-on) .timeline__paper { border-color: var(--line); }
 .timeline__dot {
   position: absolute; left: 1px; top: 4px; width: 13px; height: 13px; border-radius: 50%;
   background: #000; border: 1px solid rgba(255, 255, 255, 0.28);
@@ -627,20 +655,19 @@ ul, ol { list-style: none; }
   .downloads, .first-open { grid-template-columns: 1fr; }
 }
 
-/* ── Watch it work ── */
+/* ── Watch it work ──
+   The whole section stays hidden until the build finds media/demo.mp4 and marks it ready. */
+.watch:not([data-video='ready']) { display: none; }
 .player {
   position: relative; max-width: 1040px; margin: 0 auto; aspect-ratio: 16 / 9; overflow: hidden;
   border-radius: var(--radius); border: 1px solid var(--line-2);
   background: radial-gradient(circle at 50% 45%, rgba(174, 184, 201, 0.08), transparent 60%), var(--panel);
   box-shadow: 0 40px 110px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-/* before the video exists the frame is a short placeholder card instead of an empty 16:9 box */
-.watch[data-video='pending'] .player { aspect-ratio: auto; }
-.watch[data-video='pending'] .player__wait { position: relative; inset: auto; padding: 64px 24px; }
-.player__video { display: none; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.player__video { width: 100%; height: 100%; object-fit: cover; background: #000; }
 .player__play {
   position: absolute; inset: 0; margin: auto; width: 84px; height: 84px; border-radius: 50%;
-  display: none; place-items: center; color: var(--text);
+  display: grid; place-items: center; color: var(--text);
   background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.28);
   -webkit-backdrop-filter: blur(18px) saturate(160%); backdrop-filter: blur(18px) saturate(160%);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.25);
@@ -648,17 +675,6 @@ ul, ol { list-style: none; }
 }
 .player__play svg { width: 28px; height: 28px; margin-left: 4px; }
 .player__play:hover { transform: scale(1.06); background: rgba(255, 255, 255, 0.18); }
-.player__wait {
-  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
-  padding: 24px; text-align: center; font-size: 15px; color: var(--text-2);
-  background:
-    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px) 0 0 / 48px 48px,
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px) 0 0 / 48px 48px;
-}
-.player__wait svg { width: 44px; height: 44px; color: var(--text); opacity: 0.85; animation: soft-pulse 2.4s ease-in-out infinite; }
-.watch[data-video='ready'] .player__video { display: block; }
-.watch[data-video='ready'] .player__play { display: grid; }
-.watch[data-video='ready'] .player__wait { display: none; }
 .watch.is-playing .player__play { display: none; }
 
 /* ── Security ── */
@@ -716,6 +732,34 @@ ul, ol { list-style: none; }
 }
 .faq__item a { color: var(--text); border-bottom: 1px solid var(--line-2); margin-left: 4px; }
 @keyframes faq-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* ── Closing card: a large glass card with the particle stone behind the words ── */
+/* .section.cta outranks the .section padding rules for smaller screens further down */
+.section.cta { padding-top: 24px; padding-bottom: 104px; }
+.cta::before { display: none; }
+.cta__card {
+  position: relative; overflow: hidden; isolation: isolate;
+  padding: 104px 32px 96px; border-radius: 24px; text-align: center;
+  border: 1px solid var(--line-2);
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 0%, rgba(255, 255, 255, 0.075), transparent 72%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+.cta__stone {
+  position: absolute; z-index: -1; left: 50%; top: 50%; width: min(600px, 92%); aspect-ratio: 1;
+  transform: translate(-50%, -50%); pointer-events: none;
+  opacity: 0; transition: opacity 1.6s var(--ease);
+}
+.cta__stone.is-ready { opacity: 0.6; }
+.cta__stone canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+.cta__content { position: relative; max-width: 640px; margin: 0 auto; }
+.cta__actions { margin-top: 36px; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+@media (max-width: 680px) {
+  .section.cta { padding-top: 8px; padding-bottom: 72px; }
+  .cta__card { padding: 72px 20px 64px; border-radius: 18px; }
+  .cta__actions .btn { flex: 1 1 100%; }
+}
 
 /* ── Footer ── */
 .footer { border-top: 1px solid var(--line); padding: 0 var(--gutter); }

@@ -46,7 +46,8 @@ export async function initHistory({ reduced, small }) {
     card.step.textContent = `Step ${Math.max(1, count)} of ${steps.length}`;
     card.shape.textContent = latest.dataset.shape;
     card.report.textContent = latest.dataset.report;
-    card.now.textContent = latest.querySelector('.timeline__title').textContent;
+    // A step can give the card a shorter word than its title (data-now), so the card stays one line high.
+    card.now.textContent = latest.dataset.now || latest.querySelector('.timeline__title').textContent;
 
     if (!diamond) return;
     diamond.setMorph(count > morphAt ? 1 : 0);

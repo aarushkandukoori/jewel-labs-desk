@@ -8,12 +8,15 @@
 //
 // Then it:
 //   - marks the "Watch it work" video as ready when site/media/demo.mp4 exists (until then the page
-//     shows a placeholder, and never asks for a file that is not there),
+//     hides that section, and never asks for a file that is not there),
 //   - writes a placeholder app page if the app UI is not there yet,
 //   - warns when the app imports a file the website does not ship (the demo would break),
+//   - checks the recorded run the live demo replays (app/demo/sample-run.json) and warns about any
+//     file it points to that is missing,
 //   - writes .nojekyll so GitHub Pages serves every file as it is.
 // Every link in the site is relative, so it works at https://<user>.github.io/jewel-labs-desk/
-// as well as from a local server.
+// as well as from a local server. GitHub Pages runs on Linux, where "Demo.pdf" and "demo.pdf" are
+// different files, so the checks compare names exactly (a Mac would say both exist).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -22,7 +25,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Builds the site. `root` is the repository folder, `out` the folder to write (emptied first).
- * Returns a summary: { out, files, bytes, app: 'renderer'|'placeholder', samples, video: 'ready'|'pending', fonts, warnings }.
+ * Returns a summary: { out, files, bytes, app: 'renderer'|'placeholder', demo: 'recorded'|'scripted'|'none',
+ * demoSteps, samples, video: 'ready'|'pending', fonts, warnings }.
  */
 export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log = console.log } = {}) {
   root = path.resolve(root);
@@ -30,7 +34,9 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
   assertSafeOut(out, root);
   const from = (...parts) => path.join(root, ...parts);
   const to = (...parts) => path.join(out, ...parts);
-  const summary = { out, files: 0, bytes: 0, app: 'placeholder', samples: false, video: 'pending', fonts: 0, warnings: [] };
+  const summary = {
+    out, files: 0, bytes: 0, app: 'placeholder', demo: 'none', demoSteps: 0, samples: false, video: 'pending', fonts: 0, warnings: [],
+  };
   const warn = (message) => {
     summary.warnings.push(message);
     log(`warning: ${message}`);
@@ -67,6 +73,11 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
   if (fs.existsSync(path.join(rendererDir, 'index.html'))) {
     summary.app = 'renderer';
     for (const problem of checkAppImports(to('app'))) warn(problem);
+    // The live demo replays the recorded run when there is one (otherwise the app's built-in scripted run).
+    const run = checkDemoRun(to('app'));
+    summary.demo = run.kind;
+    summary.demoSteps = run.steps;
+    for (const problem of run.problems) warn(problem);
   } else {
     fs.mkdirSync(to('app'), { recursive: true });
     fs.writeFileSync(to('app', 'index.html'), PLACEHOLDER_APP);
@@ -128,6 +139,27 @@ function copyDir(source, target) {
   });
 }
 
+/**
+ * True when `file` exists under `base` with exactly this spelling, upper and lower case included.
+ * GitHub Pages runs on Linux, which treats "Demo.pdf" and "demo.pdf" as different files.
+ */
+function existsExactly(base, file) {
+  const rel = path.relative(base, file);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  let dir = base;
+  for (const part of rel.split(path.sep).filter(Boolean)) {
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return false; // not a folder
+    }
+    if (!names.includes(part)) return false;
+    dir = path.join(dir, part);
+  }
+  return true;
+}
+
 /** Every file under a folder, at any depth. */
 function listFiles(dir) {
   const files = [];
@@ -168,13 +200,48 @@ export function checkAppImports(appDir) {
         const where = path.relative(appDir, file);
         if (target !== appDir && !target.startsWith(appDir + path.sep)) {
           problems.push(`app/${where} refers to ${spec}, which is outside the app folder the website ships.`);
-        } else if (!fs.existsSync(target)) {
+        } else if (!existsExactly(appDir, target)) {
           problems.push(`app/${where} refers to ${spec}, which does not exist.`);
         }
       }
     }
   }
   return problems;
+}
+
+/**
+ * The live demo replays app/demo/sample-run.json when it holds a recorded run (steps), and the app's
+ * built-in scripted run otherwise. Returns { kind: 'recorded'|'scripted'|'none', steps, files, problems },
+ * where problems lists every file the recording points to that the website does not ship.
+ */
+export function checkDemoRun(appDir) {
+  const runFile = path.join(appDir, 'demo', 'sample-run.json');
+  const result = { kind: 'none', steps: 0, files: 0, problems: [] };
+  if (!fs.existsSync(runFile)) return result;
+  let run;
+  try {
+    run = JSON.parse(fs.readFileSync(runFile, 'utf8'));
+  } catch (error) {
+    result.problems.push(`app/demo/sample-run.json is not valid JSON (${error.message}), so the demo plays the scripted run.`);
+    return result;
+  }
+  result.steps = Array.isArray(run.steps) ? run.steps.length : 0;
+  result.kind = result.steps ? 'recorded' : 'scripted';
+  // File addresses are relative to sample-run.json; data: addresses carry the file inside them.
+  for (const url of Object.values(run.files || {})) {
+    if (typeof url !== 'string' || url.startsWith('data:')) continue;
+    result.files++;
+    let target;
+    try {
+      target = path.resolve(path.dirname(runFile), decodeURIComponent(url.split(/[?#]/)[0]));
+    } catch {
+      target = null;
+    }
+    if (!target || !existsExactly(appDir, target)) {
+      result.problems.push(`app/demo/sample-run.json points to ${url}, which is not in the app folder the website ships.`);
+    }
+  }
+  return result;
 }
 
 // Shown in the live demo frame until the real app UI exists in src/renderer.
@@ -206,7 +273,8 @@ const PLACEHOLDER_APP = `<!doctype html>
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const summary = buildSite();
   const mb = (summary.bytes / (1024 * 1024)).toFixed(1);
+  const demo = summary.demo === 'recorded' ? `recorded run (${summary.demoSteps} steps)` : summary.demo;
   console.log(`Built ${path.relative(process.cwd(), summary.out) || summary.out}: ${summary.files} files, ${mb} MB.`);
-  console.log(`  app: ${summary.app}   samples: ${summary.samples ? 'yes' : 'no'}   video: ${summary.video}   fonts: ${summary.fonts}`);
+  console.log(`  app: ${summary.app}   demo: ${demo}   samples: ${summary.samples ? 'yes' : 'no'}   video: ${summary.video}   fonts: ${summary.fonts}`);
   if (summary.warnings.length) console.log(`  ${summary.warnings.length} warning(s) above.`);
 }

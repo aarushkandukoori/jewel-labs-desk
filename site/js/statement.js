@@ -1,18 +1,20 @@
 // The statement card in the "EU deadline" section. When it scrolls into view the agents fill it in:
 // each field shows a reading bar, then its value; the status goes Agents reading, Checking origin,
 // Ready to sign. Then it switches destination (EU, then US) and runs again, to show one upload
-// becoming a different statement per destination. All values are fictional sample data.
+// becoming a different statement per destination. The EU values are the ones the agents wrote for the
+// fictional SAMPLE shipment KG/26-27/041 in the live demo's recorded run; the US card shows the same
+// stones as if the parcel went to a (fictional) US buyer instead.
 
 export const VARIANTS = {
   eu: {
     title: 'Due Diligence Statement on Diamond Origin',
     basis: 'Council Regulation (EU) 833/2014, Article 3p',
     rows: [
-      ['Importer', 'Sample Diamant BV'],
+      ['Importer', 'Lumen Diamant BV (SAMPLE)'],
       ['Commodity code', 'CN 7102 39 00'],
-      ['Stones / weight', '12 / 9.84 ct'],
-      ['Country of mining', 'Botswana'],
-      ['KP certificate', 'BW SAMPLE 0114', 'mono'],
+      ['Stones of 0.50 ct and up', '5 / 4.64 ct'],
+      ['Country of mining', 'Botswana, Namibia'],
+      ['KP certificate', 'AE-SAMPLE-0001234', 'mono'],
       ['Russian origin', 'None found'],
     ],
   },
@@ -22,9 +24,9 @@ export const VARIANTS = {
     rows: [
       ['Importer of record', 'Sample Jewelers Inc'],
       ['HTS code', '7102.39.00'],
-      ['Stones / weight', '12 / 9.84 ct'],
-      ['Country of mining', 'Botswana'],
-      ['KP certificate', 'BW SAMPLE 0114', 'mono'],
+      ['Stones of 0.50 ct and up', '5 / 4.64 ct'],
+      ['Country of mining', 'Botswana, Namibia'],
+      ['KP certificate', 'AE-SAMPLE-0001234', 'mono'],
       ['Russian origin', 'None found'],
     ],
   },

@@ -103,11 +103,11 @@ export function initCardLights() {
   }
 }
 
-/** The floating Download pill: shows once you scroll past the hero, hides near the downloads and the footer. */
+/** The floating Download pill: shows once you scroll past the hero, hides near the download buttons further down. */
 export function initDownloadPill() {
   const pill = document.getElementById('dl-pill');
   const hero = document.getElementById('top');
-  const hideNear = [document.getElementById('download'), document.querySelector('.footer')].filter(Boolean);
+  const hideNear = [document.getElementById('download'), document.getElementById('start'), document.querySelector('.footer')].filter(Boolean);
   if (!pill || !hero) return;
   let pastHero = false;
   const near = new Set();
