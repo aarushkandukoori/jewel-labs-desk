@@ -1966,7 +1966,11 @@ describe('rasterize', () => {
     close();
   });
 
-  test('the page answers its own reason, and a crashed, hung or stuck page drawer is replaced', async () => {
+  test('the page answers its own reason, and a crashed, hung or stuck page drawer is replaced', async (t) => {
+    // The drawer's timeout timer is unref'd so the app can quit; keep this test's event loop alive while it waits
+    // for that timeout (Node 22 otherwise ends the loop and cancels the test).
+    const keepAlive = setInterval(() => {}, 50);
+    t.after(() => clearInterval(keepAlive));
     const windows = [];
     let hang = false; // the next page drawings never finish
     class FakeWindow {
