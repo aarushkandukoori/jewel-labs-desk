@@ -25,6 +25,7 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       - name: Build the self-check app (same app, test switches kept)
+        shell: bash # PowerShell splits -c.extraMetadata... into two arguments
         run: npx electron-builder --win --x64 --dir --publish never -c.extraMetadata.selfCheck=true
       - name: Run the packaged app's self-check
         shell: pwsh
