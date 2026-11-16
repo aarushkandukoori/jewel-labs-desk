@@ -1,0 +1,94 @@
+/* Motion: ease cubic-bezier(0.22, 1, 0.36, 1), 240-600 ms. Cursors glide, boxes fade in,
+   dots pulse while an agent works. Everything goes still under prefers-reduced-motion. */
+
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes boxIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@keyframes boxPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--c, #93b4ff) 70%, transparent); }
+  60% { box-shadow: 0 0 0 10px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* status dots pulse softly while an agent works; the colour comes from the dot itself */
+.dot.pulse { animation: dotPulse 1.6s var(--ease-smooth) infinite; }
+@keyframes dotPulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.35); }
+  70% { box-shadow: 0 0 0 6px rgba(255, 255, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+}
+.dot-retrieval.pulse { animation-name: pulseRetrieval; }
+.dot-intake.pulse { animation-name: pulseIntake; }
+.dot-records.pulse { animation-name: pulseRecords; }
+.dot-sanctions.pulse { animation-name: pulseSanctions; }
+.dot-origin.pulse { animation-name: pulseOrigin; }
+.dot-review.pulse { animation-name: pulseReview; }
+.dot-paperwork.pulse { animation-name: pulsePaperwork; }
+.dot-ok.pulse { animation-name: pulseRecords; }
+@keyframes pulseRetrieval { 0% { box-shadow: 0 0 0 0 rgba(147, 180, 255, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(147, 180, 255, 0); } }
+@keyframes pulseIntake { 0% { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(125, 211, 252, 0); } }
+@keyframes pulseRecords { 0% { box-shadow: 0 0 0 0 rgba(134, 239, 172, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(134, 239, 172, 0); } }
+@keyframes pulseSanctions { 0% { box-shadow: 0 0 0 0 rgba(196, 181, 253, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(196, 181, 253, 0); } }
+@keyframes pulseOrigin { 0% { box-shadow: 0 0 0 0 rgba(253, 230, 138, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(253, 230, 138, 0); } }
+@keyframes pulseReview { 0% { box-shadow: 0 0 0 0 rgba(249, 168, 212, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(249, 168, 212, 0); } }
+@keyframes pulsePaperwork { 0% { box-shadow: 0 0 0 0 rgba(253, 186, 116, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(253, 186, 116, 0); } }
+
+.live-dot { animation: livePulse 2.4s var(--ease-smooth) infinite; }
+
+.skel { animation: shimmer 1.6s linear infinite; }
+
+.fbox.pulse { animation: boxPulse 0.9s var(--ease) 2; }
+
+.modal-backdrop, .palette-backdrop { animation: fadeIn 0.24s var(--ease); }
+.modal, .palette { animation: riseIn 0.36s var(--ease); }
+.toast { animation: riseIn 0.32s var(--ease); }
+.view-enter { animation: fadeIn 0.3s var(--ease); }
+.request-card, .result-box { animation: riseIn 0.4s var(--ease); }
+
+.spinner { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.2); border-top-color: currentColor; animation: spin 0.8s linear infinite; display: inline-block; }
+.btn-primary .spinner { border-color: rgba(0, 0, 0, 0.15); border-top-color: #000; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .cursor { transition: none !important; }
+}

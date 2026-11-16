@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Only this folder's script and the vendored pdf.js may run. wasm-unsafe-eval lets pdf.js decode scanned images. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:">
+  <title>Jewel Labs pages</title>
+  <style>
+    /* Used when printing: one PDF page per sheet, no margins added by the app. */
+    @page { margin: 0; }
+    html, body { margin: 0; background: #ffffff; }
+    img.page { display: block; width: 100vw; height: 100vh; object-fit: contain; break-after: page; }
+    img.page:last-child { break-after: auto; }
+  </style>
+</head>
+<body>
+  <script type="module" src="rasterize-page.mjs"></script>
+</body>
+</html>

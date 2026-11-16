@@ -1,0 +1,69 @@
+# Builds the Mac and Windows installers and attaches them to a GitHub release.
+# Runs when a version tag is pushed (git tag v1.0.0 && git push origin v1.0.0), or by hand from the
+# Actions tab. The tag must match the version in package.json.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Create the release once, before the two builds upload to it at the same time.
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        name: Read the version
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+            echo "The tag $GITHUB_REF_NAME does not match package.json ($TAG). Change one of them." >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create the GitHub release if it does not exist yet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "Jewel Labs $TAG" \
+              --notes "Download Jewel Labs for Mac (Apple silicon or Intel) or Windows below."
+          fi
+
+  build:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac --arm64 --x64
+          - os: windows-latest
+            args: --win --x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+        env:
+          # electron-builder downloads its own copy of Electron for each platform; no browser is needed.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Build and upload the installers
+        run: npx electron-builder ${{ matrix.args }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Upload to the release made above even when a build is re-run hours later.
+          EP_GH_IGNORE_TIME: 'true'

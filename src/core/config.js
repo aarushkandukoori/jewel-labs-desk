@@ -7,11 +7,14 @@ export const APP_NAME = 'Jewel Labs';
 export const APP_VERSION = '1.0.0';
 
 // Filled in when the Jewel Labs Supabase project is created (see backend/supabase/README.md).
-export const SUPABASE_URL = process.env.JL_SUPABASE_URL || '';
-export const SUPABASE_ANON_KEY = process.env.JL_SUPABASE_ANON_KEY || '';
+export const SUPABASE_URL = process.env.JL_SUPABASE_URL || 'https://wcywvpnrlllpzlauofeb.supabase.co';
+// Publishable key: designed to be public. Row-level security decides what each signed-in user can read.
+export const SUPABASE_ANON_KEY = process.env.JL_SUPABASE_ANON_KEY || 'sb_publishable_YIYAR-e9u6SgBRHPu_xgEg_5DUk7Yuy';
 
 // OpenAI models, cheapest capable first. The client falls back down the list if a model is not available.
-export const AI_MODELS = ['gpt-5-mini', 'gpt-4.1-mini', 'gpt-4o-mini'];
+export const AI_MODELS = ['gpt-5.4-mini', 'gpt-5-mini', 'gpt-4.1-mini'];
+// reasoning_effort per model family (gpt-5.4 rejects 'minimal'; gpt-5 accepts it; 4.x has none).
+export const AI_REASONING = { 'gpt-5.4-mini': 'none', 'gpt-5-mini': 'minimal' };
 export const AI_MAX_PARALLEL = 3;
 
 export const MAILBOX_POLL_MINUTES = 5;

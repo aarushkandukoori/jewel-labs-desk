@@ -1,0 +1,84 @@
+# How the desktop app is packaged: npx electron-builder --mac  or  --win
+# The release workflow (.github/workflows/release.yml) runs this for every v* tag and uploads the
+# installers to the GitHub release, where the website's download buttons point.
+appId: io.jewellabs.desk
+productName: Jewel Labs
+copyright: Jewel Labs
+
+directories:
+  output: dist
+  buildResources: build
+
+# What goes into the app. Production node_modules are added by electron-builder itself
+# (devDependencies such as electron, playwright and electron-builder are left out).
+files:
+  - src/**
+  - assets/**
+  - samples/sample-shipment/**
+  - package.json
+  - "!**/*.test.js"
+  - "!**/__tests__/**"
+  - "!test/**"
+  - "!site/**"
+  - "!site-dist/**"
+  # Source maps and the pdf.js viewer and type files are not needed to run.
+  - "!**/node_modules/**/*.map"
+  - "!**/node_modules/pdfjs-dist/{web,types}/**"
+
+asar: true
+# Worker threads and WebAssembly files cannot run from inside the app.asar archive, so these stay
+# outside it (in app.asar.unpacked). src/main/main.js points pdf.js at the unpacked wasm folder.
+asarUnpack:
+  - node_modules/tesseract.js/**
+  - node_modules/tesseract.js-core/**
+  - node_modules/@tesseract.js-data/**
+  - node_modules/pdfjs-dist/**
+
+# Everything here is plain JavaScript and WebAssembly: there are no native modules to rebuild.
+npmRebuild: false
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  category: public.app-category.business
+  artifactName: "Jewel-Labs-mac-${arch}.${ext}"
+  icon: build/icon.png
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  # We have no Apple Developer ID. "-" signs the app ad hoc: without any signature, macOS calls a
+  # downloaded Apple silicon app "damaged" and offers no way to open it. With the ad hoc signature
+  # the person can open it from System Settings > Privacy & Security > Open Anyway.
+  identity: "-"
+  extendInfo:
+    NSDocumentsFolderUsageDescription: Jewel Labs reads the shipment papers in the folder you choose.
+    NSDesktopFolderUsageDescription: Jewel Labs reads the shipment papers in the folder you choose.
+    NSDownloadsFolderUsageDescription: Jewel Labs reads the shipment papers in the folder you choose.
+
+dmg:
+  title: "Jewel Labs ${version}"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: "Jewel-Labs-windows-setup.${ext}"
+  icon: build/icon-win.png
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Jewel Labs
+  runAfterFinish: true
+
+publish:
+  provider: github
+  owner: aarushkandukoori
+  repo: jewel-labs-desk
+  releaseType: release

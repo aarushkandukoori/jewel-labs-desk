@@ -1,0 +1,2973 @@
+{
+  "about": "Answer key for the SAMPLE shipment in samples/sample-shipment. Every company, person, lab and number is fictional (Jewel Labs demo).",
+  "generatedBy": "node samples/generate.js",
+  "version": 1,
+  "howToCompare": {
+    "paths": "\"path\" is relative to samples/sample-shipment. \"inside\" names a file inside that zip or email, as ingest names it.",
+    "fields": "Values are normalized like the reading agent output: dates yyyy-mm-dd, carats and money as plain decimals without separators (5.1, 37274.5), weights \"<number> <unit>\", HS codes as digits. Compare case-insensitively and ignore spaces and punctuation. \"printed\" is the same value as printed on the page.",
+    "alternatives": "Where two field keys fit (the importer on a KP certificate can be consignee.name or buyer.name), \"alternatives\" lists keys that also count.",
+    "lines": "One entry per printed row, in order. Match on reportNumber when there is one, else on lineNo. Compare carat as a number within 0.005, colour and clarity case-insensitively, shape by shapeKey (Round, Oval, Princess, Emerald, Cushion, Pear).",
+    "checks": "expectedChecks use the codes in src/core/rules/compliance.js. expect \"absent\" means no such requirement should be raised."
+  },
+  "house": {
+    "name": "Kavya Gems LLP (SAMPLE)",
+    "address": "Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India",
+    "country": "India",
+    "iec": "SAMPLE00012",
+    "email": "ops@kavya-gems.example.com",
+    "phone": "+91 555 010 0012"
+  },
+  "deliveryOrder": [
+    {
+      "channel": "email",
+      "path": "email",
+      "note": "The buyer's purchase order arrives first (9 Nov) and asks for the EU statement."
+    },
+    {
+      "channel": "whatsapp",
+      "path": "whatsapp",
+      "note": "Ravi sends the invoice, reports (one as a phone photo), the KP certificate and the supplier invoice (10 to 13 Nov). He promises the packing list and types the stone list instead."
+    },
+    {
+      "channel": "drop",
+      "path": "drop",
+      "note": "The house drops the shipping bill, air waybill, the scanned insurance certificate and the factory record, plus the papers of shipments B and C."
+    },
+    {
+      "channel": "later",
+      "path": "later",
+      "note": "The packing list arrives last and closes the open question for shipment A. Add it after the first run."
+    }
+  ],
+  "shipments": {
+    "A": {
+      "ref": "KG/26-27/041",
+      "direction": "export",
+      "exporter": "Kavya Gems LLP (SAMPLE)",
+      "consignee": "Lumen Diamant BV (SAMPLE)",
+      "destination": "Belgium",
+      "destinationCode": "BE",
+      "regime": "EU",
+      "goods": {
+        "nature": "natural",
+        "form": "polished",
+        "hsCodes": [
+          "71023910"
+        ]
+      },
+      "totals": {
+        "pieces": 6,
+        "carats": 5.1,
+        "value": 37274.5,
+        "currency": "USD"
+      },
+      "refs": {
+        "invoiceNumber": "KG/26-27/041",
+        "invoiceDate": "2026-11-10",
+        "poNumber": "LDB-7781",
+        "shippingBillNumber": "1234567",
+        "leoDate": "2026-11-12",
+        "hawb": "99000012345",
+        "mawb": "176-12345678",
+        "flights": [
+          "EK 501",
+          "EK 183"
+        ],
+        "route": "BOM-DXB-BRU"
+      },
+      "required": [
+        "export_pack",
+        "eu_dds"
+      ],
+      "notRequired": [
+        "us_cbp_certificate",
+        "g7_gf_declaration"
+      ],
+      "stones": [
+        {
+          "line": 1,
+          "reportNumber": "7391020001",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Round",
+          "carat": 1.02,
+          "color": "D",
+          "clarity": "VVS1",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 15096
+        },
+        {
+          "line": 2,
+          "reportNumber": "7391020002",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Oval",
+          "carat": 0.7,
+          "caratOnInvoice": 0.71,
+          "color": "F",
+          "clarity": "VS1",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 3301.5
+        },
+        {
+          "line": 3,
+          "reportNumber": "7391020003",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Princess",
+          "carat": 0.52,
+          "color": "G",
+          "clarity": "VS2",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 1222
+        },
+        {
+          "line": 4,
+          "reportNumber": null,
+          "lab": null,
+          "shape": "Round",
+          "carat": 0.45,
+          "color": "E",
+          "clarity": "SI1",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 945
+        },
+        {
+          "line": 5,
+          "reportNumber": "7391020005",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Emerald",
+          "carat": 1.5,
+          "color": "H",
+          "clarity": "VVS2",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 11850
+        },
+        {
+          "line": 6,
+          "reportNumber": "7391020006",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Cushion",
+          "carat": 0.9,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 4860
+        }
+      ],
+      "history": {
+        "countriesOfMining": [
+          "Botswana",
+          "Namibia"
+        ],
+        "kpCertificate": "AE-SAMPLE-0001234",
+        "kpExportingCountry": "United Arab Emirates",
+        "roughSupplier": "Sample Rough Trading DMCC (SAMPLE)",
+        "supplierInvoice": "SRT-2026-0315",
+        "roughLot": "R-0412",
+        "chain": [
+          {
+            "step": "mined",
+            "detail": "Botswana and Namibia, per KP certificate AE-SAMPLE-0001234",
+            "file": "A-kp"
+          },
+          {
+            "step": "rough_purchased",
+            "at": "2026-03-15",
+            "detail": "Lot R-0412 from Sample Rough Trading DMCC (SAMPLE) on invoice SRT-2026-0315",
+            "file": "A-supplier-invoice"
+          },
+          {
+            "step": "cut_and_polished",
+            "at": "2026-07-08",
+            "detail": "From rough lot R-0412",
+            "file": "A-factory-record"
+          },
+          {
+            "step": "graded",
+            "detail": "Northbridge Gem Laboratory (SAMPLE) reports, July 2026",
+            "file": "A-report-*"
+          },
+          {
+            "step": "invoiced",
+            "at": "2026-11-10",
+            "detail": "Invoice KG/26-27/041 to Lumen Diamant BV (SAMPLE)",
+            "file": "A-invoice"
+          },
+          {
+            "step": "packed",
+            "at": "2026-11-11",
+            "detail": "Packing list (arrives late)",
+            "file": "A-packing-list"
+          },
+          {
+            "step": "cleared_for_export",
+            "at": "2026-11-12",
+            "detail": "Shipping bill 1234567, Let Export Order 12/11/2026",
+            "file": "A-shipping-bill"
+          },
+          {
+            "step": "flown",
+            "at": "2026-11-13",
+            "detail": "HAWB 99000012345, MAWB 176-12345678, EK 501 BOM-DXB then EK 183 DXB-BRU",
+            "file": "A-air-waybill"
+          },
+          {
+            "step": "statement_drafted",
+            "detail": "EU Due Diligence Statement on Diamond Origin, ready to sign by the importer"
+          }
+        ],
+        "stoneWithoutReport": {
+          "line": 4,
+          "carat": 0.45,
+          "why": "below 0.50 ct, so no grading report and no EU statement line requirement"
+        }
+      },
+      "expectedChecks": [
+        {
+          "code": "stone_details",
+          "severity": "warn",
+          "issue": "carat_mismatch",
+          "reportNumber": "7391020002",
+          "values": {
+            "commercial_invoice": 0.71,
+            "packing_list": 0.71,
+            "lab_report": 0.7,
+            "factory_record": 0.7
+          },
+          "note": "Deliberate: the invoice (and the packing list copied from it) say 0.71 ct, the lab report and the factory record say 0.70 ct. Expect a one-line question."
+        },
+        {
+          "code": "eu_dds_required",
+          "severity": "info",
+          "expect": "required",
+          "paper": "eu_dds",
+          "note": "Natural polished stones of 0.50 ct and up going to Belgium. The importer signs it."
+        },
+        {
+          "code": "required_documents",
+          "severity": "warn",
+          "missing": [
+            "packing_list"
+          ],
+          "until": "later/Packing list KG-26-27-041.xlsx",
+          "note": "Until the late packing list is added the agents should ask for it (Ravi said it is coming) or draft one from the stone list typed in the chat. Once it is added this check passes."
+        },
+        {
+          "code": "kp_present",
+          "severity": "pass",
+          "kpCertificate": "AE-SAMPLE-0001234"
+        },
+        {
+          "code": "kp_countries_listed",
+          "severity": "pass",
+          "countries": [
+            "BW",
+            "NA"
+          ]
+        },
+        {
+          "code": "russia_anywhere",
+          "severity": "pass"
+        },
+        {
+          "code": "lab_reports_for_half_carat",
+          "severity": "pass",
+          "note": "All five stones of 0.50 ct and up have reports; the 0.45 ct stone needs none."
+        },
+        {
+          "code": "nature_consistency",
+          "severity": "pass"
+        },
+        {
+          "code": "dates_order",
+          "severity": "pass",
+          "note": "Invoice 10 Nov, LEO 12 Nov, flight 13 Nov."
+        }
+      ],
+      "files": [
+        "A-chat",
+        "A-invoice",
+        "A-report-7391020001",
+        "A-report-7391020002",
+        "A-report-7391020003",
+        "A-report-7391020006",
+        "A-report-7391020005-photo",
+        "A-kp",
+        "A-supplier-invoice",
+        "A-email",
+        "A-purchase-order",
+        "A-shipping-bill",
+        "A-air-waybill",
+        "A-insurance",
+        "A-factory-record",
+        "A-packing-list"
+      ]
+    },
+    "B": {
+      "ref": "KG/26-27/042",
+      "direction": "export",
+      "exporter": "Kavya Gems LLP (SAMPLE)",
+      "consignee": "Mirage Crystals FZCO (SAMPLE)",
+      "destination": "United Arab Emirates",
+      "destinationCode": "AE",
+      "regime": "OTHER",
+      "goods": {
+        "nature": "lab-grown",
+        "form": "polished",
+        "hsCodes": [
+          "71049120"
+        ],
+        "growthMethod": "CVD"
+      },
+      "totals": {
+        "pieces": 200,
+        "carats": 157.55,
+        "value": 12557.2,
+        "currency": "USD"
+      },
+      "lots": [
+        {
+          "lot": 1,
+          "pieces": 120,
+          "carats": 96.4,
+          "lines": [
+            1,
+            2
+          ]
+        },
+        {
+          "lot": 2,
+          "pieces": 80,
+          "carats": 61.15,
+          "lines": [
+            3,
+            4
+          ]
+        }
+      ],
+      "refs": {
+        "invoiceNumber": "KG/26-27/042",
+        "invoiceDate": "2026-11-11",
+        "shippingBillNumber": "1234602",
+        "leoDate": "2026-11-13",
+        "hawb": "99000012367",
+        "mawb": "176-12345690",
+        "flights": [
+          "EK 501"
+        ],
+        "route": "BOM-DXB"
+      },
+      "required": [
+        "export_pack"
+      ],
+      "notRequired": [
+        "eu_dds",
+        "us_cbp_certificate",
+        "g7_gf_declaration"
+      ],
+      "stones": [
+        {
+          "line": 1,
+          "reportNumber": null,
+          "lab": null,
+          "shape": "Round",
+          "carat": 94.88,
+          "color": "E-G",
+          "clarity": "VS1-VS2",
+          "pieces": 119,
+          "growth": "lab-grown",
+          "amount": 8064.8
+        },
+        {
+          "line": 2,
+          "reportNumber": "7392040011",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Round",
+          "carat": 1.52,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "growth": "lab-grown",
+          "amount": 182.4
+        },
+        {
+          "line": 3,
+          "reportNumber": null,
+          "lab": null,
+          "shape": "Oval",
+          "carat": 59.97,
+          "color": "F-H",
+          "clarity": "VS2-SI1",
+          "pieces": 79,
+          "growth": "lab-grown",
+          "amount": 4197.9
+        },
+        {
+          "line": 4,
+          "reportNumber": "7392040012",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Oval",
+          "carat": 1.18,
+          "color": "F",
+          "clarity": "VS2",
+          "pieces": 1,
+          "growth": "lab-grown",
+          "amount": 112.1
+        }
+      ],
+      "expectedChecks": [
+        {
+          "code": "eu_dds_required",
+          "expect": "absent",
+          "note": "Not going to the EU, and lab-grown: no EU Due Diligence Statement."
+        },
+        {
+          "code": "us_cbp_cert",
+          "expect": "absent"
+        },
+        {
+          "code": "goods_class",
+          "severity": "pass",
+          "nature": "lab-grown",
+          "form": "polished"
+        },
+        {
+          "code": "nature_consistency",
+          "severity": "pass"
+        },
+        {
+          "code": "required_documents",
+          "severity": "warn",
+          "missing": [
+            "packing_list"
+          ],
+          "note": "The samples hold no packing list for shipment B."
+        }
+      ],
+      "files": [
+        "B-invoice",
+        "B-report-7392040011",
+        "B-report-7392040012",
+        "B-shipping-bill",
+        "B-air-waybill"
+      ]
+    },
+    "C": {
+      "ref": "KG/26-27/043",
+      "direction": "export",
+      "exporter": "Kavya Gems LLP (SAMPLE)",
+      "consignee": "Hudson Fine Jewels Inc. (SAMPLE)",
+      "destination": "United States",
+      "destinationCode": "US",
+      "regime": "US",
+      "goods": {
+        "nature": "natural",
+        "form": "polished",
+        "hsCodes": [
+          "71023910"
+        ]
+      },
+      "totals": {
+        "pieces": 2,
+        "carats": 2.01,
+        "value": 13362,
+        "currency": "USD"
+      },
+      "refs": {
+        "invoiceNumber": "KG/26-27/043",
+        "invoiceDate": "2026-11-12",
+        "hawb": "99000012389",
+        "mawb": "176-12345701",
+        "flights": [
+          "EK 501",
+          "EK 201"
+        ],
+        "route": "BOM-DXB-JFK"
+      },
+      "required": [
+        "export_pack",
+        "us_cbp_certificate"
+      ],
+      "notRequired": [
+        "eu_dds",
+        "g7_gf_declaration"
+      ],
+      "stones": [
+        {
+          "line": 1,
+          "reportNumber": "7391030001",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Round",
+          "carat": 1.21,
+          "color": "F",
+          "clarity": "VS2",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 9922
+        },
+        {
+          "line": 2,
+          "reportNumber": "7391030002",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Pear",
+          "carat": 0.8,
+          "color": "G",
+          "clarity": "VS1",
+          "pieces": 1,
+          "growth": "natural",
+          "amount": 3440
+        }
+      ],
+      "expectedChecks": [
+        {
+          "code": "us_cbp_cert",
+          "severity": "info",
+          "expect": "required",
+          "paper": "us_cbp_certificate",
+          "note": "Natural stones of 0.50 ct and up into the US. The US importer gives it to its customs broker with the entry."
+        },
+        {
+          "code": "eu_dds_required",
+          "expect": "absent"
+        },
+        {
+          "code": "required_documents",
+          "severity": "warn",
+          "missing": [
+            "packing_list",
+            "shipping_bill"
+          ],
+          "note": "The samples hold only the invoice, two reports and the air waybill for shipment C."
+        },
+        {
+          "code": "kp_present",
+          "severity": "warn",
+          "note": "No KP certificate or rough papers are linked to shipment C."
+        },
+        {
+          "code": "lab_reports_for_half_carat",
+          "severity": "pass"
+        }
+      ],
+      "files": [
+        "C-invoice",
+        "C-report-7391030001",
+        "C-report-7391030002",
+        "C-air-waybill"
+      ]
+    }
+  },
+  "files": [
+    {
+      "id": "A-chat",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "_chat.txt",
+      "kind": "chat",
+      "mime": "text/plain",
+      "docType": "whatsapp_chat",
+      "chat": {
+        "title": "Kavya Gems Export Desk",
+        "format": "iPhone export, dates day first (10/11/26), 12-hour times",
+        "authors": [
+          "Ravi (Kavya Gems)",
+          "Jewel Labs desk"
+        ],
+        "from": "2026-11-10",
+        "to": "2026-11-13",
+        "messages": 27,
+        "systemNotes": 4,
+        "attachments": [
+          {
+            "name": "00000008-Invoice KG-26-27-041.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T11:41:15"
+          },
+          {
+            "name": "00000010-7391020001.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T11:44:58"
+          },
+          {
+            "name": "00000011-7391020002.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T11:44:58"
+          },
+          {
+            "name": "00000012-7391020003.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T11:44:59"
+          },
+          {
+            "name": "00000013-7391020006.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T11:45:00"
+          },
+          {
+            "name": "00000015-PHOTO-2026-11-10-11-52-18.jpg",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T11:52:18"
+          },
+          {
+            "name": "00000019-KP AE-SAMPLE-0001234.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T12:20:19"
+          },
+          {
+            "name": "00000020-Supplier invoice SRT-2026-0315.pdf",
+            "sentBy": "Ravi (Kavya Gems)",
+            "at": "2026-11-10T12:20:19"
+          }
+        ]
+      },
+      "expectedReading": {
+        "refs": [
+          "KG/26-27/041",
+          "AE-SAMPLE-0001234",
+          "SRT-2026-0315",
+          "1234567"
+        ],
+        "relevant": [
+          {
+            "at": "2026-11-10T11:41:09",
+            "author": "Ravi (Kavya Gems)",
+            "text": "Invoice KG/26-27/041 for Lumen Diamant Antwerp. 6 stones"
+          },
+          {
+            "at": "2026-11-10T11:47:31",
+            "author": "Ravi (Kavya Gems)",
+            "text": "Emerald one report is in the office safe. Sending photo"
+          },
+          {
+            "at": "2026-11-10T11:55:40",
+            "author": "Ravi (Kavya Gems)",
+            "text": "Yes sir, below half carat, no report"
+          },
+          {
+            "at": "2026-11-10T12:20:11",
+            "author": "Ravi (Kavya Gems)",
+            "text": "KP of the rough and Dubai supplier bill"
+          },
+          {
+            "at": "2026-11-10T12:31:05",
+            "author": "Ravi (Kavya Gems)",
+            "text": "packing list is coming tomorrow"
+          },
+          {
+            "at": "2026-11-11T10:13:10",
+            "author": "Ravi (Kavya Gems)",
+            "text": "Accountant is on leave, packing list sheet not ready. Typing the stones here"
+          },
+          {
+            "at": "2026-11-11T10:16:52",
+            "author": "Ravi (Kavya Gems)",
+            "text": "KG/26-27/041 stones\n1) RD 1.02 D VVS1 7391020001\n2) OV 0.71 F VS1 7391020002\n3) PR 0.52 G VS2 7391020003\n4) RD 0.45 E SI1 no report\n5) EM 1.50 H VVS2 7391020005\n6) CU 0.90 E VS1 7391020006\ntotal 6 pcs 5.10 cts"
+          },
+          {
+            "at": "2026-11-12T18:42:19",
+            "author": "Ravi (Kavya Gems)",
+            "text": "Shipping bill 1234567 done, LEO today. AWB tomorrow"
+          },
+          {
+            "at": "2026-11-13T09:05:51",
+            "author": "Ravi (Kavya Gems)",
+            "text": "Parcel left on EK 501 this morning"
+          }
+        ],
+        "deskAsked": [
+          "Good morning Ravi. Please send the papers for the Antwerp parcel when ready.",
+          "Thanks. Packing list also please"
+        ],
+        "promised": [
+          {
+            "paper": "packing_list",
+            "text": "packing list is coming tomorrow",
+            "arrives": "later/Packing list KG-26-27-041.xlsx"
+          }
+        ],
+        "typedStoneList": {
+          "ref": "KG/26-27/041",
+          "printed": [
+            "1) RD 1.02 D VVS1 7391020001",
+            "2) OV 0.71 F VS1 7391020002",
+            "3) PR 0.52 G VS2 7391020003",
+            "4) RD 0.45 E SI1 no report",
+            "5) EM 1.50 H VVS2 7391020005",
+            "6) CU 0.90 E VS1 7391020006"
+          ],
+          "lines": [
+            {
+              "lineNo": 1,
+              "reportNumber": "7391020001",
+              "shapeKey": "Round",
+              "carat": 1.02,
+              "color": "D",
+              "clarity": "VVS1",
+              "pieces": 1
+            },
+            {
+              "lineNo": 2,
+              "reportNumber": "7391020002",
+              "shapeKey": "Oval",
+              "carat": 0.71,
+              "color": "F",
+              "clarity": "VS1",
+              "pieces": 1
+            },
+            {
+              "lineNo": 3,
+              "reportNumber": "7391020003",
+              "shapeKey": "Princess",
+              "carat": 0.52,
+              "color": "G",
+              "clarity": "VS2",
+              "pieces": 1
+            },
+            {
+              "lineNo": 4,
+              "reportNumber": null,
+              "shapeKey": "Round",
+              "carat": 0.45,
+              "color": "E",
+              "clarity": "SI1",
+              "pieces": 1
+            },
+            {
+              "lineNo": 5,
+              "reportNumber": "7391020005",
+              "shapeKey": "Emerald",
+              "carat": 1.5,
+              "color": "H",
+              "clarity": "VVS2",
+              "pieces": 1
+            },
+            {
+              "lineNo": 6,
+              "reportNumber": "7391020006",
+              "shapeKey": "Cushion",
+              "carat": 0.9,
+              "color": "E",
+              "clarity": "VS1",
+              "pieces": 1
+            }
+          ]
+        }
+      },
+      "lines": [],
+      "declarations": []
+    },
+    {
+      "id": "A-invoice",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000008-Invoice KG-26-27-041.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "commercial_invoice",
+      "fields": {
+        "doc.number": {
+          "value": "KG/26-27/041"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/041"
+        },
+        "invoice.date": {
+          "value": "2026-11-10",
+          "printed": "10/11/2026"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "exporter.country": {
+          "value": "India"
+        },
+        "exporter.taxId": {
+          "value": "SAMPLE00012"
+        },
+        "consignee.name": {
+          "value": "Lumen Diamant BV (SAMPLE)"
+        },
+        "consignee.address": {
+          "value": "Hoveniersstraat 99, 2018 Antwerpen, Belgium"
+        },
+        "consignee.country": {
+          "value": "Belgium"
+        },
+        "goods.description": {
+          "value": "Natural cut and polished diamonds"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "goods.form": {
+          "value": "polished"
+        },
+        "goods.hsCode": {
+          "value": "71023910"
+        },
+        "goods.totalPieces": {
+          "value": "6"
+        },
+        "goods.totalCarats": {
+          "value": "5.1",
+          "printed": "5.10"
+        },
+        "goods.totalValue": {
+          "value": "37274.5",
+          "printed": "37,274.50"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.incoterm": {
+          "value": "CIF",
+          "printed": "CIF Antwerp"
+        },
+        "goods.countryOfOrigin": {
+          "value": "India"
+        },
+        "goods.destinationCountry": {
+          "value": "Belgium"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "Brussels (BRU)"
+        },
+        "payment.terms": {
+          "value": "30 days from invoice date by T/T"
+        },
+        "po.number": {
+          "value": "LDB-7781"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020001",
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 1.02,
+          "color": "D",
+          "clarity": "VVS1",
+          "pieces": 1,
+          "rate": 14800,
+          "amount": 15096,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 2,
+          "reportNumber": "7391020002",
+          "shape": "Oval",
+          "shapeKey": "Oval",
+          "carat": 0.71,
+          "color": "F",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 4650,
+          "amount": 3301.5,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 3,
+          "reportNumber": "7391020003",
+          "shape": "Princess",
+          "shapeKey": "Princess",
+          "carat": 0.52,
+          "color": "G",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": 2350,
+          "amount": 1222,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 4,
+          "reportNumber": null,
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 0.45,
+          "color": "E",
+          "clarity": "SI1",
+          "pieces": 1,
+          "rate": 2100,
+          "amount": 945,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 5,
+          "reportNumber": "7391020005",
+          "shape": "Emerald",
+          "shapeKey": "Emerald",
+          "carat": 1.5,
+          "color": "H",
+          "clarity": "VVS2",
+          "pieces": 1,
+          "rate": 7900,
+          "amount": 11850,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 6,
+          "reportNumber": "7391020006",
+          "shape": "Cushion",
+          "shapeKey": "Cushion",
+          "carat": 0.9,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 5400,
+          "amount": 4860,
+          "growth": "natural"
+        }
+      ],
+      "declarations": [
+        "The diamonds herein invoiced have been purchased from legitimate sources not involved in funding conflict, in compliance with United Nations Security Council Resolutions and corresponding national laws. The seller hereby guarantees that these diamonds are conflict free and confirms adherence to the WDC SoW Guidelines.",
+        "We hereby declare that the diamonds herein invoiced have not been mined, processed or produced in the Russian Federation and are not of Russian origin.",
+        "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."
+      ]
+    },
+    {
+      "id": "A-report-7391020001",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000010-7391020001.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391020001"
+        },
+        "doc.date": {
+          "value": "2026-07-14",
+          "printed": "14 July 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391020001"
+        },
+        "lab.reportDate": {
+          "value": "2026-07-14",
+          "printed": "14 July 2026"
+        },
+        "lab.shape": {
+          "value": "Round Brilliant"
+        },
+        "lab.carat": {
+          "value": "1.02",
+          "printed": "1.02 carat"
+        },
+        "lab.color": {
+          "value": "D"
+        },
+        "lab.clarity": {
+          "value": "VVS1"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Excellent"
+        },
+        "lab.fluorescence": {
+          "value": "None"
+        },
+        "lab.measurements": {
+          "value": "6.43 - 6.46 x 3.99 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391020001"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "lab.cut": {
+          "value": "Excellent"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020001",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Round Brilliant",
+          "shapeKey": "Round",
+          "carat": 1.02,
+          "color": "D",
+          "clarity": "VVS1",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "A-report-7391020002",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000011-7391020002.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391020002"
+        },
+        "doc.date": {
+          "value": "2026-07-14",
+          "printed": "14 July 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391020002"
+        },
+        "lab.reportDate": {
+          "value": "2026-07-14",
+          "printed": "14 July 2026"
+        },
+        "lab.shape": {
+          "value": "Oval Brilliant"
+        },
+        "lab.carat": {
+          "value": "0.7",
+          "printed": "0.70 carat"
+        },
+        "lab.color": {
+          "value": "F"
+        },
+        "lab.clarity": {
+          "value": "VS1"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Very Good"
+        },
+        "lab.fluorescence": {
+          "value": "Faint"
+        },
+        "lab.measurements": {
+          "value": "7.12 x 5.04 x 3.11 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391020002"
+        },
+        "goods.nature": {
+          "value": "natural"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020002",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Oval Brilliant",
+          "shapeKey": "Oval",
+          "carat": 0.7,
+          "color": "F",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "A-report-7391020003",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000012-7391020003.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391020003"
+        },
+        "doc.date": {
+          "value": "2026-07-16",
+          "printed": "16 July 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391020003"
+        },
+        "lab.reportDate": {
+          "value": "2026-07-16",
+          "printed": "16 July 2026"
+        },
+        "lab.shape": {
+          "value": "Princess Cut"
+        },
+        "lab.carat": {
+          "value": "0.52",
+          "printed": "0.52 carat"
+        },
+        "lab.color": {
+          "value": "G"
+        },
+        "lab.clarity": {
+          "value": "VS2"
+        },
+        "lab.polish": {
+          "value": "Very Good"
+        },
+        "lab.symmetry": {
+          "value": "Very Good"
+        },
+        "lab.fluorescence": {
+          "value": "None"
+        },
+        "lab.measurements": {
+          "value": "4.48 x 4.41 x 3.30 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391020003"
+        },
+        "goods.nature": {
+          "value": "natural"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020003",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Princess Cut",
+          "shapeKey": "Princess",
+          "carat": 0.52,
+          "color": "G",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "A-report-7391020006",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000013-7391020006.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391020006"
+        },
+        "doc.date": {
+          "value": "2026-07-21",
+          "printed": "21 July 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391020006"
+        },
+        "lab.reportDate": {
+          "value": "2026-07-21",
+          "printed": "21 July 2026"
+        },
+        "lab.shape": {
+          "value": "Cushion Modified Brilliant"
+        },
+        "lab.carat": {
+          "value": "0.9",
+          "printed": "0.90 carat"
+        },
+        "lab.color": {
+          "value": "E"
+        },
+        "lab.clarity": {
+          "value": "VS1"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Very Good"
+        },
+        "lab.fluorescence": {
+          "value": "Medium Blue"
+        },
+        "lab.measurements": {
+          "value": "5.71 x 5.30 x 3.48 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391020006"
+        },
+        "goods.nature": {
+          "value": "natural"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020006",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Cushion Modified Brilliant",
+          "shapeKey": "Cushion",
+          "carat": 0.9,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "A-report-7391020005-photo",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000015-PHOTO-2026-11-10-11-52-18.jpg",
+      "kind": "image",
+      "mime": "image/jpeg",
+      "textLayer": false,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391020005"
+        },
+        "doc.date": {
+          "value": "2026-07-21",
+          "printed": "21 July 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391020005"
+        },
+        "lab.reportDate": {
+          "value": "2026-07-21",
+          "printed": "21 July 2026"
+        },
+        "lab.shape": {
+          "value": "Emerald Cut"
+        },
+        "lab.carat": {
+          "value": "1.5",
+          "printed": "1.50 carat"
+        },
+        "lab.color": {
+          "value": "H"
+        },
+        "lab.clarity": {
+          "value": "VVS2"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Excellent"
+        },
+        "lab.fluorescence": {
+          "value": "None"
+        },
+        "lab.measurements": {
+          "value": "7.85 x 5.62 x 3.71 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391020005"
+        },
+        "goods.nature": {
+          "value": "natural"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020005",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Emerald Cut",
+          "shapeKey": "Emerald",
+          "carat": 1.5,
+          "color": "H",
+          "clarity": "VVS2",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "A-kp",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000019-KP AE-SAMPLE-0001234.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "kp_certificate",
+      "fields": {
+        "doc.number": {
+          "value": "AE-SAMPLE-0001234"
+        },
+        "doc.date": {
+          "value": "2026-03-02",
+          "printed": "02/03/2026"
+        },
+        "kp.certificateNumber": {
+          "value": "AE-SAMPLE-0001234"
+        },
+        "kp.exportingCountry": {
+          "value": "United Arab Emirates"
+        },
+        "kp.importingCountry": {
+          "value": "India"
+        },
+        "kp.countriesOfMining": {
+          "value": "Botswana, Namibia"
+        },
+        "kp.issueDate": {
+          "value": "2026-03-02",
+          "printed": "02/03/2026"
+        },
+        "kp.expiryDate": {
+          "value": "2026-04-01",
+          "printed": "01/04/2026"
+        },
+        "kp.carats": {
+          "value": "12.8",
+          "printed": "12.80"
+        },
+        "kp.value": {
+          "value": "22400",
+          "printed": "22,400.00"
+        },
+        "exporter.name": {
+          "value": "Sample Rough Trading DMCC (SAMPLE)"
+        },
+        "consignee.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "goods.hsCode": {
+          "value": "710231",
+          "printed": "7102.31"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "goods.form": {
+          "value": "rough"
+        }
+      },
+      "alternatives": {
+        "consignee.name": [
+          "buyer.name"
+        ],
+        "exporter.name": [
+          "supplier.name"
+        ]
+      },
+      "lines": [],
+      "declarations": [
+        "The rough diamonds in this shipment have been handled in accordance with the provisions of the Kimberley Process Certification Scheme for rough diamonds."
+      ]
+    },
+    {
+      "id": "A-supplier-invoice",
+      "shipment": "A",
+      "channel": "whatsapp",
+      "path": "whatsapp/WhatsApp Chat - Kavya Gems Export Desk.zip",
+      "inside": "00000020-Supplier invoice SRT-2026-0315.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "supplier_invoice",
+      "fields": {
+        "doc.number": {
+          "value": "SRT-2026-0315"
+        },
+        "invoice.number": {
+          "value": "SRT-2026-0315"
+        },
+        "invoice.date": {
+          "value": "2026-03-15",
+          "printed": "15/03/2026"
+        },
+        "supplier.name": {
+          "value": "Sample Rough Trading DMCC (SAMPLE)"
+        },
+        "supplier.country": {
+          "value": "United Arab Emirates"
+        },
+        "consignee.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "kp.certificateNumber": {
+          "value": "AE-SAMPLE-0001234"
+        },
+        "kp.countriesOfMining": {
+          "value": "Botswana, Namibia"
+        },
+        "goods.hsCode": {
+          "value": "71023100"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "goods.form": {
+          "value": "rough"
+        },
+        "goods.totalPieces": {
+          "value": "14"
+        },
+        "goods.totalCarats": {
+          "value": "12.8",
+          "printed": "12.80"
+        },
+        "goods.totalValue": {
+          "value": "22400",
+          "printed": "22,400.00"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.incoterm": {
+          "value": "CIF",
+          "printed": "CIF Mumbai"
+        }
+      },
+      "alternatives": {
+        "supplier.name": [
+          "exporter.name"
+        ],
+        "consignee.name": [
+          "buyer.name"
+        ]
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": null,
+          "description": "Natural rough diamonds, gem quality, sawable",
+          "lot": "R-0412",
+          "carat": 12.8,
+          "pieces": 14,
+          "rate": 1750,
+          "amount": 22400,
+          "growth": "natural"
+        }
+      ],
+      "declarations": [
+        "The diamonds herein invoiced have been purchased from legitimate sources not involved in funding conflict, in compliance with United Nations Security Council Resolutions and corresponding national laws. The seller hereby guarantees that these diamonds are conflict free and confirms adherence to the WDC SoW Guidelines.",
+        "We hereby declare that the diamonds herein invoiced have not been mined, processed or produced in the Russian Federation and are not of Russian origin.",
+        "The rough diamonds in this shipment have been handled in accordance with the provisions of the Kimberley Process Certification Scheme for rough diamonds."
+      ]
+    },
+    {
+      "id": "A-email",
+      "shipment": "A",
+      "channel": "email",
+      "path": "email/PO LDB-7781 from Lumen Diamant.eml",
+      "kind": "email",
+      "mime": "message/rfc822",
+      "docType": "email",
+      "email": {
+        "from": "buying@lumen-diamant.example.com",
+        "to": "ops@kavya-gems.example.com",
+        "subject": "PO LDB-7781 from Lumen Diamant",
+        "date": "2026-11-09T09:14:22.000Z",
+        "refs": [
+          "LDB-7781",
+          "KG/26-27/041"
+        ],
+        "request": "Send the signed EU Due Diligence Statement on Diamond Origin with the parcel."
+      },
+      "expectedReading": {
+        "refs": [
+          "LDB-7781",
+          "KG/26-27/041"
+        ],
+        "requests": [
+          "Send the signed EU Due Diligence Statement on Diamond Origin with the parcel."
+        ]
+      },
+      "lines": [],
+      "declarations": []
+    },
+    {
+      "id": "A-purchase-order",
+      "shipment": "A",
+      "channel": "email",
+      "path": "email/PO LDB-7781 from Lumen Diamant.eml",
+      "inside": "PO LDB-7781.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "purchase_order",
+      "fields": {
+        "doc.number": {
+          "value": "LDB-7781"
+        },
+        "po.number": {
+          "value": "LDB-7781"
+        },
+        "doc.date": {
+          "value": "2026-11-09",
+          "printed": "09/11/2026"
+        },
+        "buyer.name": {
+          "value": "Lumen Diamant BV (SAMPLE)"
+        },
+        "supplier.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "goods.totalCarats": {
+          "value": "5.1",
+          "printed": "5.10"
+        },
+        "goods.totalValue": {
+          "value": "37274.5",
+          "printed": "37,274.50"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.incoterm": {
+          "value": "CIF",
+          "printed": "CIF Antwerp"
+        }
+      },
+      "alternatives": {
+        "buyer.name": [
+          "consignee.name"
+        ]
+      },
+      "refs": [
+        "KG/26-27/041"
+      ],
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020001",
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 1.02,
+          "color": "D",
+          "clarity": "VVS1",
+          "pieces": 1,
+          "rate": 14800,
+          "amount": 15096,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 2,
+          "reportNumber": "7391020002",
+          "shape": "Oval",
+          "shapeKey": "Oval",
+          "carat": 0.71,
+          "color": "F",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 4650,
+          "amount": 3301.5,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 3,
+          "reportNumber": "7391020003",
+          "shape": "Princess",
+          "shapeKey": "Princess",
+          "carat": 0.52,
+          "color": "G",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": 2350,
+          "amount": 1222,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 4,
+          "reportNumber": null,
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 0.45,
+          "color": "E",
+          "clarity": "SI1",
+          "pieces": 1,
+          "rate": 2100,
+          "amount": 945,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 5,
+          "reportNumber": "7391020005",
+          "shape": "Emerald",
+          "shapeKey": "Emerald",
+          "carat": 1.5,
+          "color": "H",
+          "clarity": "VVS2",
+          "pieces": 1,
+          "rate": 7900,
+          "amount": 11850,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 6,
+          "reportNumber": "7391020006",
+          "shape": "Cushion",
+          "shapeKey": "Cushion",
+          "carat": 0.9,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 5400,
+          "amount": 4860,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "A-shipping-bill",
+      "shipment": "A",
+      "channel": "drop",
+      "path": "drop/Shipping bill 1234567.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "shipping_bill",
+      "fields": {
+        "doc.number": {
+          "value": "1234567"
+        },
+        "shippingBill.number": {
+          "value": "1234567"
+        },
+        "shippingBill.date": {
+          "value": "2026-11-12",
+          "printed": "12/11/2026"
+        },
+        "leo.date": {
+          "value": "2026-11-12",
+          "printed": "12/11/2026"
+        },
+        "leo.number": {
+          "value": "2611120457"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)",
+          "printed": "KAVYA GEMS LLP (SAMPLE)"
+        },
+        "exporter.taxId": {
+          "value": "SAMPLE00012"
+        },
+        "consignee.name": {
+          "value": "Lumen Diamant BV (SAMPLE)",
+          "printed": "LUMEN DIAMANT BV (SAMPLE)"
+        },
+        "broker.name": {
+          "value": "Sample Clearing Agents Pvt Ltd (SAMPLE)",
+          "printed": "SAMPLE CLEARING AGENTS PVT LTD (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/041"
+        },
+        "invoice.date": {
+          "value": "2026-11-10",
+          "printed": "10/11/2026"
+        },
+        "goods.hsCode": {
+          "value": "71023910"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "goods.form": {
+          "value": "polished"
+        },
+        "goods.totalPieces": {
+          "value": "6"
+        },
+        "goods.totalCarats": {
+          "value": "5.1",
+          "printed": "5.10"
+        },
+        "goods.totalValue": {
+          "value": "37274.5",
+          "printed": "37,274.50"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.destinationCountry": {
+          "value": "Belgium",
+          "printed": "BELGIUM"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)",
+          "printed": "MUMBAI (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "Brussels (BRU)",
+          "printed": "BRUSSELS (BRU)"
+        },
+        "goods.grossWeight": {
+          "value": "0.85 kg",
+          "printed": "0.850"
+        },
+        "awb.mawb": {
+          "value": "176-12345678"
+        },
+        "awb.hawb": {
+          "value": "99000012345"
+        }
+      },
+      "lines": [],
+      "declarations": [
+        "Declaration by the exporter: the particulars given above are true and correct."
+      ]
+    },
+    {
+      "id": "A-air-waybill",
+      "shipment": "A",
+      "channel": "drop",
+      "path": "drop/AWB 99000012345.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "air_waybill",
+      "fields": {
+        "doc.number": {
+          "value": "99000012345"
+        },
+        "awb.hawb": {
+          "value": "99000012345"
+        },
+        "awb.mawb": {
+          "value": "176-12345678"
+        },
+        "awb.flight": {
+          "value": "EK501",
+          "printed": "EK 501"
+        },
+        "awb.date": {
+          "value": "2026-11-13",
+          "printed": "13/11/2026"
+        },
+        "awb.route": {
+          "value": "BOM-DXB-BRU",
+          "printed": "BOM - DXB - BRU"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)",
+          "printed": "KAVYA GEMS LLP (SAMPLE)"
+        },
+        "consignee.name": {
+          "value": "Lumen Diamant BV (SAMPLE)",
+          "printed": "LUMEN DIAMANT BV (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/041"
+        },
+        "goods.grossWeight": {
+          "value": "0.85 kg",
+          "printed": "0.85 KG"
+        },
+        "goods.totalValue": {
+          "value": "37274.5",
+          "printed": "37,274.50"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)",
+          "printed": "MUMBAI (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "Brussels (BRU)",
+          "printed": "BRUSSELS (BRU)"
+        },
+        "shippingBill.number": {
+          "value": "1234567"
+        }
+      },
+      "flights": [
+        "EK 501 BOM-DXB",
+        "EK 183 DXB-BRU"
+      ],
+      "note": "Issued by Sample Secure Logistics LLP (SAMPLE) as agent of the carrier.",
+      "lines": [],
+      "declarations": []
+    },
+    {
+      "id": "A-insurance",
+      "shipment": "A",
+      "channel": "drop",
+      "path": "drop/Insurance certificate KG-26-27-041.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": false,
+      "pages": 1,
+      "docType": "insurance_certificate",
+      "fields": {
+        "doc.number": {
+          "value": "SSI/CRT/26/1187"
+        },
+        "doc.date": {
+          "value": "2026-11-12",
+          "printed": "12/11/2026"
+        },
+        "insurance.policyNumber": {
+          "value": "SSI/OP/2026/0031"
+        },
+        "insurance.insuredValue": {
+          "value": "41001.95",
+          "printed": "41,001.95"
+        },
+        "insurer.name": {
+          "value": "Sample Specie Insurance Co. Ltd (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/041"
+        },
+        "awb.hawb": {
+          "value": "99000012345"
+        },
+        "awb.mawb": {
+          "value": "176-12345678"
+        },
+        "goods.currency": {
+          "value": "USD"
+        }
+      },
+      "note": "Image-only scan: no text layer, so it is read with the vision model or OCR.",
+      "lines": [],
+      "declarations": []
+    },
+    {
+      "id": "A-factory-record",
+      "shipment": "A",
+      "channel": "drop",
+      "path": "drop/Factory record lot R-0412.xlsx",
+      "kind": "sheet",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "docType": "factory_record",
+      "fields": {
+        "doc.number": {
+          "value": "R-0412"
+        },
+        "doc.date": {
+          "value": "2026-07-08",
+          "printed": "08/07/2026"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "supplier.name": {
+          "value": "Sample Rough Trading DMCC (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "SRT-2026-0315"
+        },
+        "kp.certificateNumber": {
+          "value": "AE-SAMPLE-0001234"
+        },
+        "kp.countriesOfMining": {
+          "value": "Botswana, Namibia"
+        }
+      },
+      "note": "invoice.number here is the rough supplier invoice. Line carats are the factory's polished weights.",
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020001",
+          "shapeKey": "Round",
+          "shape": "Round",
+          "carat": 1.02,
+          "plannedCarat": 1.05,
+          "color": "D",
+          "clarity": "VVS1",
+          "pieces": 1,
+          "roughPiece": "R-0412-03",
+          "polishedOn": "2026-06-18",
+          "growth": null
+        },
+        {
+          "lineNo": 2,
+          "reportNumber": "7391020002",
+          "shapeKey": "Oval",
+          "shape": "Oval",
+          "carat": 0.7,
+          "plannedCarat": 0.75,
+          "color": "F",
+          "clarity": "VS1",
+          "pieces": 1,
+          "roughPiece": "R-0412-07",
+          "polishedOn": "2026-06-22",
+          "growth": null
+        },
+        {
+          "lineNo": 3,
+          "reportNumber": "7391020003",
+          "shapeKey": "Princess",
+          "shape": "Princess",
+          "carat": 0.52,
+          "plannedCarat": 0.55,
+          "color": "G",
+          "clarity": "VS2",
+          "pieces": 1,
+          "roughPiece": "R-0412-02",
+          "polishedOn": "2026-06-25",
+          "growth": null
+        },
+        {
+          "lineNo": 4,
+          "reportNumber": null,
+          "shapeKey": "Round",
+          "shape": "Round",
+          "carat": 0.45,
+          "plannedCarat": 0.48,
+          "color": "E",
+          "clarity": "SI1",
+          "pieces": 1,
+          "roughPiece": "R-0412-02",
+          "polishedOn": "2026-06-25",
+          "growth": null
+        },
+        {
+          "lineNo": 5,
+          "reportNumber": "7391020005",
+          "shapeKey": "Emerald",
+          "shape": "Emerald",
+          "carat": 1.5,
+          "plannedCarat": 1.55,
+          "color": "H",
+          "clarity": "VVS2",
+          "pieces": 1,
+          "roughPiece": "R-0412-11",
+          "polishedOn": "2026-07-02",
+          "growth": null
+        },
+        {
+          "lineNo": 6,
+          "reportNumber": "7391020006",
+          "shapeKey": "Cushion",
+          "shape": "Cushion",
+          "carat": 0.9,
+          "plannedCarat": 0.92,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "roughPiece": "R-0412-05",
+          "polishedOn": "2026-07-06",
+          "growth": null
+        }
+      ],
+      "totals": {
+        "roughCarats": 12.8,
+        "polishedCarats": 5.09
+      },
+      "declarations": []
+    },
+    {
+      "id": "A-packing-list",
+      "shipment": "A",
+      "channel": "later",
+      "path": "later/Packing list KG-26-27-041.xlsx",
+      "kind": "sheet",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "docType": "packing_list",
+      "fields": {
+        "invoice.number": {
+          "value": "KG/26-27/041"
+        },
+        "doc.date": {
+          "value": "2026-11-11",
+          "printed": "11/11/2026"
+        },
+        "po.number": {
+          "value": "LDB-7781"
+        },
+        "consignee.name": {
+          "value": "Lumen Diamant BV (SAMPLE)"
+        },
+        "goods.hsCode": {
+          "value": "71023910"
+        },
+        "goods.totalPieces": {
+          "value": "6"
+        },
+        "goods.totalCarats": {
+          "value": "5.1",
+          "printed": "5.10"
+        },
+        "goods.totalValue": {
+          "value": "37274.5",
+          "printed": "37,274.50"
+        },
+        "goods.netWeight": {
+          "value": "1.02 g",
+          "printed": "1.02"
+        },
+        "goods.grossWeight": {
+          "value": "0.85 kg",
+          "printed": "0.85"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391020001",
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 1.02,
+          "color": "D",
+          "clarity": "VVS1",
+          "pieces": 1,
+          "rate": 14800,
+          "amount": 15096,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 2,
+          "reportNumber": "7391020002",
+          "shape": "Oval",
+          "shapeKey": "Oval",
+          "carat": 0.71,
+          "color": "F",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 4650,
+          "amount": 3301.5,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 3,
+          "reportNumber": "7391020003",
+          "shape": "Princess",
+          "shapeKey": "Princess",
+          "carat": 0.52,
+          "color": "G",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": 2350,
+          "amount": 1222,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 4,
+          "reportNumber": null,
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 0.45,
+          "color": "E",
+          "clarity": "SI1",
+          "pieces": 1,
+          "rate": 2100,
+          "amount": 945,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 5,
+          "reportNumber": "7391020005",
+          "shape": "Emerald",
+          "shapeKey": "Emerald",
+          "carat": 1.5,
+          "color": "H",
+          "clarity": "VVS2",
+          "pieces": 1,
+          "rate": 7900,
+          "amount": 11850,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 6,
+          "reportNumber": "7391020006",
+          "shape": "Cushion",
+          "shapeKey": "Cushion",
+          "carat": 0.9,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 5400,
+          "amount": 4860,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "B-invoice",
+      "shipment": "B",
+      "channel": "drop",
+      "path": "drop/shipment-b/Invoice KG-26-27-042.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "commercial_invoice",
+      "fields": {
+        "doc.number": {
+          "value": "KG/26-27/042"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/042"
+        },
+        "invoice.date": {
+          "value": "2026-11-11",
+          "printed": "11/11/2026"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "exporter.country": {
+          "value": "India"
+        },
+        "exporter.taxId": {
+          "value": "SAMPLE00012"
+        },
+        "consignee.name": {
+          "value": "Mirage Crystals FZCO (SAMPLE)"
+        },
+        "consignee.address": {
+          "value": "Unit 7, Sample Free Zone Tower, Dubai Airport Free Zone, Dubai, United Arab Emirates"
+        },
+        "consignee.country": {
+          "value": "United Arab Emirates"
+        },
+        "goods.description": {
+          "value": "Laboratory-grown (CVD) cut and polished diamonds"
+        },
+        "goods.nature": {
+          "value": "lab-grown"
+        },
+        "goods.form": {
+          "value": "polished"
+        },
+        "goods.hsCode": {
+          "value": "71049120"
+        },
+        "goods.totalPieces": {
+          "value": "200"
+        },
+        "goods.totalCarats": {
+          "value": "157.55"
+        },
+        "goods.totalValue": {
+          "value": "12557.2",
+          "printed": "12,557.20"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.incoterm": {
+          "value": "CIF",
+          "printed": "CIF Dubai"
+        },
+        "goods.countryOfOrigin": {
+          "value": "India"
+        },
+        "goods.destinationCountry": {
+          "value": "United Arab Emirates"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "Dubai (DXB)"
+        },
+        "payment.terms": {
+          "value": "Advance payment by T/T"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": null,
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 94.88,
+          "color": "E-G",
+          "clarity": "VS1-VS2",
+          "pieces": 119,
+          "rate": 85,
+          "amount": 8064.8,
+          "growth": "lab-grown"
+        },
+        {
+          "lineNo": 2,
+          "reportNumber": "7392040011",
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 1.52,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 120,
+          "amount": 182.4,
+          "growth": "lab-grown"
+        },
+        {
+          "lineNo": 3,
+          "reportNumber": null,
+          "shape": "Oval",
+          "shapeKey": "Oval",
+          "carat": 59.97,
+          "color": "F-H",
+          "clarity": "VS2-SI1",
+          "pieces": 79,
+          "rate": 70,
+          "amount": 4197.9,
+          "growth": "lab-grown"
+        },
+        {
+          "lineNo": 4,
+          "reportNumber": "7392040012",
+          "shape": "Oval",
+          "shapeKey": "Oval",
+          "carat": 1.18,
+          "color": "F",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": 95,
+          "amount": 112.1,
+          "growth": "lab-grown"
+        }
+      ],
+      "declarations": [
+        "We hereby declare that the goods herein invoiced are laboratory-grown diamonds produced by CVD and are not natural diamonds. Laboratory-grown diamonds are not covered by the Kimberley Process.",
+        "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."
+      ]
+    },
+    {
+      "id": "B-report-7392040011",
+      "shipment": "B",
+      "channel": "drop",
+      "path": "drop/shipment-b/7392040011.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7392040011"
+        },
+        "doc.date": {
+          "value": "2026-10-20",
+          "printed": "20 October 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7392040011"
+        },
+        "lab.reportDate": {
+          "value": "2026-10-20",
+          "printed": "20 October 2026"
+        },
+        "lab.shape": {
+          "value": "Round Brilliant"
+        },
+        "lab.carat": {
+          "value": "1.52",
+          "printed": "1.52 carat"
+        },
+        "lab.color": {
+          "value": "E"
+        },
+        "lab.clarity": {
+          "value": "VS1"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Excellent"
+        },
+        "lab.fluorescence": {
+          "value": "None"
+        },
+        "lab.measurements": {
+          "value": "7.36 - 7.40 x 4.55 mm"
+        },
+        "lab.inscription": {
+          "value": "LAB-GROWN NGL 7392040011"
+        },
+        "goods.nature": {
+          "value": "lab-grown"
+        },
+        "lab.cut": {
+          "value": "Excellent"
+        },
+        "lab.growthMethod": {
+          "value": "CVD"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7392040011",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Round Brilliant",
+          "shapeKey": "Round",
+          "carat": 1.52,
+          "color": "E",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "lab-grown"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "B-report-7392040012",
+      "shipment": "B",
+      "channel": "drop",
+      "path": "drop/shipment-b/7392040012.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7392040012"
+        },
+        "doc.date": {
+          "value": "2026-10-20",
+          "printed": "20 October 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7392040012"
+        },
+        "lab.reportDate": {
+          "value": "2026-10-20",
+          "printed": "20 October 2026"
+        },
+        "lab.shape": {
+          "value": "Oval Brilliant"
+        },
+        "lab.carat": {
+          "value": "1.18",
+          "printed": "1.18 carat"
+        },
+        "lab.color": {
+          "value": "F"
+        },
+        "lab.clarity": {
+          "value": "VS2"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Very Good"
+        },
+        "lab.fluorescence": {
+          "value": "None"
+        },
+        "lab.measurements": {
+          "value": "8.71 x 6.12 x 3.80 mm"
+        },
+        "lab.inscription": {
+          "value": "LAB-GROWN NGL 7392040012"
+        },
+        "goods.nature": {
+          "value": "lab-grown"
+        },
+        "lab.growthMethod": {
+          "value": "CVD"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7392040012",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Oval Brilliant",
+          "shapeKey": "Oval",
+          "carat": 1.18,
+          "color": "F",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "lab-grown"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "B-shipping-bill",
+      "shipment": "B",
+      "channel": "drop",
+      "path": "drop/shipment-b/Shipping bill 1234602.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "shipping_bill",
+      "fields": {
+        "doc.number": {
+          "value": "1234602"
+        },
+        "shippingBill.number": {
+          "value": "1234602"
+        },
+        "shippingBill.date": {
+          "value": "2026-11-13",
+          "printed": "13/11/2026"
+        },
+        "leo.date": {
+          "value": "2026-11-13",
+          "printed": "13/11/2026"
+        },
+        "leo.number": {
+          "value": "2611130219"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)",
+          "printed": "KAVYA GEMS LLP (SAMPLE)"
+        },
+        "exporter.taxId": {
+          "value": "SAMPLE00012"
+        },
+        "consignee.name": {
+          "value": "Mirage Crystals FZCO (SAMPLE)",
+          "printed": "MIRAGE CRYSTALS FZCO (SAMPLE)"
+        },
+        "broker.name": {
+          "value": "Sample Clearing Agents Pvt Ltd (SAMPLE)",
+          "printed": "SAMPLE CLEARING AGENTS PVT LTD (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/042"
+        },
+        "invoice.date": {
+          "value": "2026-11-11",
+          "printed": "11/11/2026"
+        },
+        "goods.hsCode": {
+          "value": "71049120"
+        },
+        "goods.nature": {
+          "value": "lab-grown"
+        },
+        "goods.form": {
+          "value": "polished"
+        },
+        "goods.totalPieces": {
+          "value": "200"
+        },
+        "goods.totalCarats": {
+          "value": "157.55"
+        },
+        "goods.totalValue": {
+          "value": "12557.2",
+          "printed": "12,557.20"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.destinationCountry": {
+          "value": "United Arab Emirates",
+          "printed": "UNITED ARAB EMIRATES"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)",
+          "printed": "MUMBAI (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "Dubai (DXB)",
+          "printed": "DUBAI (DXB)"
+        },
+        "goods.grossWeight": {
+          "value": "0.4 kg",
+          "printed": "0.400"
+        },
+        "awb.mawb": {
+          "value": "176-12345690"
+        },
+        "awb.hawb": {
+          "value": "99000012367"
+        }
+      },
+      "lines": [],
+      "declarations": [
+        "Declaration by the exporter: the particulars given above are true and correct."
+      ]
+    },
+    {
+      "id": "B-air-waybill",
+      "shipment": "B",
+      "channel": "drop",
+      "path": "drop/shipment-b/AWB 99000012367.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "air_waybill",
+      "fields": {
+        "doc.number": {
+          "value": "99000012367"
+        },
+        "awb.hawb": {
+          "value": "99000012367"
+        },
+        "awb.mawb": {
+          "value": "176-12345690"
+        },
+        "awb.flight": {
+          "value": "EK501",
+          "printed": "EK 501"
+        },
+        "awb.date": {
+          "value": "2026-11-14",
+          "printed": "14/11/2026"
+        },
+        "awb.route": {
+          "value": "BOM-DXB",
+          "printed": "BOM - DXB"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)",
+          "printed": "KAVYA GEMS LLP (SAMPLE)"
+        },
+        "consignee.name": {
+          "value": "Mirage Crystals FZCO (SAMPLE)",
+          "printed": "MIRAGE CRYSTALS FZCO (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/042"
+        },
+        "goods.grossWeight": {
+          "value": "0.4 kg",
+          "printed": "0.40 KG"
+        },
+        "goods.totalValue": {
+          "value": "12557.2",
+          "printed": "12,557.20"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)",
+          "printed": "MUMBAI (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "Dubai (DXB)",
+          "printed": "DUBAI (DXB)"
+        },
+        "shippingBill.number": {
+          "value": "1234602"
+        }
+      },
+      "flights": [
+        "EK 501 BOM-DXB"
+      ],
+      "note": "Issued by Sample Secure Logistics LLP (SAMPLE) as agent of the carrier.",
+      "lines": [],
+      "declarations": []
+    },
+    {
+      "id": "C-invoice",
+      "shipment": "C",
+      "channel": "drop",
+      "path": "drop/shipment-c/Invoice KG-26-27-043.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "commercial_invoice",
+      "fields": {
+        "doc.number": {
+          "value": "KG/26-27/043"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/043"
+        },
+        "invoice.date": {
+          "value": "2026-11-12",
+          "printed": "12/11/2026"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)"
+        },
+        "exporter.country": {
+          "value": "India"
+        },
+        "exporter.taxId": {
+          "value": "SAMPLE00012"
+        },
+        "consignee.name": {
+          "value": "Hudson Fine Jewels Inc. (SAMPLE)"
+        },
+        "consignee.address": {
+          "value": "120 Sample Avenue, Suite 1500, New York, NY 10036, United States"
+        },
+        "consignee.country": {
+          "value": "United States"
+        },
+        "goods.description": {
+          "value": "Natural cut and polished diamonds"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "goods.form": {
+          "value": "polished"
+        },
+        "goods.hsCode": {
+          "value": "71023910"
+        },
+        "goods.totalPieces": {
+          "value": "2"
+        },
+        "goods.totalCarats": {
+          "value": "2.01"
+        },
+        "goods.totalValue": {
+          "value": "13362",
+          "printed": "13,362.00"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.incoterm": {
+          "value": "CIF",
+          "printed": "CIF New York"
+        },
+        "goods.countryOfOrigin": {
+          "value": "India"
+        },
+        "goods.destinationCountry": {
+          "value": "United States"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "New York (JFK)"
+        },
+        "payment.terms": {
+          "value": "45 days from invoice date by T/T"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391030001",
+          "shape": "Round brilliant",
+          "shapeKey": "Round",
+          "carat": 1.21,
+          "color": "F",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": 8200,
+          "amount": 9922,
+          "growth": "natural"
+        },
+        {
+          "lineNo": 2,
+          "reportNumber": "7391030002",
+          "shape": "Pear",
+          "shapeKey": "Pear",
+          "carat": 0.8,
+          "color": "G",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": 4300,
+          "amount": 3440,
+          "growth": "natural"
+        }
+      ],
+      "declarations": [
+        "The diamonds herein invoiced have been purchased from legitimate sources not involved in funding conflict, in compliance with United Nations Security Council Resolutions and corresponding national laws. The seller hereby guarantees that these diamonds are conflict free and confirms adherence to the WDC SoW Guidelines.",
+        "We hereby declare that the diamonds herein invoiced were not mined, extracted, produced or manufactured wholly or in part in the Russian Federation, notwithstanding whether such diamonds have been substantially transformed into other products outside of the Russian Federation.",
+        "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."
+      ]
+    },
+    {
+      "id": "C-report-7391030001",
+      "shipment": "C",
+      "channel": "drop",
+      "path": "drop/shipment-c/7391030001.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391030001"
+        },
+        "doc.date": {
+          "value": "2026-09-03",
+          "printed": "3 September 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391030001"
+        },
+        "lab.reportDate": {
+          "value": "2026-09-03",
+          "printed": "3 September 2026"
+        },
+        "lab.shape": {
+          "value": "Round Brilliant"
+        },
+        "lab.carat": {
+          "value": "1.21",
+          "printed": "1.21 carat"
+        },
+        "lab.color": {
+          "value": "F"
+        },
+        "lab.clarity": {
+          "value": "VS2"
+        },
+        "lab.polish": {
+          "value": "Excellent"
+        },
+        "lab.symmetry": {
+          "value": "Very Good"
+        },
+        "lab.fluorescence": {
+          "value": "Faint"
+        },
+        "lab.measurements": {
+          "value": "6.82 - 6.86 x 4.21 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391030001"
+        },
+        "goods.nature": {
+          "value": "natural"
+        },
+        "lab.cut": {
+          "value": "Very Good"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391030001",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Round Brilliant",
+          "shapeKey": "Round",
+          "carat": 1.21,
+          "color": "F",
+          "clarity": "VS2",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "C-report-7391030002",
+      "shipment": "C",
+      "channel": "drop",
+      "path": "drop/shipment-c/7391030002.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "lab_report",
+      "fields": {
+        "doc.number": {
+          "value": "7391030002"
+        },
+        "doc.date": {
+          "value": "2026-09-03",
+          "printed": "3 September 2026"
+        },
+        "lab.name": {
+          "value": "Northbridge Gem Laboratory (SAMPLE)"
+        },
+        "lab.reportNumber": {
+          "value": "7391030002"
+        },
+        "lab.reportDate": {
+          "value": "2026-09-03",
+          "printed": "3 September 2026"
+        },
+        "lab.shape": {
+          "value": "Pear Brilliant"
+        },
+        "lab.carat": {
+          "value": "0.8",
+          "printed": "0.80 carat"
+        },
+        "lab.color": {
+          "value": "G"
+        },
+        "lab.clarity": {
+          "value": "VS1"
+        },
+        "lab.polish": {
+          "value": "Very Good"
+        },
+        "lab.symmetry": {
+          "value": "Very Good"
+        },
+        "lab.fluorescence": {
+          "value": "None"
+        },
+        "lab.measurements": {
+          "value": "8.62 x 5.48 x 3.39 mm"
+        },
+        "lab.inscription": {
+          "value": "NGL 7391030002"
+        },
+        "goods.nature": {
+          "value": "natural"
+        }
+      },
+      "lines": [
+        {
+          "lineNo": 1,
+          "reportNumber": "7391030002",
+          "lab": "Northbridge Gem Laboratory (SAMPLE)",
+          "shape": "Pear Brilliant",
+          "shapeKey": "Pear",
+          "carat": 0.8,
+          "color": "G",
+          "clarity": "VS1",
+          "pieces": 1,
+          "rate": null,
+          "amount": null,
+          "growth": "natural"
+        }
+      ],
+      "declarations": []
+    },
+    {
+      "id": "C-air-waybill",
+      "shipment": "C",
+      "channel": "drop",
+      "path": "drop/shipment-c/AWB 99000012389.pdf",
+      "kind": "pdf",
+      "mime": "application/pdf",
+      "textLayer": true,
+      "pages": 1,
+      "docType": "air_waybill",
+      "fields": {
+        "doc.number": {
+          "value": "99000012389"
+        },
+        "awb.hawb": {
+          "value": "99000012389"
+        },
+        "awb.mawb": {
+          "value": "176-12345701"
+        },
+        "awb.flight": {
+          "value": "EK501",
+          "printed": "EK 501"
+        },
+        "awb.date": {
+          "value": "2026-11-14",
+          "printed": "14/11/2026"
+        },
+        "awb.route": {
+          "value": "BOM-DXB-JFK",
+          "printed": "BOM - DXB - JFK"
+        },
+        "exporter.name": {
+          "value": "Kavya Gems LLP (SAMPLE)",
+          "printed": "KAVYA GEMS LLP (SAMPLE)"
+        },
+        "consignee.name": {
+          "value": "Hudson Fine Jewels Inc. (SAMPLE)",
+          "printed": "HUDSON FINE JEWELS INC. (SAMPLE)"
+        },
+        "invoice.number": {
+          "value": "KG/26-27/043"
+        },
+        "goods.grossWeight": {
+          "value": "0.3 kg",
+          "printed": "0.30 KG"
+        },
+        "goods.totalValue": {
+          "value": "13362",
+          "printed": "13,362.00"
+        },
+        "goods.currency": {
+          "value": "USD"
+        },
+        "goods.portOfLoading": {
+          "value": "Mumbai (BOM)",
+          "printed": "MUMBAI (BOM)"
+        },
+        "goods.portOfDischarge": {
+          "value": "New York (JFK)",
+          "printed": "NEW YORK (JFK)"
+        }
+      },
+      "flights": [
+        "EK 501 BOM-DXB",
+        "EK 201 DXB-JFK"
+      ],
+      "note": "Issued by Sample Secure Logistics LLP (SAMPLE) as agent of the carrier.",
+      "lines": [],
+      "declarations": []
+    }
+  ]
+}

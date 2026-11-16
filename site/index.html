@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Jewel Labs Desk</title>
+  <meta name="description" content="The Jewel Labs desktop app for diamond export papers. Agents read every line, trace every stone, check origin and hand back the pack your buyer and customs need, ready to sign. For Mac and Windows.">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <meta name="application-name" content="Jewel Labs Desk">
+  <meta name="author" content="Jewel Labs">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="canonical" href="https://aarushkandukoori.github.io/jewel-labs-desk/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Jewel Labs">
+  <meta property="og:url" content="https://aarushkandukoori.github.io/jewel-labs-desk/">
+  <meta property="og:title" content="Jewel Labs Desk">
+  <meta property="og:description" content="Every diamond export, ready for customs. The desktop app where agents read the shipment papers, trace every stone and build the origin pack, ready to sign.">
+  <meta property="og:image" content="https://aarushkandukoori.github.io/jewel-labs-desk/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Jewel Labs Desk: every diamond export, ready for customs.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Jewel Labs Desk">
+  <meta name="twitter:description" content="Every diamond export, ready for customs. Agents read the papers, trace every stone and build the origin pack, ready to sign.">
+  <meta name="twitter:image" content="https://aarushkandukoori.github.io/jewel-labs-desk/og.png">
+
+  <link rel="preload" href="fonts/Geist-Medium.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Geist-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/site.css">
+
+  <script>
+    // Mark the page as scripted so sections can wait to fade in. If the page script never starts
+    // (blocked, offline), show everything after 3 seconds instead of leaving sections hidden.
+    document.documentElement.classList.add('js');
+    setTimeout(function () {
+      if (!window.jlStarted) document.documentElement.classList.add('no-motion-fallback');
+    }, 3000);
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Jewel Labs Desk",
+    "applicationCategory": "BusinessApplication",
+    "operatingSystem": "macOS, Windows",
+    "description": "Desktop app for diamond export papers. Agents read the shipment papers, trace every stone, check origin and build the origin pack, ready to sign.",
+    "url": "https://aarushkandukoori.github.io/jewel-labs-desk/",
+    "downloadUrl": "https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest",
+    "publisher": { "@type": "Organization", "name": "Jewel Labs", "url": "https://jewellabs.io/", "email": "hello@jewellabs.io" }
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- Ambient layers behind the page: faint grid, film grain, slow dust, a soft light under the pointer -->
+  <div class="grid-bg" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+  <canvas id="dust" aria-hidden="true"></canvas>
+  <div id="cursor-glow" aria-hidden="true"></div>
+
+  <header class="nav" id="nav">
+    <div class="nav__inner">
+      <a class="brand" href="#top" aria-label="Jewel Labs, back to top">
+        <svg class="brand__mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><polygon points="12,2.5 21.5,12 12,21.5 2.5,12"/><polygon points="12,7.5 16.5,12 12,16.5 7.5,12"/><line x1="12" y1="2.5" x2="12" y2="7.5"/><line x1="12" y1="21.5" x2="12" y2="16.5"/><line x1="2.5" y1="12" x2="7.5" y2="12"/><line x1="21.5" y1="12" x2="16.5" y2="12"/></svg>
+        <span class="brand__text">JEWELLABS</span>
+      </a>
+
+      <nav class="nav__links" id="nav-links" aria-label="Main">
+        <a class="nav__link" href="#product">Product</a>
+        <a class="nav__link" href="#how">How it works</a>
+        <a class="nav__link" href="#history">Stone history</a>
+        <a class="nav__link" href="#download">Download</a>
+        <a class="nav__link" href="#security">Security</a>
+        <a class="nav__link nav__link--menu-only" href="https://cal.com/soham-jariwala-4fvbkw/30min" target="_blank" rel="noopener noreferrer">Book a demo</a>
+      </nav>
+
+      <div class="nav__cta">
+        <a class="btn btn--ghost btn--sm nav__demo" href="https://cal.com/soham-jariwala-4fvbkw/30min" target="_blank" rel="noopener noreferrer">Book a demo</a>
+        <a class="btn btn--primary btn--sm" href="#download">Download</a>
+        <button class="nav__menu" id="nav-menu" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Open the menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path class="nav__menu-top" d="M4 8h16"/><path class="nav__menu-bottom" d="M4 16h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+
+    <!-- HERO: "Jewel Labs" drawn in particles, the headline, and the download buttons -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <canvas class="hero__particles" id="hero-particles" aria-hidden="true"></canvas>
+      <div class="hero__stone" id="hero-stone" aria-hidden="true"></div>
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="hero__vignette" aria-hidden="true"></div>
+
+      <div class="hero__inner">
+        <div class="hero__content">
+          <p class="hero__word" id="hero-word" role="img" aria-label="Jewel Labs"><span class="hero__word-text" aria-hidden="true">Jewel Labs</span></p>
+
+          <p class="hero__tag" data-reveal data-delay="150"><span class="hero__tag-dot" aria-hidden="true"></span>The desktop app for diamond export papers</p>
+
+          <h1 class="hero__title" id="hero-title" data-reveal data-delay="250">Every diamond export,<br> <em>ready for customs.</em></h1>
+
+          <p class="hero__sub" data-reveal data-delay="350">Your export team sends the shipment papers. Agents read every line, trace every stone, check origin and hand back the pack your buyer and customs need, ready to sign.</p>
+
+          <div class="hero__actions" data-reveal data-delay="450">
+            <a class="btn btn--primary" id="hero-download-1" href="https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest/download/Jewel-Labs-mac-arm64.dmg">
+              <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+              <span>Download for Mac</span>
+            </a>
+            <a class="btn btn--ghost" id="hero-download-2" href="https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest/download/Jewel-Labs-windows-setup.exe">
+              <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+              <span>Download for Windows</span>
+            </a>
+            <a class="btn btn--text" id="watch-link" href="#watch">
+              <span class="btn__play" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.5 6.2v11.6L18 12z"/></svg></span>
+              <span>Watch it work</span>
+            </a>
+          </div>
+
+          <p class="hero__note" id="hero-note" data-reveal data-delay="550">For Mac (Apple silicon and Intel) and Windows 10 and 11. <a href="#download">All downloads</a></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- MARQUEE: the papers the agents read -->
+    <section class="band" aria-labelledby="band-title">
+      <p class="band__eyebrow" id="band-title">What the agents read</p>
+      <div class="marquee">
+        <div class="marquee__track">
+          <ul class="marquee__list">
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5M10 15.5h5"/></svg>Commercial invoices</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4"/></svg>Packing lists</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6z"/><path d="M9.5 9.5 12 7l2.5 2.5L12 13z"/><path d="M9 16.5h6"/></svg>GIA and IGI reports</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="9" r="5"/><path d="M9.5 13.4 8 21l4-2 4 2-1.5-7.6"/></svg>Kimberley Process certificates</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v5l2 2v3H8v-3l2-2z"/><path d="M5 16h14v4H5z"/></svg>Shipping bills and LEO</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12.5 21 5l-5 15-4.5-6z"/><path d="M11.5 14 21 5"/></svg>Air waybills</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></svg>Insurance certificates</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/></svg>WhatsApp exports</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5 12 13l8.5-6.5"/></svg>Email threads</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Phone photos</li>
+          </ul>
+          <!-- The same list again so the band can loop without a gap. Screen readers skip it. -->
+          <ul class="marquee__list" aria-hidden="true">
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5M10 15.5h5"/></svg>Commercial invoices</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4"/></svg>Packing lists</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9.5 9.5 12 7l2.5 2.5L12 13z"/><path d="M9 16.5h6"/></svg>GIA and IGI reports</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="5"/><path d="M9.5 13.4 8 21l4-2 4 2-1.5-7.6"/></svg>Kimberley Process certificates</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M10 3h4v5l2 2v3H8v-3l2-2z"/><path d="M5 16h14v4H5z"/></svg>Shipping bills and LEO</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M3 12.5 21 5l-5 15-4.5-6z"/><path d="M11.5 14 21 5"/></svg>Air waybills</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/></svg>Insurance certificates</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/></svg>WhatsApp exports</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5 12 13l8.5-6.5"/></svg>Email threads</li>
+            <li class="marquee__item"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Phone photos</li>
+          </ul>
+        </div>
+      </div>
+      <div class="creds">
+        <span class="cred">Read by a <strong>vision model</strong>, with OCR when needed</span>
+        <span class="cred-div" aria-hidden="true"></span>
+        <span class="cred">Every value keeps <strong>the spot on the page</strong> it came from</span>
+        <span class="cred-div" aria-hidden="true"></span>
+        <span class="cred"><strong>Questions</strong> instead of guesses</span>
+      </div>
+    </section>
+
+    <!-- THE EU DEADLINE: what the app produces, with a statement card that fills itself in -->
+    <section class="section" id="product" aria-labelledby="product-title">
+      <div class="spotlight">
+        <div class="spotlight__copy" data-reveal>
+          <p class="eyebrow">Compliance first</p>
+          <h2 class="section__title" id="product-title">The EU deadline is<br> <em>already here.</em></h2>
+          <p class="section__sub spotlight__lead">
+            Since 1 January 2026, every polished natural diamond of 0.5 carats and up entering the EU
+            needs a Due Diligence Statement on Diamond Origin. The US asks for its own CBP
+            self-certification. Most houses still build this proof by hand. Jewel Labs Desk builds it
+            from the papers you already have: one upload in, a different statement per destination out,
+            audit trail kept. The house only signs.
+          </p>
+          <ul class="ticks">
+            <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7"/></svg></span>Papers from email, WhatsApp, a folder or a drag and drop</li>
+            <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7"/></svg></span>Every field read, checked and linked to its page</li>
+            <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7"/></svg></span>EU statement draft and US self-certification from the same data</li>
+            <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7"/></svg></span>Anything missing comes back as a one-line question</li>
+          </ul>
+          <a class="btn btn--ghost" href="https://cal.com/soham-jariwala-4fvbkw/30min" target="_blank" rel="noopener noreferrer">See it on a call
+            <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        </div>
+
+        <div class="statement glass" id="statement" data-reveal data-delay="150">
+          <div class="statement__top">
+            <p class="statement__sample">Sample shipment</p>
+            <div class="statement__tabs" role="group" aria-label="Destination">
+              <button class="statement__tab is-on" type="button" aria-pressed="true" data-variant="eu">EU</button>
+              <button class="statement__tab" type="button" aria-pressed="false" data-variant="us">US</button>
+            </div>
+          </div>
+          <div class="statement__head">
+            <div>
+              <p class="statement__title" data-field="title">Due Diligence Statement on Diamond Origin</p>
+              <p class="statement__basis" data-field="basis">Council Regulation (EU) 833/2014, Article 3p</p>
+            </div>
+            <span class="chip chip--ok" data-field="status">Ready to sign</span>
+          </div>
+          <dl class="statement__rows" data-field="rows">
+            <div class="statement__row is-in"><dt>Importer</dt><dd>Sample Diamant BV</dd></div>
+            <div class="statement__row is-in"><dt>Commodity code</dt><dd>CN 7102 39 00</dd></div>
+            <div class="statement__row is-in"><dt>Stones / weight</dt><dd>12 / 9.84 ct</dd></div>
+            <div class="statement__row is-in"><dt>Country of mining</dt><dd>Botswana</dd></div>
+            <div class="statement__row is-in"><dt>KP certificate</dt><dd class="mono">BW SAMPLE 0114</dd></div>
+            <div class="statement__row is-in"><dt>Russian origin</dt><dd>None found</dd></div>
+          </dl>
+          <div class="statement__bar" aria-hidden="true"><span data-field="bar"></span></div>
+          <p class="statement__foot" data-field="foot">Every value links to the page it came from.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- THE AGENTS: seven cards in pipeline order, then the person who signs -->
+    <section class="section" id="how" aria-labelledby="how-title">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">How it works</p>
+        <h2 class="section__title" id="how-title">Seven agents run the desk.<br> <em>Each one does one job.</em></h2>
+        <p class="section__sub">They start on their own as papers arrive, pass the work along in order, and stop to ask when something is unclear.</p>
+      </div>
+
+      <ol class="agents" id="agents">
+        <li class="card agent" data-agent="retrieval" style="--c: #93b4ff" data-reveal data-delay="0">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">01</span></div>
+          <h3 class="card__title">Retrieval</h3>
+          <p class="agent__does">Pulls mail, chats and folders</p>
+          <p class="card__desc">Checks the connected mailbox every 5 minutes, unpacks WhatsApp chat exports and picks up files from the folder you choose.</p>
+        </li>
+        <li class="card agent" data-agent="intake" style="--c: #7dd3fc" data-reveal data-delay="60">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">02</span></div>
+          <h3 class="card__title">Intake</h3>
+          <p class="agent__does">Reads every document</p>
+          <p class="card__desc">Sorts each paper by type and reads it with a vision model, with OCR as a fallback. Every value keeps the spot on the page it came from.</p>
+        </li>
+        <li class="card agent" data-agent="records" style="--c: #86efac" data-reveal data-delay="120">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">03</span></div>
+          <h3 class="card__title">Records</h3>
+          <p class="agent__does">Traces every stone</p>
+          <p class="card__desc">Puts each paper under the right shipment and follows every stone from the rough to the air waybill.</p>
+        </li>
+        <li class="card agent" data-agent="sanctions" style="--c: #c4b5fd" data-reveal data-delay="180">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">04</span></div>
+          <h3 class="card__title">Sanctions</h3>
+          <p class="agent__does">Screens every party</p>
+          <p class="card__desc">Checks each name on the papers against the US Treasury OFAC SDN list, refreshed every day.</p>
+        </li>
+        <li class="card agent" data-agent="origin" style="--c: #fde68a" data-reveal data-delay="0">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">05</span></div>
+          <h3 class="card__title">Origin</h3>
+          <p class="agent__does">Checks origin against the rules</p>
+          <p class="card__desc">The 0.5 ct line, natural or lab-grown, Kimberley Process countries, Russia anywhere in the chain, weights and totals, and what each destination asks for.</p>
+        </li>
+        <li class="card agent" data-agent="review" style="--c: #f9a8d4" data-reveal data-delay="60">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">06</span></div>
+          <h3 class="card__title">Review</h3>
+          <p class="agent__does">Flags what is missing</p>
+          <p class="card__desc">Turns anything uncertain into a one-line question for your team. Nothing uncertain reaches a pack.</p>
+        </li>
+        <li class="card agent" data-agent="paperwork" style="--c: #fdba74" data-reveal data-delay="120">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">07</span></div>
+          <h3 class="card__title">Paperwork</h3>
+          <p class="agent__does">Writes and cites</p>
+          <p class="card__desc">Builds the origin pack: the EU statement draft or the US self-certification, the stone list, the evidence index and the originals in the order customs reads them.</p>
+        </li>
+        <li class="card agent agent--you" data-agent="you" style="--c: #f2f3f5" data-reveal data-delay="180">
+          <div class="agent__top"><span class="agent__dot" aria-hidden="true"></span><span class="agent__step">You</span></div>
+          <h3 class="card__title">You sign. You send.</h3>
+          <p class="agent__does">A person has the last word</p>
+          <p class="card__desc">Someone at the house reads the pack, signs it and sends it from the house's own mailbox. The signed pack is locked with a hash.</p>
+        </li>
+      </ol>
+    </section>
+
+    <!-- LIVE DEMO: the real app UI inside a window frame -->
+    <section class="section demo" id="demo" aria-labelledby="demo-title">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">Live demo</p>
+        <h2 class="section__title" id="demo-title">The real app,<br> <em>right in your browser.</em></h2>
+        <p class="section__sub">Click around. It runs on a fictional sample shipment, so nothing here touches real papers.</p>
+      </div>
+
+      <div class="window" data-reveal data-delay="100">
+        <div class="window__bar">
+          <span class="window__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="window__title">Jewel Labs</span>
+          <span class="window__actions">
+            <button class="window__btn" id="demo-replay" type="button">Replay</button>
+            <a class="window__btn" id="demo-open" href="app/index.html?demo=1" target="_blank" rel="noopener">Open full screen</a>
+          </span>
+        </div>
+        <div class="window__screen" id="demo-screen">
+          <div class="window__wait" id="demo-wait">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><polygon points="12,2.5 21.5,12 12,21.5 2.5,12"/><polygon points="12,7.5 16.5,12 12,16.5 7.5,12"/><line x1="12" y1="2.5" x2="12" y2="7.5"/><line x1="12" y1="21.5" x2="12" y2="16.5"/><line x1="2.5" y1="12" x2="7.5" y2="12"/><line x1="21.5" y1="12" x2="16.5" y2="12"/></svg>
+            <span>Opening the app</span>
+          </div>
+          <iframe class="window__frame" id="demo-frame" title="Jewel Labs app replaying a recorded run on a sample shipment" data-src="app/index.html?demo=1" referrerpolicy="same-origin"></iframe>
+        </div>
+      </div>
+      <p class="demo__caption" data-reveal>This is the real app UI replaying a recorded run of the agents on a fictional sample shipment.</p>
+    </section>
+
+    <!-- STONE HISTORY: a timeline from the mine to the signed statement, next to the particle diamond -->
+    <section class="section history" id="history" aria-labelledby="history-title">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">Stone history</p>
+        <h2 class="section__title" id="history-title">Every stone keeps<br> <em>its history.</em></h2>
+        <p class="section__sub">The agents follow each stone from the mine to the signed statement. Every step points to the paper that proves it.</p>
+      </div>
+
+      <div class="history__grid">
+        <div class="history__aside">
+          <div class="history__stone" id="history-stone" aria-hidden="true"></div>
+          <div class="stone-card glass">
+            <div class="stone-card__top">
+              <span class="stone-card__label">Sample stone</span>
+              <span class="chip" id="stone-step">Step 1 of 9</span>
+            </div>
+            <p class="stone-card__shape" id="stone-shape">Rough crystal · 2.61 ct</p>
+            <dl class="stone-card__rows">
+              <div><dt>Report</dt><dd class="mono" id="stone-report">Not graded yet</dd></div>
+              <div><dt>Now</dt><dd id="stone-now">Mined in Botswana</dd></div>
+            </dl>
+          </div>
+        </div>
+
+        <div class="timeline">
+        <span class="timeline__rail" aria-hidden="true"><span class="timeline__fill" id="timeline-fill"></span></span>
+        <ol class="timeline__list" id="timeline">
+          <li class="timeline__step" data-shape="Rough crystal · 2.61 ct" data-report="Not graded yet">
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Mar 2026</p>
+            <h3 class="timeline__title">Mined in Botswana</h3>
+            <p class="timeline__text">The rough is recovered and exported with a Kimberley Process certificate naming the country of mining.</p>
+            <p class="timeline__paper">Kimberley Process certificate</p>
+          </li>
+          <li class="timeline__step" data-shape="Rough crystal · 2.61 ct" data-report="Not graded yet">
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Apr 2026</p>
+            <h3 class="timeline__title">Rough bought</h3>
+            <p class="timeline__text">A rough dealer sells the parcel to the factory, with a warranty on the invoice.</p>
+            <p class="timeline__paper">Supplier invoice</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct" data-report="Not graded yet" data-morph>
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Jun 2026</p>
+            <h3 class="timeline__title">Cut and polished</h3>
+            <p class="timeline__text">Planned, cut and polished into a round brilliant in Surat.</p>
+            <p class="timeline__paper">Factory record</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct · G · VS1" data-report="SAMPLE-0042-GR" data-scan>
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Aug 2026</p>
+            <h3 class="timeline__title">Graded</h3>
+            <p class="timeline__text">A grading lab measures it and issues a report with its own number. The agents can check that number on the lab's site.</p>
+            <p class="timeline__paper">Grading report</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct · G · VS1" data-report="SAMPLE-0042-GR">
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Oct 2026</p>
+            <h3 class="timeline__title">Invoiced</h3>
+            <p class="timeline__text">The stone becomes a line on the export invoice, matched by its report number.</p>
+            <p class="timeline__paper">Commercial invoice</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct · G · VS1" data-report="SAMPLE-0042-GR">
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Oct 2026</p>
+            <h3 class="timeline__title">Packed</h3>
+            <p class="timeline__text">Listed on the packing list with its weight and report number. Totals must agree with the invoice.</p>
+            <p class="timeline__paper">Packing list</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct · G · VS1" data-report="SAMPLE-0042-GR">
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Nov 2026</p>
+            <h3 class="timeline__title">Cleared</h3>
+            <p class="timeline__text">Indian customs gives the Let Export Order on the shipping bill.</p>
+            <p class="timeline__paper">Shipping bill and LEO</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct · G · VS1" data-report="SAMPLE-0042-GR">
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Nov 2026</p>
+            <h3 class="timeline__title">Flown</h3>
+            <p class="timeline__text">Booked on the flight from Mumbai to Antwerp.</p>
+            <p class="timeline__paper">Air waybill</p>
+          </li>
+          <li class="timeline__step" data-shape="Round brilliant · 1.02 ct · G · VS1" data-report="SAMPLE-0042-GR" data-signed>
+            <span class="timeline__dot" aria-hidden="true"></span>
+            <p class="timeline__when">Nov 2026</p>
+            <h3 class="timeline__title">Statement signed</h3>
+            <p class="timeline__text">The house signs the origin statement. The pack is locked with a hash and sent from the house's own mailbox.</p>
+            <p class="timeline__paper">Origin pack</p>
+          </li>
+        </ol>
+        </div>
+      </div>
+      <p class="history__note">Sample data. Dates, names and numbers are fictional.</p>
+    </section>
+
+    <!-- TEAM: roles, invite codes, one workspace per house, autopilot -->
+    <section class="section" id="team" aria-labelledby="team-title">
+      <div class="spotlight spotlight--team">
+        <div class="spotlight__copy" data-reveal>
+          <p class="eyebrow">Teams</p>
+          <h2 class="section__title" id="team-title">Built for the whole<br> <em>export team.</em></h2>
+          <p class="section__sub spotlight__lead">One workspace per house. Everyone sees the same shipments, papers and questions, and each person can only do what their role allows.</p>
+          <dl class="points">
+            <div><dt>Invite codes</dt><dd>The owner creates a code for each colleague, who enters it the first time they sign in.</dd></div>
+            <div><dt>Autopilot</dt><dd>Connect the house mailbox once. The agents check it every 5 minutes and read new shipment mail on their own.</dd></div>
+            <div><dt>A second pair of eyes</dt><dd>The Jewel Labs desk can review a pack and approve it, or hold it with a note, before anything goes out.</dd></div>
+          </dl>
+        </div>
+
+        <div class="workspace glass" id="workspace" data-reveal data-delay="150">
+          <div class="workspace__head">
+            <span class="workspace__name">Sample House workspace</span>
+            <span class="chip">Sample</span>
+          </div>
+          <ul class="workspace__members">
+            <li><span class="avatar">O</span><span class="member__name">House owner</span><span class="role role--owner">Owner</span></li>
+            <li><span class="avatar">E</span><span class="member__name">Export manager</span><span class="role">Preparer</span></li>
+            <li><span class="avatar">D</span><span class="member__name">Documentation clerk</span><span class="role">Preparer</span></li>
+            <li><span class="avatar">A</span><span class="member__name">Accounts</span><span class="role">Viewer</span></li>
+            <li><span class="avatar avatar--desk"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><polygon points="12,2.5 21.5,12 12,21.5 2.5,12"/><polygon points="12,7.5 16.5,12 12,16.5 7.5,12"/></svg></span><span class="member__name">Jewel Labs desk</span><span class="role role--desk">Desk</span></li>
+          </ul>
+          <div class="workspace__invite">
+            <span class="workspace__k">Invite code for a preparer</span>
+            <span class="workspace__code mono" id="invite-code">7K4Q-29MX</span>
+          </div>
+          <div class="workspace__auto">
+            <span class="workspace__pulse" aria-hidden="true"></span>
+            <span>Autopilot on</span>
+            <span class="workspace__next" id="autopilot-next">Next mailbox check in 5:00</span>
+          </div>
+        </div>
+      </div>
+
+      <ul class="roles" data-reveal>
+        <li class="role-card"><p class="role-card__k">Owner</p><p class="role-card__v">Sets up the workspace, connects the mailbox and invites the team.</p></li>
+        <li class="role-card"><p class="role-card__k">Preparer</p><p class="role-card__v">Adds papers, answers the agents' questions and gets packs ready to sign.</p></li>
+        <li class="role-card"><p class="role-card__k">Viewer</p><p class="role-card__v">Follows shipments and opens papers. Read only.</p></li>
+        <li class="role-card"><p class="role-card__k">Jewel Labs desk</p><p class="role-card__v">Can review a pack before anything goes out.</p></li>
+      </ul>
+    </section>
+
+    <!-- DOWNLOAD: one card per installer, version and size from the latest GitHub release -->
+    <section class="section" id="download" aria-labelledby="download-title">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">Download</p>
+        <h2 class="section__title" id="download-title">Install it on every<br> <em>desk in the house.</em></h2>
+        <p class="section__sub">Sign in with the invite code from your owner. New to Jewel Labs? Book a demo and we set up your house.</p>
+      </div>
+
+      <div class="downloads">
+        <article class="card dl" data-asset="mac-arm64" data-reveal data-delay="0">
+          <span class="dl__match">For this computer</span>
+          <svg class="dl__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>
+          <h3 class="dl__title">Mac</h3>
+          <p class="dl__detail">Apple silicon (M1 and later)</p>
+          <p class="dl__meta"><span data-version>Latest release</span><span class="dl__size" data-size></span></p>
+          <a class="btn btn--primary btn--full" href="https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest/download/Jewel-Labs-mac-arm64.dmg">
+            <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <span>Download .dmg</span>
+          </a>
+        </article>
+        <article class="card dl" data-asset="mac-x64" data-reveal data-delay="80">
+          <span class="dl__match">For this computer</span>
+          <svg class="dl__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>
+          <h3 class="dl__title">Mac</h3>
+          <p class="dl__detail">Intel processor</p>
+          <p class="dl__meta"><span data-version>Latest release</span><span class="dl__size" data-size></span></p>
+          <a class="btn btn--primary btn--full" href="https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest/download/Jewel-Labs-mac-x64.dmg">
+            <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <span>Download .dmg</span>
+          </a>
+        </article>
+        <article class="card dl" data-asset="windows" data-reveal data-delay="160">
+          <span class="dl__match">For this computer</span>
+          <svg class="dl__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M9 20h6M12 16v4"/></svg>
+          <h3 class="dl__title">Windows</h3>
+          <p class="dl__detail">Windows 10 and 11, 64-bit</p>
+          <p class="dl__meta"><span data-version>Latest release</span><span class="dl__size" data-size></span></p>
+          <a class="btn btn--primary btn--full" href="https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest/download/Jewel-Labs-windows-setup.exe">
+            <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <span>Download .exe</span>
+          </a>
+        </article>
+      </div>
+
+      <div class="first-open" data-reveal>
+        <div class="first-open__item">
+          <p class="first-open__k">First open on a Mac</p>
+          <p class="first-open__v">The app is not notarized yet. Right-click the app, choose Open, then Open again (or System Settings &gt; Privacy &amp; Security &gt; Open Anyway).</p>
+        </div>
+        <div class="first-open__item">
+          <p class="first-open__k">First open on Windows</p>
+          <p class="first-open__v">If SmartScreen appears, click More info, then Run anyway.</p>
+        </div>
+        <div class="first-open__item">
+          <p class="first-open__k">Which Mac do I have?</p>
+          <p class="first-open__v">Open the Apple menu and choose About This Mac. A chip named Apple M1 or later means Apple silicon. A processor named Intel means Intel.</p>
+        </div>
+      </div>
+
+      <p class="releases" data-reveal>
+        <span id="release-line">Every version is listed on GitHub.</span>
+        <a class="link-arrow" id="releases-link" href="https://github.com/aarushkandukoori/jewel-labs-desk/releases" target="_blank" rel="noopener noreferrer">All releases
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
+      </p>
+    </section>
+
+    <!-- WATCH IT WORK: the walkthrough video. The build marks it ready once media/demo.mp4 exists. -->
+    <section class="section watch" id="watch" aria-labelledby="watch-title" data-video="pending" data-video-src="media/demo.mp4" data-video-poster="media/demo-poster.jpg">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">Watch it work</p>
+        <h2 class="section__title" id="watch-title">One shipment,<br> <em>start to finish.</em></h2>
+        <p class="section__sub">A short walkthrough of the app reading a sample shipment and building the origin pack.</p>
+      </div>
+      <div class="player" data-reveal data-delay="100">
+        <video class="player__video" id="watch-video" width="1280" height="720" playsinline preload="none" aria-label="Walkthrough of Jewel Labs Desk on a sample shipment"></video>
+        <button class="player__play" id="watch-play" type="button" aria-label="Play the walkthrough">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M8.5 6.2v11.6L18 12z"/></svg>
+        </button>
+        <div class="player__wait" id="watch-wait">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><polygon points="12,2.5 21.5,12 12,21.5 2.5,12"/><polygon points="12,7.5 16.5,12 12,16.5 7.5,12"/><line x1="12" y1="2.5" x2="12" y2="7.5"/><line x1="12" y1="21.5" x2="12" y2="16.5"/><line x1="2.5" y1="12" x2="7.5" y2="12"/><line x1="21.5" y1="12" x2="16.5" y2="12"/></svg>
+          <p>The walkthrough video is on its way.</p>
+          <a class="btn btn--ghost btn--sm" href="#demo">Try the live demo</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECURITY AND PRIVACY -->
+    <section class="section" id="security" aria-labelledby="security-title">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">Security and privacy</p>
+        <h2 class="section__title" id="security-title">Your papers stay<br> <em>your papers.</em></h2>
+        <p class="section__sub">Plain rules, built into the app and the server.</p>
+      </div>
+      <ul class="secure" data-reveal>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/></svg>
+          <h3>Keys never ship in the app</h3>
+          <p>There is no API key inside the download. The app signs in to your house's workspace instead.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg>
+          <h3>Model calls go through our server</h3>
+          <p>The agents reach the model through the Jewel Labs server, which holds the key and checks who is asking.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M6.5 6.5l11 11"/></svg>
+          <h3>Not used for training</h3>
+          <p>OpenAI's API does not train on API data by default.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-5h4v5"/></svg>
+          <h3>One workspace per house</h3>
+          <p>Each house's shipments, papers and stones live in its own workspace. Members only see the houses they belong to.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h9M4 18h9"/><rect x="15" y="13" width="6" height="7" rx="1"/><path d="M16.5 13v-1.5a1.5 1.5 0 0 1 3 0V13"/></svg>
+          <h3>Row-level security</h3>
+          <p>The database itself checks every read and write against the signed-in member, not only the app.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>
+          <h3>Every step logged</h3>
+          <p>Each agent step and each person's action lands in the activity log, with the time.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17c3-1 4-8 6-8s0 8 2 8 3-4 5-4 2 3 5 3"/><path d="M3 21h18"/></svg>
+          <h3>Nothing goes out unsigned</h3>
+          <p>A person signs every pack before it is sent. The signed pack is locked with a SHA-256 hash.</p>
+        </li>
+        <li class="secure__item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          <h3>Passwords stay on the computer</h3>
+          <p>Mailbox app passwords are kept in the system's secure storage, never in plain files.</p>
+        </li>
+      </ul>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section faq" id="faq" aria-labelledby="faq-title">
+      <div class="section__head" data-reveal>
+        <p class="eyebrow">Questions</p>
+        <h2 class="section__title" id="faq-title">Good to know<br> <em>before you install.</em></h2>
+      </div>
+      <div class="faq__list" data-reveal>
+        <details class="faq__item">
+          <summary><span class="faq__icon" aria-hidden="true"></span>What does Jewel Labs Desk do?</summary>
+          <p>It turns the papers for a diamond shipment into the pack your buyer and customs need. The agents read every document, match each stone across the papers, check origin and sanctions, and ask you about anything they are unsure of. You sign and send.</p>
+        </details>
+        <details class="faq__item">
+          <summary><span class="faq__icon" aria-hidden="true"></span>Does Jewel Labs lodge the statement for us?</summary>
+          <p>No. The house signs the statement, and the house or its customs broker lodges it. Jewel Labs prepares the papers and can review them before they go out.</p>
+        </details>
+        <details class="faq__item">
+          <summary><span class="faq__icon" aria-hidden="true"></span>Which papers can the agents read?</summary>
+          <p>Commercial invoices, packing lists, grading reports, Kimberley Process certificates, shipping bills, air waybills, insurance certificates, email threads, WhatsApp exports and phone photos. PDFs, scans and photos all work.</p>
+        </details>
+        <details class="faq__item">
+          <summary><span class="faq__icon" aria-hidden="true"></span>What happens when an agent is not sure?</summary>
+          <p>It asks your team a one-line question, such as a missing report number or a weight that does not add up. Nothing uncertain goes into a pack.</p>
+        </details>
+        <details class="faq__item">
+          <summary><span class="faq__icon" aria-hidden="true"></span>Do we have to change how we work?</summary>
+          <p>No. Keep sending papers the way you do now: email, WhatsApp or a shared folder. Connect the mailbox once and the agents pick up new shipment mail every 5 minutes.</p>
+        </details>
+        <details class="faq__item">
+          <summary><span class="faq__icon" aria-hidden="true"></span>How do we get started?</summary>
+          <p>Book a demo. Jewel Labs sets up your house, then your owner invites the team with invite codes. <a href="https://cal.com/soham-jariwala-4fvbkw/30min" target="_blank" rel="noopener noreferrer">Book a demo</a></p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer__inner">
+      <div class="footer__top">
+        <a class="brand" href="#top" aria-label="Jewel Labs, back to top">
+          <svg class="brand__mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><polygon points="12,2.5 21.5,12 12,21.5 2.5,12"/><polygon points="12,7.5 16.5,12 12,16.5 7.5,12"/><line x1="12" y1="2.5" x2="12" y2="7.5"/><line x1="12" y1="21.5" x2="12" y2="16.5"/><line x1="2.5" y1="12" x2="7.5" y2="12"/><line x1="21.5" y1="12" x2="16.5" y2="12"/></svg>
+          <span class="brand__text">JEWELLABS</span>
+        </a>
+        <nav class="footer__links" aria-label="Footer">
+          <a href="https://jewellabs.io" target="_blank" rel="noopener noreferrer">jewellabs.io</a>
+          <a href="mailto:hello@jewellabs.io">hello@jewellabs.io</a>
+          <a href="https://github.com/aarushkandukoori/jewel-labs-desk" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="https://cal.com/soham-jariwala-4fvbkw/30min" target="_blank" rel="noopener noreferrer">Book a demo</a>
+        </nav>
+      </div>
+      <div class="footer__bottom">
+        <span class="footer__tagline">Multiplayer, agentic AI infrastructure for the diamond trade</span>
+        <span class="footer__copy">© 2026 Jewel Labs</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Floating download pill (like the "Ask Jewel Labs" pill on jewellabs.io) -->
+  <a class="dl-pill" id="dl-pill" href="#download" aria-label="Go to downloads">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+    <span>Download</span>
+  </a>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

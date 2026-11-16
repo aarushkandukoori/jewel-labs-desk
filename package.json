@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/unit/",
+    "test": "node --test \"test/unit/**/*.test.js\"",
     "samples": "node samples/generate.js",
     "dist:mac": "electron-builder --mac --publish never",
     "dist:win": "electron-builder --win --publish never",

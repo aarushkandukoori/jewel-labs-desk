@@ -1,0 +1,24 @@
+# Runs the unit tests on every push and pull request. They run offline and need no Electron window.
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+        env:
+          # The tests never open Electron or a browser, so skip those large downloads.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Unit tests
+        run: npm test

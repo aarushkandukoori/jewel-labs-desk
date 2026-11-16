@@ -1,0 +1,7 @@
+# Made by `supabase link` and local runs
+.temp/
+.branches/
+# Secrets for `supabase secrets set --env-file`: never commit them
+.env
+.env.*
+functions/.env

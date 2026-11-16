@@ -1,0 +1,12 @@
+# Supabase CLI settings for the Jewel Labs backend. Run CLI commands from the repo root with --workdir backend
+# (the folder that holds this supabase/ folder). See README.md.
+project_id = "jewel-labs-desk"
+
+# The AI proxy is only called by signed-in people, so the platform checks their token first.
+# The function checks it again itself (auth.getUser) and checks house membership.
+[functions.ai]
+verify_jwt = true
+
+# Sign-up is called before anyone is signed in.
+[functions.signup]
+verify_jwt = false
