@@ -12,6 +12,7 @@ export function initialState() {
     bootError: null,
     demo: false, // true when the in-browser demo API is running
     demoInfo: null, // { recorded, title } for the banner
+    scrollToReader: false, // scroll Home to the agents reading once they start (the sample, a first upload)
     info: null, // jl.app.info()
     auth: null, // jl.auth.status()
     workspace: null, // jl.workspaces.current()
@@ -149,4 +150,19 @@ export function agentStripCounts(state) {
   const filed = docs.filter((d) => d.shipmentId).length;
   const missing = state.data.questions.filter((q) => q.status === 'open' && q.kind === 'missing_document').length;
   return { total: docs.length, read, reading, filed, unfiled: docs.length - filed, missing };
+}
+
+/** A parcel line of many stones (a lot) rather than one graded stone. */
+export const isLot = (stone) => Number(stone?.pieces) > 1;
+
+/** Single stones first (biggest first), then lots: a 119-piece lot is not the biggest stone. */
+export function sortStones(stones) {
+  return stones.slice().sort((a, b) => isLot(a) - isLot(b) || Number(b.carat || 0) - Number(a.carat || 0));
+}
+
+/** Pieces in a parcel: the invoice total, else every stone the agents traced (a lot counts each stone in it). */
+export function piecesOf(shipment, stones) {
+  if (shipment.totals?.pieces != null) return shipment.totals.pieces;
+  const own = stones.filter((x) => x.shipmentId === shipment.id);
+  return own.length ? own.reduce((n, x) => n + (Number(x.pieces) || 1), 0) : '';
 }

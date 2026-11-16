@@ -1,6 +1,8 @@
 // Turns raw record values into the words printed on the papers: dates, carats, countries, document titles.
 import { DOC_TYPE_LABELS, EU_MEMBER_STATES } from '../types.js';
-import { normalizeLab } from '../rules/formats.js';
+import { countryName as nameOfCountryCode, normalizeLab, splitCountryList } from '../rules/formats.js';
+import { reachesHalf } from '../rules/goods.js';
+import { formatCarat as caratText } from '../rules/fields.js';
 
 export const NOT_ON_FILE = 'Not on file';
 
@@ -39,9 +41,10 @@ function pad2(n) {
 
 /**
  * Reads a Date, a timestamp, "2026-11-15" or a full ISO time. Returns null for anything else, because dates
- * copied from papers ("22-10-2026", "Oct 22, 2026") are printed exactly as the document had them.
+ * copied from papers ("22-10-2026", "Oct 22, 2026") are printed exactly as the document had them. (Reading a date
+ * as a paper prints it is rules/fields.js parseDate.)
  */
-export function parseDate(value) {
+export function parseIsoDay(value) {
   if (value instanceof Date) return isNaN(value) ? null : value;
   if (typeof value === 'number') return new Date(value);
   const text = String(value ?? '').trim();
@@ -57,21 +60,21 @@ export function parseDate(value) {
 
 /** "15 Nov 2026" (local calendar day). Unknown formats print as given. */
 export function formatDay(value) {
-  const date = parseDate(value);
+  const date = parseIsoDay(value);
   if (!date) return show(value);
   return `${pad2(date.getDate())} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
 }
 
 /** "15 Nov 2026, 09:42" (local time). */
 export function formatDateTime(value) {
-  const date = parseDate(value);
+  const date = parseIsoDay(value);
   if (!date) return show(value);
   return `${formatDay(date)}, ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
 /** "15/11/2026", the format the Diamond Office template asks for. */
 export function formatSlashDate(value) {
-  const date = parseDate(value);
+  const date = parseIsoDay(value);
   if (!date) return show(value);
   return `${pad2(date.getDate())}/${pad2(date.getMonth() + 1)}/${date.getFullYear()}`;
 }
@@ -90,10 +93,10 @@ export function toNumber(value) {
   return null;
 }
 
-/** "1.02" for a carat weight, or "Not on file". */
+/** "1.02" for a carat weight (three decimals when it has three, as rules/fields.js prints it), or "Not on file". */
 export function formatCarat(value) {
   const n = toNumber(value);
-  return n === null ? NOT_ON_FILE : n.toFixed(2);
+  return n === null ? NOT_ON_FILE : caratText(n);
 }
 
 /** "12 stones, 9.84 ct" */
@@ -235,42 +238,72 @@ export function growthText(value) {
   return text === text.toLowerCase() ? text[0].toUpperCase() + text.slice(1) : text;
 }
 
-/** Counts for the statements: all stones, and stones of 0.50 ct and up ("in scope"). */
+/**
+ * Counts for the statements, the same way the rules count (rules/goods.js): a lot line of 150 pieces is 150 stones,
+ * and a stone or lot is in scope when it reaches 0.50 ct a stone. count / carats: every stone; inScopeCount /
+ * inScopeCarats: stones of 0.50 ct and up; maybeCount: stones in lots whose average is under 0.50 ct but whose papers
+ * do not rule out bigger stones; unknownCarat: stones with no carat; sizesKnown: some carat is on file.
+ */
 export function stoneFacts(stones, { naturalOnly = false } = {}) {
   const list = (stones || []).filter((stone) => !naturalOnly || !isLabGrown(stone));
-  let carats = 0;
-  let inScopeCount = 0;
-  let inScopeCarats = 0;
-  let unknownCarat = 0;
+  const facts = { count: 0, carats: 0, inScopeCount: 0, inScopeCarats: 0, maybeCount: 0, unknownCarat: 0, sizesKnown: false };
   for (const stone of list) {
+    const pieces = stone?.pieces > 1 ? stone.pieces : 1;
+    facts.count += pieces;
     const carat = caratOf(stone);
     if (carat === null) {
-      unknownCarat += 1;
+      facts.unknownCarat += pieces;
       continue;
     }
-    carats += carat;
-    if (carat >= 0.5) {
-      inScopeCount += 1;
-      inScopeCarats += carat;
+    facts.sizesKnown = true;
+    facts.carats += carat;
+    const reach = reachesHalf({ ...stone, carat, pieces });
+    if (reach === 'yes') {
+      facts.inScopeCount += pieces;
+      facts.inScopeCarats += carat;
+    } else if (reach === 'maybe') {
+      facts.maybeCount += pieces;
     }
   }
-  return { count: list.length, carats, inScopeCount, inScopeCarats, unknownCarat };
+  return facts;
 }
 
-/** Countries of mining from the stones' KP data and any KP certificate on file, as country names. */
+/**
+ * Countries of mining from the stones' KP data and any KP certificate on file, as country names, each once:
+ * the stones carry ISO codes, the certificate prints names, and both are named from the same country table the
+ * rules use. A part of the certificate's list that is no country we know is kept as printed.
+ */
 export function miningCountries(stones, documents) {
   const names = [];
-  const add = (value) => {
-    const name = countryName(value);
+  const add = (name) => {
     if (name && !names.includes(name)) names.push(name);
   };
-  for (const stone of stones || []) for (const country of stone?.kp?.countries || []) add(country);
+  for (const stone of stones || []) for (const code of stone?.kp?.countries || []) add(nameOfCountryCode(code));
   for (const doc of documents || []) {
     if (doc.docType !== 'kp_certificate') continue;
-    const listed = fieldOf(doc, 'kp.countriesOfMining');
-    if (listed) listed.split(/,|;|\/|\band\b/i).map((part) => part.trim()).filter(Boolean).forEach(add);
+    for (const part of splitCountryList(fieldOf(doc, 'kp.countriesOfMining'))) add(part.code ? nameOfCountryCode(part.code) : part.text);
   }
   return names;
+}
+
+/** A lab name short enough for a narrow table column: "GIA" stays, "Northbridge Gem Laboratory (SAMPLE)" -> "NGL". */
+export function shortLab(lab) {
+  const name = String(lab || '').replace(/\(.*?\)/g, '').trim();
+  if (!name) return null;
+  if (name.length <= 6) return name;
+  const words = name.split(/\s+/).filter((word) => /^\p{Lu}/u.test(word));
+  return words.length >= 2 ? words.map((word) => word[0]).join('').toUpperCase() : name;
+}
+
+/** "NGL is Northbridge Gem Laboratory (SAMPLE)." for every lab the table shows by a short name, or null. */
+export function labKey(labs) {
+  const pairs = [];
+  for (const lab of labs) {
+    const short = shortLab(lab);
+    const pair = `${short} is ${String(lab).trim()}`;
+    if (short && short !== String(lab).trim() && !pairs.includes(pair)) pairs.push(pair);
+  }
+  return pairs.length ? `Labs: ${pairs.join('; ')}.` : null;
 }
 
 /** True when the papers are built from the SAMPLE shipment, so every page says so. */

@@ -2,6 +2,10 @@
 // Rules from the brief: carat within 0.005 ct, colour and clarity equal after normalization, shape a loose
 // match, and natural vs lab-grown must agree. Only fields known on both sides are compared; the result
 // lists which ones were, so "match" never hides that nothing could be checked.
+import { natureFromText, normalizeColor, normalizeClarity } from '../rules/formats.js';
+
+// The same grade readers the rules use, so the lab check and the papers compare grades the same way.
+export { normalizeColor, normalizeClarity };
 
 const CARAT_TOLERANCE = 0.005;
 
@@ -40,25 +44,6 @@ function isBlank(value) {
 // "LG612345678" and "612345678" are the same report; so are "2141 438 171" and "2141438171".
 function digitsOf(value) {
   return String(value).replace(/\D/g, '');
-}
-
-/** "f", "F colour", "F (colourless)" -> "F"; "Fancy  intense yellow" -> "FANCY INTENSE YELLOW". */
-export function normalizeColor(value) {
-  const text = String(value ?? '').toUpperCase().replace(/\(.*\)/g, ' ').replace(/\bCOLOU?R(LESS)?\b|\bGRADE\b/g, ' ')
-    .replace(/\s*-\s*/g, '-').replace(/\s+/g, ' ').trim();
-  const letter = text.match(/^[D-Z](?:-[D-Z])?$/);
-  return letter ? letter[0] : text;
-}
-
-const CLARITY_SYNONYMS = {
-  F: 'FL', FLAWLESS: 'FL', INTERNALLYFLAWLESS: 'IF', LC: 'IF', LOUPECLEAN: 'IF',
-  P1: 'I1', PK1: 'I1', P2: 'I2', PK2: 'I2', P3: 'I3', PK3: 'I3',
-};
-
-/** "vs 1", "VS-1", "VS1 (very slightly included)" -> "VS1"; HRD's "LC" (loupe clean) -> "IF". */
-export function normalizeClarity(value) {
-  const text = String(value ?? '').toUpperCase().replace(/\(.*\)/g, '').replace(/[\s-]+/g, '');
-  return CLARITY_SYNONYMS[text] || text;
 }
 
 // Order matters: the longer descriptions labs print come before the plain shape words they contain.
@@ -100,14 +85,8 @@ function sameShape(a, b) {
   return firstWord(a) === firstWord(b);
 }
 
-/** 'natural' | 'lab-grown' | null from any wording ("LGD", "CVD", "Laboratory-Grown", "Natural"). */
-export function normalizeGrowth(value) {
-  const text = String(value ?? '').toUpperCase();
-  const saysLabGrown = /\bLAB\b|LABORATORY|LABGROWN|\bLGD\b|\bCVD\b|SYNTHETIC|MAN[\s-]?MADE|\bCREATED\b|CULTURED|\bGROWN\b/
-    .test(text);
-  const saysNatural = /\bNATURAL\b|\bMINED\b/.test(text);
-  // "HPHT treated natural" is a natural stone; "HPHT" on its own is a growth method.
-  if (saysNatural && !saysLabGrown) return 'natural';
-  if (saysLabGrown || /\bHPHT\b/.test(text)) return 'lab-grown';
-  return null;
-}
+/**
+ * 'natural' | 'lab-grown' | null from any wording ("LGD", "CVD", "Laboratory-Grown", "HPHT treated natural").
+ * The rules' reader (rules/formats.js natureFromText), so the papers, the AI and the lab check agree.
+ */
+export const normalizeGrowth = natureFromText;

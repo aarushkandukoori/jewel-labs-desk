@@ -7,7 +7,7 @@ import { plural } from '../lib/format.js';
 
 /** Hook: { choose(accept?), add(files), busy, input }: render `input` once in the component. */
 export function useUpload() {
-  const { jl, call, toast, state } = useApp();
+  const { jl, call, toast, state, dispatch } = useApp();
   const [busy, setBusy] = useState(false);
   const input = useRef(null);
   const accept = useRef('');
@@ -15,6 +15,7 @@ export function useUpload() {
   async function done(result) {
     if (!result || result.canceled) return result;
     const n = result.documentIds?.length || 0;
+    if (n && !state.data.documents.length) dispatch({ type: 'boot', patch: { scrollToReader: true } }); // a first upload: watch it read
     if (n) toast(`${plural(n, 'document')} sent`, state.autopilot ? 'The agents are reading them now.' : 'Autopilot is off. Press Space to run the agents.', 'ok');
     else toast('Already on file', 'Those files were added before, so nothing new was read.', 'info');
     return result;

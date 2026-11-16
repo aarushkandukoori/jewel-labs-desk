@@ -7,10 +7,14 @@ import { PAPER_KINDS, ROLES } from '../core/types.js';
 import { needString, optionalString, needObject, optionalObject, needBoolean, isSafeExternalUrl } from './validate.js';
 import { readDroppedPaths, writeTempFile, safeFileName, MAX_TOTAL_BYTES } from './files.js';
 import { looksLikeOpenAIKey } from './openai-key.js';
+import { DESK_APPROVAL_ONLY } from './state.js';
 
 const INVITE_ROLES = ROLES.filter((r) => r !== 'desk'); // desk staff are never invited by a house
 const MAX_PREFS_BYTES = 32 * 1024;
 const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024;
+const MAX_MAIL_DOMAINS = 50;
+// A host name: labels of letters, digits and hyphens, with a dot between them ("courier.example").
+const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 
 export function createHandlers({
   state, // state.js
@@ -117,7 +121,20 @@ export function createHandlers({
       appPassword: needString(opts.appPassword, 'app password', { max: 500 }),
       host: optionalString(opts.host, 'server', { max: 255 }) || undefined,
       port,
+      domains: mailDomains(opts.domains),
     };
+  }
+
+  // The domains mail is brought in from: a short list of host names ("broker.example"). services.js refuses an
+  // empty list, so a mailbox never brings in everyone's mail.
+  function mailDomains(value) {
+    if (value === undefined || value === null) return [];
+    const list = Array.isArray(value) ? value : String(value).split(/[\s,;]+/);
+    if (list.length > MAX_MAIL_DOMAINS) throw new Error(`List at most ${MAX_MAIL_DOMAINS} email domains.`);
+    const clean = list.map((d) => String(d ?? '').trim().toLowerCase().replace(/^@/, '')).filter(Boolean);
+    const bad = clean.find((d) => d.length > 253 || !HOSTNAME.test(d));
+    if (bad !== undefined) throw new Error(`"${bad.slice(0, 80)}" is not an email domain. Type domains like broker.example.`);
+    return [...new Set(clean)];
   }
 
   async function settingsPatch(patch) {
@@ -192,6 +209,7 @@ export function createHandlers({
     'workspaces.current': () => state.currentWorkspace(),
     'workspaces.update': (patch) => state.updateWorkspace(needObject(patch, 'changes')),
     'workspaces.join': (code) => state.joinWorkspace(needString(code, 'invite code', { max: 200 })),
+    'workspaces.revoke': (code) => state.revokeInvite(needString(code, 'invite code', { max: 200 })),
     'workspaces.invite': (role) => {
       const inviteRole = role ?? 'preparer';
       if (!INVITE_ROLES.includes(inviteRole)) throw new Error(`Invite someone as ${INVITE_ROLES.join(', ')}.`);
@@ -302,9 +320,11 @@ export function createHandlers({
       deskOnly();
       return (await services()).desk.queue();
     },
-    // An optional third argument carries the desk's edits to the paper.
+    // An optional third argument carries the desk's edits to the paper. Approving releases a held pack, so it
+    // needs a signed-in desk account: in a local workspace the house would be approving its own pack.
     'desk.approve': async (paperId, message, changes) => {
       deskOnly();
+      if (!state.canApprove()) throw new Error(DESK_APPROVAL_ONLY);
       const note = optionalString(message, 'message', { max: 4000 }) || '';
       return (await services()).desk.approve(needString(paperId, 'paper'), note, by(), deskChanges(changes));
     },

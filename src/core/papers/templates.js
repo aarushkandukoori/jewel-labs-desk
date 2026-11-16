@@ -117,16 +117,37 @@ const US_CBP = {
   sources: ['cbp_csms', 'ofac_determinations', 'ace_dis'],
 };
 
-/** Lab-grown goods into the EU: a note pointing to the Diamond Office G7/GF template, with the facts filled in. */
+// Grandfathered goods: the cut-off is the day the ban on them applied (EC FAQ Questions 2 and 17).
+const GRANDFATHERED = 'The same template covers grandfathered goods: diamonds a company already held outside Russia before '
+  + 'the ban on them applied, which is 1 January 2024, or for diamonds processed outside Russia 1 March 2024 (1.0 ct and up) '
+  + 'and 1 September 2024 (0.5 ct and up) (EC FAQ Questions 2 and 17).';
+const COPY_FACTS = 'Copy the facts below into the template. The importer signs it, and it goes with the shipment papers.';
+
+/**
+ * A note pointing to the Diamond Office G7/GF template, with the facts filled in. Two kinds of goods use it:
+ * lab-grown rough and polished, and natural rough (EC FAQ Questions 11, 14 and 15; AWDC guidelines).
+ */
 const G7_GF = {
   title: 'G7 / GF declaration note',
+  // Lab-grown goods.
   scope: 'Lab-grown goods use the Diamond Office G7/GF declaration, not the Due Diligence Statement.',
   paragraphs: [
     'Lab-grown (synthetic) rough and polished diamonds entering the EU through the Diamond Office use the Diamond Office G7/GF declaration template.',
-    'The same template covers grandfathered goods: diamonds a company already held before 1 January 2024.',
-    'Copy the facts below into the template. The importer signs it, and it goes with the shipment papers.',
+    'The papers name the country where the stones were grown, or a signed supplier declaration says none of 0.5 ct and up was made in Russia (EC FAQ Question 15).',
+    GRANDFATHERED,
+    COPY_FACTS,
   ],
-  wordingNote: 'Based on the AWDC EU import guidelines (update 1 January 2026). This note is not the template itself.',
+  // Natural rough.
+  rough: {
+    scope: 'Natural rough entering the EU is verified by the Diamond Office in Antwerp and uses the Diamond Office G7/GF declaration template.',
+    paragraphs: [
+      'Natural rough diamonds (HS 7102 10 and 7102 31) of 0.5 ct and up entering the EU, through any member state, are presented to the Diamond Office in Antwerp (FPS Economy, Hoveniersstraat 22, 2018 Antwerpen) for verification, and get a G7 certificate there (EC FAQ Question 11).',
+      'They travel with a Kimberley Process certificate that lists every country of mining. A certificate without them is not accepted, except for grandfathered goods (EC FAQ Questions 9 and 14).',
+      GRANDFATHERED,
+      COPY_FACTS,
+    ],
+  },
+  wordingNote: 'Based on the AWDC EU import guidelines (update 1 January 2026) and the EC FAQ on diamonds (17 Dec 2025). This note is not the template itself.',
   sources: ['awdc_guidelines', 'awdc_update', 'eu_faq'],
 };
 

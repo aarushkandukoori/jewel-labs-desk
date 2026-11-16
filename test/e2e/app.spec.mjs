@@ -3,30 +3,16 @@
 //
 //   node test/e2e/app.spec.mjs
 //
-// The app runs with JL_E2E=1 and a throwaway data folder, so real workspaces are never touched.
-import { _electron as electron } from 'playwright';
+// The app runs with JL_E2E=1 and a throwaway data folder (helpers.mjs launchApp), so real workspaces are
+// never touched, and with no OpenAI key, so nothing is sent to the AI.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { TMP, waitFor, tempDir, launchApp, closeApp, errorLines } from './helpers.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const OUT_DIR = path.join(ROOT, 'test', '.tmp');
-const SCREENSHOT = path.join(OUT_DIR, 'e2e-home.png');
+const SCREENSHOT = path.join(TMP, 'e2e-home.png');
 const require = createRequire(import.meta.url);
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function waitFor(check, timeoutMs, what) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (await check()) return;
-    await sleep(200);
-  }
-  throw new Error(`Timed out waiting for ${what}`);
-}
 
 // A one-page SAMPLE PDF, made with pdf-lib.
 async function makeSamplePdf() {
@@ -38,9 +24,8 @@ async function makeSamplePdf() {
   return doc.save();
 }
 
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'jewel-labs-e2e-'));
-const mainLines = []; // everything the main process printed
-const pageProblems = []; // console errors from the screens (another module; reported, not failed on)
+const userData = tempDir('jewel-labs-e2e-');
+const pageProblems = []; // console errors from the screens
 const results = [];
 let failed = false;
 
@@ -57,35 +42,29 @@ function check(name, fn) {
 }
 
 const started = Date.now();
-const app = await electron.launch({
-  args: [ROOT],
-  cwd: ROOT,
-  env: { ...process.env, JL_E2E: '1', JL_USER_DATA: userData },
-  timeout: 60000,
-});
-for (const stream of [app.process().stdout, app.process().stderr]) {
-  stream.on('data', (chunk) => mainLines.push(...String(chunk).split('\n').filter(Boolean)));
-}
+let app = null;
+let lines = [];
 
 try {
-  const page = await app.firstWindow();
+  const launched = await launchApp({ userData, env: { JL_DEV_OPENAI_KEY_FILE: '' } });
+  ({ app, lines } = launched);
+  const { page } = launched;
   page.on('console', (msg) => {
-    if (msg.type() === 'error') pageProblems.push(msg.text());
+    // The check below asks for file:///etc/hosts on purpose; Chromium logs the refusal.
+    if (msg.type() === 'error' && !msg.text().includes('file:///etc/hosts')) pageProblems.push(msg.text());
   });
   page.on('pageerror', (error) => pageProblems.push(error.message));
 
   await check('the window opens and shows', async () => {
     await waitFor(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible())), 20000, 'a visible window');
-    // The page may still be moving to its final screen; wait until it has settled with the bridge.
-    const settled = async () => {
-      try {
-        return await page.evaluate(() => document.readyState === 'complete' && typeof window.jl === 'object');
-      } catch {
-        return false; // the page navigated while we asked
-      }
-    };
-    await waitFor(settled, 20000, 'the first screen');
-    return `${Date.now() - started} ms after launch, ${page.url().split('/').slice(-2).join('/')}`;
+    return `${Date.now() - started} ms after launch`;
+  });
+
+  await check('the screens load from app://jewel-labs/, so no other file on the disk counts as the page', async () => {
+    assert.match(page.url(), /^app:\/\/jewel-labs\/index\.html/);
+    const outside = await page.evaluate(() => import('file:///etc/hosts').then(() => 'loaded', () => 'blocked'));
+    assert.equal(outside, 'blocked');
+    return page.url();
   });
 
   await check('window.jl exists', async () => {
@@ -133,28 +112,27 @@ try {
   });
 
   await check('screenshot', async () => {
-    fs.mkdirSync(OUT_DIR, { recursive: true });
+    fs.mkdirSync(TMP, { recursive: true });
     await page.screenshot({ path: SCREENSHOT });
-    return path.relative(ROOT, SCREENSHOT);
+    return path.relative(path.dirname(TMP), SCREENSHOT);
   });
 } catch (error) {
   failed = true;
   results.push(`FAIL  ${error.message}`);
 } finally {
   // Quitting must work: a quit that hangs leaves the app running with no window.
-  const quit = await Promise.race([app.close().then(() => true, () => true), sleep(15000).then(() => false)]);
+  const quit = await closeApp(app);
   if (quit) {
     results.push('ok    the app quits when asked');
   } else {
     failed = true;
     results.push('FAIL  the app quits when asked: still running 15 s later');
-    app.process().kill('SIGKILL');
   }
   fs.rmSync(userData, { recursive: true, force: true });
 }
 
 // The main process must start cleanly: no errors from our code and no crashes.
-const mainErrors = mainLines.filter((line) => /\[jewel-labs\] error|Uncaught|UnhandledPromiseRejection|A JavaScript error occurred/.test(line));
+const mainErrors = errorLines(lines);
 if (mainErrors.length) failed = true;
 
 console.log(results.join('\n'));

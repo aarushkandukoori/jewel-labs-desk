@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <!-- Only our own files may load. No inline scripts or styles. pdf.js runs its worker from this folder. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self' blob:; font-src 'self'; connect-src 'self' data: blob:">
+  <!-- Only our own files may load (in the desktop app, app://jewel-labs/ serves this folder and nothing else).
+       No inline scripts or styles, no plugins, no <base> and no form posts. pdf.js runs its worker from this folder. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self' blob:; font-src 'self'; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Jewel Labs</title>

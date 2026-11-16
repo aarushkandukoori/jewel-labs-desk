@@ -2,14 +2,22 @@
 // Jewel Labs never lodges anything: the house or its broker does. Statuses are "signed" and "sent".
 import { PAPER_KIND_LABELS } from '../types.js';
 import { personName, sha256Hex } from './context.js';
-import { PACK_KINDS } from './paperwork.js';
+import { PACK_KINDS, STATEMENT_KINDS, builtFromCheck, changedSinceCheck, currentRulesVersion } from './paperwork.js';
+import { currentListDate } from './sanctions-stage.js';
 
-export async function signPaper(ctx, paperId, signature = {}, by) {
+/**
+ * options.recheck(shipmentId): asks the agents to check the shipment again. It is called when signing has to wait
+ * for that (the papers changed since this version was built, or a newer OFAC SDN list came out).
+ */
+export async function signPaper(ctx, paperId, signature = {}, by, { recheck } = {}) {
   const { store } = ctx;
   const paper = await store.get('papers', paperId);
   if (!paper) throw new Error('That paper is no longer there.');
   if (paper.status === 'held_for_review') throw new Error('This pack is held for review. It can be signed once Jewel Labs approves it.');
   if (paper.status === 'signed' || paper.status === 'sent') throw new Error('This paper is already signed.');
+  if (paper.status !== 'ready_to_sign') throw new Error('This paper is a draft. Answer the open questions, then build it again to sign it.');
+  const shipment = await store.get('shipments', paper.shipmentId);
+  await checkStillReady(ctx, paper, shipment, recheck);
   const name = String(signature.name || (by ? personName(by) : '')).trim();
   if (!name) throw new Error('Type the name of the person signing.');
 
@@ -29,9 +37,45 @@ export async function signPaper(ctx, paperId, signature = {}, by) {
   await setShipmentStatus(ctx, next, 'signed');
 
   const label = PAPER_KIND_LABELS[paper.kind] || paper.kind;
+  // On an export the importer signs the statement itself; the house's signature only says it checked the draft.
+  const what = forImporter(paper, shipment)
+    ? `Checked ${label} ${paper.ref} v${paper.version}. The importer signs it.`
+    : `Signed ${label} ${paper.ref} v${paper.version}`;
   await ctx.usage('pack_signed', { paperId, shipmentId: paper.shipmentId, kind: paper.kind, by: personName(by || name) }, by || name);
-  await ctx.log(ctx.personActor(by || name), 'signed', `Signed ${label} ${paper.ref} v${paper.version}`, { shipmentId: paper.shipmentId, paperId });
+  await ctx.log(ctx.personActor(by || name), 'signed', what, { shipmentId: paper.shipmentId, paperId });
   return next;
+}
+
+/**
+ * A paper is signed only as it was built from the shipment as the agents last checked it (under the rules this copy
+ * of the app runs), with no question open, and screened against the newest OFAC SDN list. Otherwise signing waits,
+ * and the agents check the shipment again.
+ */
+async function checkStillReady(ctx, paper, shipment, recheck) {
+  if (!shipment) return;
+  const open = await ctx.store.list('questions', (q) => q.shipmentId === shipment.id && q.status === 'open');
+  if (open.length) throw new Error(`Answer the open questions on ${shipment.ref || 'this shipment'} before signing: ${open[0].text}`);
+  const again = () => { if (typeof recheck === 'function') recheck(shipment.id); };
+  // A new version of the app may bring new rules: a paper built under the old ones is not signed as it is.
+  const rules = await currentRulesVersion(ctx);
+  if ((paper.rulesVersion || null) !== rules || (shipment.rulesVersion || null) !== rules) {
+    again();
+    throw new Error('The compliance rules were updated after this version was built. The agents check the shipment again: build the papers once it is ready, then sign the new version.');
+  }
+  if (!builtFromCheck(paper, shipment) || (await changedSinceCheck(ctx, shipment))) {
+    again();
+    throw new Error('New papers or answers came in after this version was built. The agents check the shipment again: build the papers once it is ready, then sign the new version.');
+  }
+  const listDate = await currentListDate(ctx);
+  if (listDate && shipment.sdnListDate !== listDate) {
+    again();
+    throw new Error(`The OFAC SDN list was updated (${listDate}) after ${shipment.ref || 'this shipment'} was screened. The agents screen it again: sign once it shows Ready to sign.`);
+  }
+}
+
+/** On an export, the statements (EU DDS, US CBP self-certification, G7 note) are drafts the importer signs. */
+function forImporter(paper, shipment) {
+  return STATEMENT_KINDS.includes(paper.kind) && shipment?.direction !== 'import';
 }
 
 /**
@@ -58,12 +102,15 @@ export async function sendPaper(ctx, paperId, mail = {}, by, { mailConfig } = {}
   const label = PAPER_KIND_LABELS[paper.kind] || 'Paper';
   const bytes = await store.getFile(paper.fileKey);
   const cc = addressList(mail.cc);
+  const signedLine = forImporter(paper, shipment)
+    ? `checked by ${paper.signedBy}, for the importer to sign`
+    : `signed by ${paper.signedBy}`;
   const sent = await mailModule.sendMail({
     ...mailConfig,
     to,
     cc,
     subject: mail.subject || `${label} ${paper.ref}${shipment?.ref ? ` for ${shipment.ref}` : ''}`,
-    text: mail.body || `Please find attached ${label} ${paper.ref}, version ${paper.version}, signed by ${paper.signedBy}.`,
+    text: mail.body || `Please find attached ${label} ${paper.ref}, version ${paper.version}, ${signedLine}.`,
     attachments: [{ filename: `${paper.ref}-v${paper.version}.pdf`, content: bytes, contentType: 'application/pdf' }],
   });
 

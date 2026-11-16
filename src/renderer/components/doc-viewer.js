@@ -66,6 +66,7 @@ export function DocumentViewer({ doc, focusKey, onFocus }) {
           ${doc.readBy ? html`<span class="muted tiny">by ${doc.readBy}</span>` : null}
         </div>
         ${doc.summary ? html`<div class="soft small mt-8">${doc.summary}</div>` : null}
+        ${doc.needsAiRead ? html`<div class="note-warn small mt-8" role="status">Read by the offline reader while the AI could not be reached; it is read again when the AI is back. Check its values meanwhile.</div>` : null}
       </div>
       ${!fields.length ? html`<div class="empty">${doc.status === 'read' ? 'No fields on this paper.' : 'The agents have not read this paper yet.'}</div>` : null}
       ${fields.map((f) => {

@@ -2,6 +2,9 @@
 // The app password is passed in by the caller on every call. This file never stores it anywhere.
 import { ImapFlow } from 'imapflow';
 import { createTransport as nodemailerTransport } from 'nodemailer';
+import { cleanDomains, matchesDomains } from './domains.js';
+
+export { cleanDomains, matchesDomains };
 
 /** Mail providers the house can pick in Settings. `custom` needs the server names typed in. */
 export const PROVIDERS = {
@@ -13,8 +16,11 @@ export const PROVIDERS = {
   custom: { name: 'Other mail server (IMAP and SMTP)', imap: null, smtp: null },
 };
 
-/** One poll never downloads more than this many messages, so a huge inbox cannot stall the agents. */
+/** One page looks at this many messages at most, so a huge inbox cannot stall the agents. */
 export const MAX_MESSAGES_PER_POLL = 200;
+/** A message bigger than this is not downloaded: it is listed in tooBig, so the house can add its papers by hand. */
+export const MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Server name and port for 'imap' or 'smtp'. A preset can be overridden (host/port for IMAP,
@@ -53,10 +59,13 @@ export function connectMailbox(options, deps = {}) {
 
   async function open() {
     if (client && client.usable) return client;
+    const secure = server.port === 993; // 993 is TLS from the start
     client = new ImapClient({
       host: server.host,
       port: server.port,
-      secure: server.port === 993,
+      secure,
+      // Any other port must upgrade with STARTTLS, or the login stops: the app password never goes out unencrypted.
+      doSTARTTLS: secure ? undefined : true,
       auth: { user: email, pass: appPassword },
       logger: false,
     });
@@ -86,22 +95,38 @@ export function connectMailbox(options, deps = {}) {
       }
     },
 
-    /** Messages that arrived on or after `date` (IMAP SINCE works by whole days), newest 200 at most. */
-    async fetchSince(date, { domains = [], limit = MAX_MESSAGES_PER_POLL } = {}) {
+    /**
+     * The next page of messages, oldest first, from senders at one of the domains.
+     * The first time (no afterUid, or the server renumbered the inbox) it starts at `date`; after that it goes on
+     * after the last message it looked at, so no mail is skipped however much arrives in between.
+     * Returns the messages, plus the cursor for the next call: { uidValidity, lastUid, more }, and tooBig: the
+     * messages from those domains that were too big to download ([{ uid, from, subject, size }]).
+     */
+    async fetchSince(date, { domains = [], limit = MAX_MESSAGES_PER_POLL, afterUid = 0, uidValidity = null } = {}) {
       const imap = await open();
       const lock = await imap.getMailboxLock('INBOX');
       try {
-        const found = (await imap.search({ since: toDate(date) }, { uid: true })) || [];
-        const recent = [...found].sort((a, b) => a - b).slice(-limit);
-        if (!recent.length) return [];
+        const validity = imap.mailbox?.uidValidity == null ? null : String(imap.mailbox.uidValidity); // a BigInt in imapflow
+        const resume = afterUid > 0 && validity !== null && validity === String(uidValidity);
+        // IMAP SINCE works by whole days in the server's time zone: start a day early, repeats are skipped later.
+        const query = resume ? { uid: `${afterUid + 1}:*` } : { since: new Date(toDate(date).getTime() - DAY_MS) };
+        // "n:*" always returns the last message, even when nothing is newer than n.
+        const found = ((await imap.search(query, { uid: true })) || []).filter((uid) => !resume || uid > afterUid).sort((a, b) => a - b);
+        const page = found.slice(0, limit);
+        const cursor = {
+          uidValidity: validity,
+          lastUid: page.length ? page[page.length - 1] : resume ? afterUid : Math.max(0, Number(imap.mailbox?.uidNext || 1) - 1),
+          more: found.length > page.length,
+        };
         // First pass reads headers only, so mail from other companies is never downloaded.
-        const wanted = await pickByDomain(imap, recent, domains);
-        if (!wanted.length) return [];
+        const { wanted, tooBig } = page.length ? await pickByDomain(imap, page, domains) : { wanted: [], tooBig: [] };
         const messages = [];
-        for await (const msg of imap.fetch(wanted, { uid: true, envelope: true, internalDate: true, source: true }, { uid: true })) {
-          if (msg && msg.source) messages.push(toMessage(msg));
+        if (wanted.length) {
+          for await (const msg of imap.fetch(wanted, { uid: true, envelope: true, internalDate: true, source: true }, { uid: true })) {
+            if (msg && msg.source) messages.push(toMessage(msg));
+          }
         }
-        return messages;
+        return Object.assign(messages, cursor, { tooBig });
       } catch (err) {
         throw friendlyMailError(err);
       } finally {
@@ -122,34 +147,23 @@ export function connectMailbox(options, deps = {}) {
   };
 }
 
-async function pickByDomain(imap, uids, domains) {
-  if (!cleanDomains(domains).length) return uids;
-  const keep = [];
-  for await (const msg of imap.fetch(uids, { uid: true, envelope: true }, { uid: true })) {
-    if (matchesDomains(msg.envelope, domains)) keep.push(msg.uid);
-  }
-  return keep;
-}
-
 /**
- * True when the sender (or someone copied) is at one of the domains. An empty list keeps everything.
- * The "to" line is skipped on purpose: it is usually the house itself.
+ * { wanted, tooBig }: the uids of the messages from someone at one of the domains (no domains: none at all), and
+ * those of them too big to download.
  */
-export function matchesDomains(envelope, domains) {
-  const list = cleanDomains(domains);
-  if (!list.length) return true;
-  const people = ['from', 'sender', 'replyTo', 'cc'].flatMap((key) => envelope?.[key] || []);
-  return people.some((person) => {
-    const domain = String(person?.address || '').toLowerCase().split('@')[1] || '';
-    return list.some((d) => domain === d || domain.endsWith(`.${d}`));
-  });
-}
-
-function cleanDomains(domains) {
-  const list = Array.isArray(domains) ? domains : String(domains || '').split(/[,\s]+/);
-  return list
-    .map((d) => String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^.*@/, '').replace(/^www\./, ''))
-    .filter(Boolean);
+async function pickByDomain(imap, uids, domains) {
+  const wanted = [];
+  const tooBig = [];
+  if (!cleanDomains(domains).length) return { wanted, tooBig };
+  for await (const msg of imap.fetch(uids, { uid: true, envelope: true, size: true }, { uid: true })) {
+    if (!matchesDomains(msg.envelope, domains)) continue;
+    if (Number(msg.size) > MAX_MESSAGE_BYTES) {
+      tooBig.push({ uid: msg.uid, from: msg.envelope?.from?.[0]?.address || null, subject: msg.envelope?.subject || '', size: Number(msg.size) });
+    } else {
+      wanted.push(msg.uid);
+    }
+  }
+  return { wanted, tooBig };
 }
 
 function toMessage(msg) {
@@ -231,6 +245,8 @@ export function friendlyMailError(err) {
   let message = `The mail server said: ${raw}`;
   if (err?.authenticationFailed || err?.code === 'EAUTH' || /authenticat|credential|password|login failed|invalid login/i.test(raw)) {
     message = 'The mailbox did not accept this email and app password. Check the app password and try again.';
+  } else if (err?.tlsFailed) {
+    message = 'This mail server does not offer an encrypted connection on this port, so the app password was not sent. Use port 993, or ask for the secure IMAP settings.';
   } else if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET', 'ESOCKET'].includes(err?.code)) {
     message = 'Could not reach the mail server. Check the internet connection and the server name.';
   }

@@ -5,12 +5,14 @@
 //   * without a code: creates the account and a new sandbox house where the person is the owner
 //     (turn this off with the secret ALLOW_OPEN_SIGNUP=false)
 // Accounts are created already confirmed, so nobody waits for a confirmation email. The app signs in right after.
-// Each network may try 10 times an hour. Passwords are never logged.
+// Each network may try 10 times an hour, and all networks together SIGNUP_HOURLY_CAP times an hour (default 100).
+// When the counter cannot be read, nobody signs up (it fails closed). Passwords are never logged.
 import { createClient } from 'npm:@supabase/supabase-js@2.119.0';
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const INVITE_CODE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$/;
-const TRIES_PER_HOUR = 10;
+const TRIES_PER_HOUR = 10; // per network
+const DEFAULT_HOURLY_CAP = 100; // all networks together: a ceiling that holds even if an address is faked
 
 function serviceKey(): string {
   try {
@@ -54,27 +56,47 @@ function readForm(input: any): Form | string {
   return { email, password, name, inviteCode, houseName };
 }
 
-// Rate limit by network. Only a SHA-256 of the IP address is stored.
-async function allowedToTry(req: Request): Promise<boolean> {
-  const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`jl-signup:${ip}`));
-  const ipHash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  const { data, error } = await admin.rpc('note_signup_attempt', { p_ip_hash: ipHash, p_limit: TRIES_PER_HOUR });
-  if (error) {
-    console.error('note_signup_attempt failed:', error.message);
-    return true; // do not lock everyone out because the counter failed
+function hourlyCap(): number {
+  const cap = Number.parseInt(Deno.env.get('SIGNUP_HOURLY_CAP') || '', 10);
+  return Number.isFinite(cap) && cap >= 0 ? cap : DEFAULT_HOURLY_CAP;
+}
+
+// The caller's network address. Cloudflare, in front of Supabase, sets cf-connecting-ip to the address it saw and
+// replaces any value the caller sent. The first X-Forwarded-For entry is only a fallback: the caller can write it.
+let addressSourceLogged = false;
+function clientAddress(req: Request): string {
+  const direct = (req.headers.get('cf-connecting-ip') || '').trim();
+  if (!addressSourceLogged) {
+    addressSourceLogged = true; // once per instance, so the logs show which header the platform provides
+    console.log(`signup: network address from ${direct ? 'cf-connecting-ip' : 'x-forwarded-for (cf-connecting-ip missing)'}`);
   }
+  return direct || (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
+}
+
+// Rate limit by network and overall. Only a SHA-256 of the IP address is stored.
+async function allowedToTry(req: Request): Promise<boolean> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`jl-signup:${clientAddress(req)}`));
+  const ipHash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const { data, error } = await admin.rpc('note_signup_attempt', {
+    p_ip_hash: ipHash,
+    p_limit: TRIES_PER_HOUR,
+    p_global_limit: hourlyCap(),
+  });
+  if (error) throw new Error(`note_signup_attempt failed: ${error.message}`); // no counter, no sign-up
   return Boolean(data);
 }
 
-async function inviteIsValid(code: string): Promise<boolean> {
+// A first look, so no account is made for a code that cannot work. redeem_invite checks again, under a lock.
+async function inviteIsValid(code: string, email: string): Promise<boolean> {
   const { data, error } = await admin
     .from('invites')
-    .select('expires_at, uses, max_uses')
+    .select('role, email, expires_at, uses, max_uses')
     .eq('code', code)
     .maybeSingle();
   if (error) throw new Error(`invite lookup failed: ${error.message}`);
-  return Boolean(data && new Date(data.expires_at) > new Date() && data.uses < data.max_uses);
+  if (!data || new Date(data.expires_at) <= new Date() || data.uses >= data.max_uses) return false;
+  if (data.role === 'desk' && !data.email) return false; // desk invites name one person
+  return !data.email || data.email === email; // an invite for a named person works only for that email
 }
 
 // Creates a confirmed account. Returns its id, or a Response explaining why not.
@@ -106,7 +128,7 @@ async function removeAccount(userId: string): Promise<void> {
 }
 
 async function signUpWithCode(form: Form): Promise<Response> {
-  if (!(await inviteIsValid(form.inviteCode))) return refuse(400, 'That invite code is not valid or has expired.');
+  if (!(await inviteIsValid(form.inviteCode, form.email))) return refuse(400, 'That invite code is not valid or has expired.');
   const account = await createAccount(form);
   if (account instanceof Response) return account;
   // redeem_invite locks the invite row, so two people cannot use its last place at once.
@@ -140,7 +162,7 @@ async function signUpWithNewHouse(form: Form): Promise<Response> {
 Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') return refuse(405, 'Use POST.');
   try {
-    if (!(await allowedToTry(req))) return refuse(429, 'Too many sign-ups from this network. Try again in an hour.');
+    if (!(await allowedToTry(req))) return refuse(429, 'Too many sign-ups right now. Try again in an hour.');
     let input: unknown;
     try {
       input = await req.json();

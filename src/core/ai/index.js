@@ -10,9 +10,14 @@
 //           'readEmail', 'route' or 'draftPackingList'. Return undefined to use the offline reader instead.
 //
 // Every method falls back to the offline reader when the AI is off or a call fails, so the agents keep working.
+// A reading that fell back because a call failed says so with readBy 'offline' and a "Read offline: ..." warning.
+// When reading it again later can help (the AI was down, busy, out of credit, signed out), it also carries
+// aiError, the error's code, so intake can read that paper, chat or email again once the AI is back. With the AI
+// simply off, nothing failed and nothing is marked.
 // The last AI problem is kept in ai.lastError ({ code, message, at }) for the app to show.
 
-import { createClient, AIError, isFileRejection, NO_KEY_MESSAGE } from './client.js';
+import { AI_PROXY_MAX_BODY_BYTES } from '../config.js';
+import { createClient, AIError, isFileRejection, isFileTypeRejection, NO_KEY_MESSAGE } from './client.js';
 import {
   EXTRACTION_SCHEMA, CLASSIFY_SCHEMA, CHAT_SCHEMA, EMAIL_SCHEMA, ROUTE_SCHEMA, PACKING_SCHEMA, PING_SCHEMA,
 } from './schemas.js';
@@ -43,6 +48,11 @@ const LIMITS = {
   questions: 15,
 };
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+// Of the proxy's request limit, what the prompt, its text and the schema may take; the paper gets the rest.
+const PROMPT_ROOM = 1024 * 1024;
+// Failures that the same request again cannot fix: nothing to send, the model refused the paper, the paper is too
+// big, or the request itself was refused.
+const FINAL_ERRORS = ['no_content', 'refused', 'too_large', 'bad_request'];
 
 export function createAI(options = {}) {
   const { mode = 'off', apiKey = '', proxyUrl = '', getAccessToken = null, mockHandler = null } = options;
@@ -68,7 +78,13 @@ export function createAI(options = {}) {
       },
     })
     : null;
-  let filesRejected = false; // set once the API refuses PDF file parts; then pages go as images and text
+  // A PDF goes along as a file part when it fits. A refusal is usually about that one PDF (more pages than the
+  // API takes, a file it cannot parse): that PDF is read again from its text and page images, and the next PDF
+  // still goes as a file. Only when the API says it takes no file parts at all, or refuses two different PDFs
+  // before it ever took one, do later PDFs go without the file part.
+  const pdfFiles = { taken: false, refused: new Set(), refusedAll: false };
+  // Through the proxy a request must stay under its body limit. Files and images go as base64, a third bigger.
+  const paperRoom = mode === 'proxy' ? AI_PROXY_MAX_BODY_BYTES - PROMPT_ROOM : Infinity;
 
   const ai = {
     mode,
@@ -94,6 +110,13 @@ export function createAI(options = {}) {
     ai.lastError = { code: err?.code || 'error', message: err?.message || String(err), at: new Date().toISOString() };
   }
 
+  /** One structured call. An answer clears the last problem, so the app stops saying the AI is unreachable. */
+  async function askAI(request) {
+    const answer = await client.json(request);
+    ai.lastError = null;
+    return answer;
+  }
+
   async function fromMock(task, args) {
     if (mode !== 'mock' || typeof mockHandler !== 'function') return undefined;
     totals.calls += 1;
@@ -102,33 +125,51 @@ export function createAI(options = {}) {
 
   // ---- documents ----
 
-  /** The paper itself for the model: an image, the PDF as a file part, or page images. */
+  /** True when the PDF itself goes along as a file part. */
+  function sendsPdfFile(item) {
+    const size = item?.kind === 'pdf' ? item.bytes?.length || 0 : 0;
+    return size > 0 && size <= LIMITS.pdfBytes && base64Size(size) <= paperRoom
+      && !pdfFiles.refusedAll && !pdfFiles.refused.has(pdfKey(item));
+  }
+
+  /** The paper itself for the model: an image, the PDF as a file part, or page images (as many as fit). */
   function documentParts(item, { pageImages = [], detail = 'high', maxImages = LIMITS.pageImages } = {}) {
     const bytes = item?.bytes;
     const mime = item?.mime === 'image/jpg' ? 'image/jpeg' : item?.mime;
     if (item?.kind === 'image' && bytes?.length && bytes.length <= LIMITS.imageBytes && IMAGE_TYPES.includes(mime)) {
       return [imagePart(`data:${mime};base64,${toBase64(bytes)}`, detail)];
     }
-    if (item?.kind === 'pdf' && bytes?.length && !filesRejected && bytes.length <= LIMITS.pdfBytes) {
+    if (sendsPdfFile(item)) {
       return [{ type: 'file', file: { filename: pdfName(item.name), file_data: `data:application/pdf;base64,${toBase64(bytes)}` } }];
     }
-    return (pageImages || []).slice(0, maxImages).map((url) => imagePart(url, detail));
+    const parts = [];
+    let size = 0;
+    for (const url of (pageImages || []).slice(0, maxImages)) {
+      size += url.length;
+      if (size > paperRoom) break; // the later pages would not fit in one request; their text is in the prompt
+      parts.push(imagePart(url, detail));
+    }
+    return parts;
   }
 
-  /** Ask about a paper. If the API refuses the PDF file part, remember that and ask again with page images. */
+  /** Ask about a paper. If the API refuses the PDF file part, ask again for that paper with its page images. */
   async function askDocument({ system, text, item, pageImages, schema, name, maxTokens, detail }) {
-    const send = (parts) => client.json({
+    const send = (parts) => askAI({
       schema,
       name,
       maxTokens,
       messages: [{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text }, ...parts] }],
     });
     const parts = documentParts(item, { pageImages, detail });
+    const sendsFile = parts.some((p) => p.type === 'file');
     try {
-      return await send(parts);
+      const answer = await send(parts);
+      if (sendsFile) pdfFiles.taken = true;
+      return answer;
     } catch (err) {
-      if (!parts.some((p) => p.type === 'file') || !isFileRejection(err)) throw err;
-      filesRejected = true;
+      if (!sendsFile || !isFileRejection(err)) throw err;
+      pdfFiles.refused.add(pdfKey(item));
+      if (isFileTypeRejection(err) || (!pdfFiles.taken && pdfFiles.refused.size >= 2)) pdfFiles.refusedAll = true;
       return send(documentParts(item, { pageImages, detail }));
     }
   }
@@ -151,7 +192,7 @@ export function createAI(options = {}) {
       return normalizeClassification(value, guess);
     } catch (err) {
       remember(err);
-      return { ...guess, reason: `${guess.reason} (AI unavailable)` };
+      return { ...guess, reason: `${guess.reason} (AI unavailable)`, ...readAgainLater(err) };
     }
   }
 
@@ -162,8 +203,7 @@ export function createAI(options = {}) {
     if (mocked) return { ...normalizeExtraction(mocked, docType), readBy: 'mock', warnings: [] };
     if (!client) return { ...offline, warnings: [] };
     try {
-      const sendsFile = item?.kind === 'pdf' && !filesRejected && item?.bytes?.length > 0 && item.bytes.length <= LIMITS.pdfBytes;
-      const hint = capText(text.marked, sendsFile ? LIMITS.textHintWithFile : LIMITS.textHint);
+      const hint = capText(text.marked, sendsPdfFile(item) ? LIMITS.textHintWithFile : LIMITS.textHint);
       if (!hint.trim() && !documentParts(item, opts).length) {
         throw new AIError('no_content', 'Nothing to read: no text layer and no page image.');
       }
@@ -184,7 +224,7 @@ export function createAI(options = {}) {
       return { ...result, readBy: `ai:${model}`, warnings };
     } catch (err) {
       remember(err);
-      return { ...offline, warnings: [`Read offline: ${err.message}`] };
+      return { ...offline, warnings: [`Read offline: ${err.message}`], ...readAgainLater(err) }; // offline.readBy is 'offline'
     }
   }
 
@@ -199,22 +239,23 @@ export function createAI(options = {}) {
     const kept = original.map((m, index) => ({ ...m, index })).filter((m) => !isFluff(m)); // clear the fluff
     if (!kept.length) return offline;
     try {
-      const result = { relevant: [], requests: [], packing: [], refs: [] };
+      const result = { relevant: [], requests: [], packing: [], refs: [], readBy: `ai:${client.model}` };
       for (const chunk of chunkMessages(kept, LIMITS.chatChars)) {
         const lines = chunk.map((m) => `#${m.index} [${m.at || ''}] ${m.author || 'system'}: ${oneLine(m.text)}${m.attachment ? ` <file: ${m.attachment}>` : ''}`);
-        const { value } = await client.json({
+        const { value, model } = await askAI({
           schema: CHAT_SCHEMA,
           name: 'chat_reading',
           maxTokens: 8_000,
           messages: [{ role: 'system', content: prompts.CHAT_SYSTEM }, { role: 'user', content: prompts.chatPrompt({ title: chat?.title, lines }) }],
         });
         mergeChatAnswer(result, value, original);
+        if (model) result.readBy = `ai:${model}`; // the model that really answered (the client may fall back)
       }
       for (const group of result.packing) group.lines.forEach((line, i) => { line.lineNo = i + 1; });
       return result;
     } catch (err) {
       remember(err);
-      return { ...offline, warnings: [`Read offline: ${err.message}`] };
+      return { ...offline, readBy: 'offline', warnings: [`Read offline: ${err.message}`], ...readAgainLater(err) };
     }
   }
 
@@ -226,7 +267,7 @@ export function createAI(options = {}) {
     const body = capText(newPartOfEmail(email?.text), LIMITS.emailChars);
     if (!body.trim()) return offline;
     try {
-      const { value } = await client.json({
+      const { value, model } = await askAI({
         schema: EMAIL_SCHEMA,
         name: 'email_reading',
         maxTokens: 4_000,
@@ -242,10 +283,11 @@ export function createAI(options = {}) {
           .map((r) => ({ text: oneLine(r.text), ref: inEmail(r.ref) ? oneLine(r.ref) : null })),
         refs: uniqueLoose(value.refs.filter(inEmail).map(oneLine)),
         packing: offline.packing,
+        readBy: `ai:${model || client.model}`,
       };
     } catch (err) {
       remember(err);
-      return { ...offline, warnings: [`Read offline: ${err.message}`] };
+      return { ...offline, readBy: 'offline', warnings: [`Read offline: ${err.message}`], ...readAgainLater(err) };
     }
   }
 
@@ -265,7 +307,7 @@ export function createAI(options = {}) {
         .filter((q) => (q.status || 'open') === 'open')
         .slice(0, LIMITS.questions)
         .map((q) => ({ shipment: refOf(q.shipmentId), text: oneLine(q.text) }));
-      const { value } = await client.json({
+      const { value } = await askAI({
         schema: ROUTE_SCHEMA,
         name: 'route',
         maxTokens: 800,
@@ -286,7 +328,7 @@ export function createAI(options = {}) {
     const material = buildMaterial(input);
     if (!material.lines.length) return offline;
     try {
-      const { value } = await client.json({
+      const { value } = await askAI({
         schema: PACKING_SCHEMA,
         name: 'packing_list',
         maxTokens: 12_000,
@@ -335,7 +377,7 @@ export function createAI(options = {}) {
       return { ok: false, mode, model: ai.model, code: ai.lastError?.code || 'off', message: ai.lastError?.message || 'The AI is off. The offline reader is used.' };
     }
     try {
-      const { model } = await client.json({
+      const { model } = await askAI({
         schema: PING_SCHEMA, name: 'ping', maxTokens: 300, messages: [{ role: 'user', content: 'Reply with {"ok": true}.' }],
       });
       return { ok: true, mode, model, message: `Connected. The agents use ${model}.` };
@@ -356,6 +398,22 @@ function imagePart(url, detail) {
 
 function toBase64(bytes) {
   return Buffer.from(bytes).toString('base64');
+}
+
+/** Characters of the base64 data URL for a file of this size, as it is sent. */
+function base64Size(bytes) {
+  return Math.ceil(bytes / 3) * 4 + 64;
+}
+
+/** Which PDF a refusal was about. The same paper is read twice (classify, then extract), and again on a re-read. */
+function pdfKey(item) {
+  return `${item?.name || ''}|${item?.bytes?.length || 0}`;
+}
+
+/** { aiError: code } when reading the same paper again once the AI is back can help, else nothing. */
+function readAgainLater(err) {
+  const code = err?.code || 'error';
+  return FINAL_ERRORS.includes(code) ? {} : { aiError: code };
 }
 
 function pdfName(name) {

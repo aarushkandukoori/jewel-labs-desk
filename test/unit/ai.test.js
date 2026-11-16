@@ -3,15 +3,20 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import { createAI } from '../../src/core/ai/index.js';
-import { OPENAI_URL } from '../../src/core/ai/client.js';
+import { OPENAI_URL, createClient } from '../../src/core/ai/client.js';
+import { normalizeField, normalizeLine } from '../../src/core/ai/normalize.js';
+import { checkReportNumber, natureFromText } from '../../src/core/rules/formats.js';
 import { SCHEMAS, EXTRACTION_SCHEMA, strictProblems, validate } from '../../src/core/ai/schemas.js';
-import { readDocument, linesFromSheet, parseStoneLine, cleanValue } from '../../src/core/ai/heuristics.js';
+import { readDocument, linesFromSheet, parseStoneLine, cleanValue, growthFrom } from '../../src/core/ai/heuristics.js';
+import { READER_SYSTEM, extractPrompt } from '../../src/core/ai/prompts.js';
 import { classifyByRules } from '../../src/core/ai/classify.js';
 import { readChatOffline, routeOffline, findRefs, isFluff, draftPackingListOffline } from '../../src/core/ai/conversation.js';
 import { parseDate, parseNumber, plainCopy } from '../../src/core/ai/text.js';
-import { AI_MODELS, AI_REASONING } from '../../src/core/config.js';
+import { parseDate as rulesParseDate, parseNumber as rulesParseNumber } from '../../src/core/rules/fields.js';
+import { AI_MODELS, AI_REASONING, AI_PROXY_MAX_BODY_BYTES } from '../../src/core/config.js';
 import { FIELD_KEYS } from '../../src/core/types.js';
 
 // A fake key, built at run time so no key-shaped text sits in the repo.
@@ -648,7 +653,6 @@ test('offline reader: KP certificate and air waybill', () => {
 test('offline reader pieces: dates, numbers, rows and values', () => {
   assert.equal(parseDate('22/10/2026'), '2026-10-22');
   assert.equal(parseDate('05/11/2026'), '2026-11-05');
-  assert.equal(parseDate('05/11/2026', { usStyle: true }), '2026-05-11');
   assert.equal(parseDate('10/22/2026'), '2026-10-22');
   assert.equal(parseDate('22-OCT-26'), '2026-10-22');
   assert.equal(parseDate('October 22, 2026'), '2026-10-22');
@@ -658,6 +662,10 @@ test('offline reader pieces: dates, numbers, rows and values', () => {
   assert.equal(parseNumber('US$ 1,250.00'), 1250);
   assert.equal(parseNumber('1.234,56'), 1234.56);
   assert.equal(parseNumber('1,02'), 1.02);
+  assert.equal(parseNumber('0,510 ct'), 0.51, 'a decimal comma after 0, not 510 carats');
+  // One reader for dates and numbers in the whole app: the AI layer uses the one the rules use.
+  assert.equal(parseDate, rulesParseDate);
+  assert.equal(parseNumber, rulesParseNumber);
   assert.equal(cleanValue('UNITED ARAB EMIRATES No.of Ctrs. : 0'), 'UNITED ARAB EMIRATES');
   const typed = parseStoneLine('1.02 g vs1 round GIA 2141438167');
   assert.equal(typed.reportNumber, '2141438167');
@@ -855,4 +863,189 @@ test('mode off and mock mode work without any network', async () => {
   const routed = await mock.route('What is still missing?', { shipments: SHIPMENTS });
   assert.equal(routed.intent, 'whats_missing');
   assert.deepEqual(seen, ['extract', 'route']);
+});
+
+// ---------------------------------------------------------------- when the AI fails or the request is too big
+
+const PROXY_URL = 'https://example.test/functions/v1/ai';
+const HOUSE = '00000000-0000-4000-8000-000000000001';
+const proxyAI = (fetch, extra = {}) => createAI({
+  mode: 'proxy', proxyUrl: PROXY_URL, getAccessToken: async () => 'user-session-token', workspaceId: HOUSE, fetch, retryBaseMs: 0, ...extra,
+});
+
+test("the proxy's daily cap is not 'busy': it is not retried and says when the count starts again", async () => {
+  const fetch = fakeFetch(() => ({
+    status: 429,
+    json: { error: { message: 'This house has used its 600 AI calls for today. The count resets at midnight UTC.', type: 'jewel_labs_proxy', code: 'daily_limit' } },
+  }));
+  const status = await proxyAI(fetch).check();
+  assert.equal(status.code, 'quota');
+  assert.match(status.message, /used its Jewel Labs AI calls for today.*midnight UTC/);
+  assert.doesNotMatch(status.message, /busy|try again/);
+  assert.equal(fetch.calls.length, 1);
+});
+
+test('a reading that fell back after an AI failure says so, so the paper can be read again later', async () => {
+  let down = true;
+  const answer = { docType: 'packing_list', summary: 'Packing list.', fields: [field('invoice.number', 'EXP/26-27/031')], lines: [], declarations: [] };
+  const fetch = fakeFetch(() => (down ? { status: 503, json: { error: { message: 'Service unavailable' } } } : ok(answer)));
+  const ai = directAI(fetch);
+  const paper = { name: 'pl.txt', kind: 'text' };
+
+  const offline = await ai.extract(paper, 'packing_list', { textHint: PACKING_LIST });
+  assert.deepEqual([offline.readBy, offline.aiError], ['offline', 'server']);
+  assert.match(offline.warnings[0], /^Read offline: OpenAI had a server problem\.$/, 'no promise that nobody keeps');
+  assert.equal((await ai.classify({ name: 'scan.pdf', kind: 'pdf' }, { textHint: 'SAMPLE' })).aiError, 'server');
+  const chat = await ai.readChat(CHAT);
+  assert.deepEqual([chat.readBy, chat.aiError], ['offline', 'server']);
+  assert.match(chat.warnings[0], /Read offline/);
+  assert.equal(chat.requests.length, 1, 'the offline reading is still there');
+  const email = await ai.readEmail({ from: 'a@example.test', subject: 'EXP/26-27/031', text: 'Please send the KP copy.' });
+  assert.deepEqual([email.readBy, email.aiError], ['offline', 'server']);
+
+  down = false; // the AI is back: the same paper is read by the AI, with no mark
+  const again = await ai.extract(paper, 'packing_list', { textHint: PACKING_LIST });
+  assert.ok(again.readBy.startsWith('ai:'));
+  assert.equal(again.aiError, undefined);
+
+  // A failure the same request cannot get past is not marked either: reading it again would fail again.
+  const refusing = fakeFetch(() => ({ status: 200, json: { choices: [{ message: { role: 'assistant', content: null, refusal: 'No.' }, finish_reason: 'stop' }] } }));
+  const refused = await directAI(refusing).extract(paper, 'packing_list', { textHint: PACKING_LIST });
+  assert.deepEqual([refused.readBy, refused.aiError], ['offline', undefined]);
+  assert.match(refused.warnings[0], /A person needs to look at it/);
+
+  // With the AI switched off nothing failed, so nothing is marked for a second reading.
+  const off = createAI({ mode: 'off' });
+  assert.equal((await off.extract(paper, 'packing_list', { textHint: PACKING_LIST })).aiError, undefined);
+  assert.equal((await off.readChat(CHAT)).aiError, undefined);
+});
+
+const pdfItem = (name, size = 64) => {
+  const bytes = new Uint8Array(size);
+  bytes.set(new TextEncoder().encode('%PDF-1.7 SAMPLE'));
+  return { name, kind: 'pdf', mime: 'application/pdf', bytes };
+};
+const sentFile = (call) => partsOf(call.body).find((p) => p.type === 'file')?.file.filename || null;
+const EXTRACTED = { docType: 'commercial_invoice', summary: 'Invoice.', fields: [], lines: [], declarations: [] };
+
+test('a PDF the API refuses is read again without its file; the next PDFs still go as files', async () => {
+  const fetch = fakeFetch((body) => (sentFile({ body }) === 'combined-scan-180-pages.pdf'
+    ? fail(400, 'Invalid file: the PDF has more pages than allowed (100).', 'invalid_value', 'messages[1].content[1].file')
+    : ok(EXTRACTED)));
+  const ai = directAI(fetch);
+  const big = await ai.extract(pdfItem('combined-scan-180-pages.pdf'), 'other', { textHint: INVOICE, pageImages: ['data:image/png;base64,AAAA'] });
+  assert.ok(big.readBy.startsWith('ai:'), 'read by the AI from its text and page images');
+  assert.ok(partsOf(fetch.calls[1].body).some((p) => p.type === 'image_url'));
+  await ai.extract(pdfItem('Invoice KG-26-27-041.pdf'), 'commercial_invoice', { textHint: INVOICE });
+  await ai.extract(pdfItem('combined-scan-180-pages.pdf'), 'other', { textHint: INVOICE });
+  assert.deepEqual(fetch.calls.map(sentFile), ['combined-scan-180-pages.pdf', null, 'Invoice KG-26-27-041.pdf', null]);
+});
+
+test('PDFs stop going as files once the API has refused two different ones and taken none', async () => {
+  const fetch = fakeFetch((body) => (sentFile({ body }) ? fail(400, 'This proxy does not pass on PDF files.', 'bad_request') : ok(EXTRACTED)));
+  const ai = directAI(fetch);
+  for (const name of ['a.pdf', 'b.pdf', 'c.pdf']) await ai.extract(pdfItem(name), 'other', { textHint: INVOICE });
+  assert.deepEqual(fetch.calls.map(sentFile), ['a.pdf', null, 'b.pdf', null, null]);
+});
+
+test('through the proxy every request fits under its body limit', async () => {
+  // The proxy refuses bodies over 25 MiB (MAX_BODY_BYTES in its source); the app uses the same number.
+  const source = fs.readFileSync(new URL('../../backend/supabase/functions/ai/index.ts', import.meta.url), 'utf8');
+  const [, mib] = source.match(/const MAX_BODY_BYTES = (\d+) \* 1024 \* 1024;/);
+  assert.equal(AI_PROXY_MAX_BODY_BYTES, Number(mib) * 1024 * 1024);
+
+  const sizes = [];
+  const fetch = fakeFetch((body, n, init) => {
+    sizes.push(Buffer.byteLength(init.body));
+    return ok(EXTRACTED);
+  });
+  const ai = proxyAI(fetch);
+  // 19.5 MiB of PDF is 26 MiB as base64: it goes as text (and page images) instead of as a file.
+  await ai.extract(pdfItem('Scan of all papers.pdf', 19.5 * 1024 * 1024), 'other', { textHint: INVOICE });
+  assert.equal(sentFile(fetch.calls[0]), null);
+  // Page images go while they fit: three of 9 MiB do not.
+  const page = `data:image/png;base64,${'A'.repeat(9 * 1024 * 1024)}`;
+  const scan = { name: 'scan.pdf', kind: 'pdf', mime: 'application/pdf', bytes: new Uint8Array(0) }; // pages only
+  await ai.extract(scan, 'other', { textHint: INVOICE, pageImages: [page, page, page] });
+  assert.equal(partsOf(fetch.calls[1].body).filter((p) => p.type === 'image_url').length, 2);
+  assert.ok(sizes.every((size) => size < AI_PROXY_MAX_BODY_BYTES), sizes.join(', '));
+  // Straight to OpenAI the PDF still goes as a file.
+  const direct = fakeFetch(() => ok(EXTRACTED));
+  await directAI(direct).extract(pdfItem('Scan of all papers.pdf', 19.5 * 1024 * 1024), 'other', { textHint: INVOICE });
+  assert.equal(sentFile(direct.calls[0]), 'Scan of all papers.pdf');
+
+  // Any other request too big for the proxy is not sent (the proxy would refuse it and still count the call).
+  const never = fakeFetch(() => ok({ ok: true }));
+  const client = createClient({ mode: 'proxy', proxyUrl: PROXY_URL, getAccessToken: async () => 'token', workspaceId: HOUSE, fetch: never, retryBaseMs: 0 });
+  await assert.rejects(client.json({ messages: [{ role: 'user', content: 'x'.repeat(26 * 1024 * 1024) }] }), (err) => err.code === 'too_large');
+  assert.equal(never.calls.length, 0);
+});
+
+test('a report number keeps no lab name or "No." in front, so the rules can check it', () => {
+  for (const printed of ['GIA 2141 438 172', 'GIA2141438172', 'GIA No. 2141 438 172', 'Report No: 2141438172']) {
+    const { reportNumber } = normalizeLine({ reportNumber: printed });
+    assert.equal(reportNumber, '2141438172', printed);
+    assert.equal(checkReportNumber('GIA', reportNumber).ok, true, printed);
+  }
+  assert.equal(normalizeLine({ reportNumber: 'IGI LG-612345678' }).reportNumber, 'LG-612345678', 'still found in the text as printed');
+  assert.equal(normalizeLine({ reportNumber: 'No report' }).reportNumber, null);
+  assert.equal(normalizeField({ key: 'lab.reportNumber', value: 'GIA 2141438172', confidence: 0.9 }).value, '2141438172');
+});
+
+test('natural or lab-grown is read the same way as the rules read it', () => {
+  for (const said of ['natural', 'Lab-grown', 'earth-mined', 'HPHT treated natural', 'Natural (see label)', 'not lab-grown', 'CVD', 'mixed']) {
+    assert.equal(normalizeField({ key: 'goods.nature', value: said, confidence: 0.9 })?.value ?? null, natureFromText(said), said);
+    assert.equal(normalizeLine({ growth: said }).growth, natureFromText(said), said);
+  }
+  assert.equal(natureFromText('Natural (see label)'), 'natural', '"label" is not a lab');
+});
+
+test('a proxy that answers 400 model_not_allowed: the next model is tried, as for one that does not exist', async () => {
+  const fetch = fakeFetch((body) => (body.model === AI_MODELS[0] ? fail(400, `Model not allowed: ${body.model}.`, 'model_not_allowed') : ok({ ok: true })));
+  const ai = directAI(fetch);
+  assert.equal((await ai.check()).ok, true);
+  assert.deepEqual(fetch.calls.map((c) => c.body.model), [AI_MODELS[0], AI_MODELS[1]]);
+});
+
+test('an answer from the AI clears the last problem, and chats and emails it read say who read them', async () => {
+  let down = true;
+  const fetch = fakeFetch((body) => {
+    if (down) return { status: 503, json: { error: { message: 'Service unavailable' } } };
+    const name = body.response_format?.json_schema?.name;
+    if (name === 'chat_reading') return ok({ relevant: [], requests: [], packing: [], refs: [] });
+    if (name === 'email_reading') return ok({ relevant: [], requests: [], refs: [] });
+    return ok({ ok: true });
+  });
+  const ai = directAI(fetch);
+  await ai.readChat(CHAT);
+  assert.equal(ai.lastError.code, 'server');
+  down = false;
+  const chat = await ai.readChat(CHAT);
+  assert.equal(ai.lastError, null, 'the status bar stops saying the AI is unreachable');
+  assert.equal(chat.readBy, `ai:${AI_MODELS[0]}`);
+  assert.equal(chat.aiError, undefined);
+  const email = await ai.readEmail({ from: 'a@example.test', subject: 'EXP/26-27/031', text: 'Please send the KP copy.' });
+  assert.equal(email.readBy, `ai:${AI_MODELS[0]}`);
+});
+
+test('the reader is told where the insured and the number of packages go, and what natural means', () => {
+  const insurance = extractPrompt({ fileName: 'ins.pdf', docType: 'insurance_certificate', family: 'insurance' });
+  assert.match(insurance, /insurer\.name, insured\.name/);
+  assert.match(insurance, /goes in insured\.name, never in consignee\.name/);
+  for (const family of ['invoice', 'customs', 'air_waybill']) {
+    assert.match(extractPrompt({ fileName: 'x.pdf', docType: 'other', family }), /goods\.packages/, family);
+  }
+  assert.match(extractPrompt({ fileName: 'awb.pdf', docType: 'air_waybill', family: 'air_waybill' }), /never the\s+stone count/);
+  assert.match(READER_SYSTEM, /HPHT-treated or HPHT-processed natural stones are natural/);
+});
+
+test('the offline reader reads natural and lab-grown the way the rules do', () => {
+  assert.equal(growthFrom('Natural diamond, not lab-grown'), 'natural');
+  assert.equal(growthFrom('Non-synthetic'), 'natural');
+  assert.equal(growthFrom('No CVD/HPHT'), 'natural');
+  assert.equal(growthFrom('HPHT treated natural'), 'natural');
+  assert.equal(growthFrom('CVD lab grown'), 'lab-grown');
+  assert.equal(growthFrom('Natural', 'LG612345678'), 'lab-grown', 'an LG report number is lab-grown');
+  assert.equal(growthFrom('Round 1.01 G VS1'), null);
+  assert.equal(normalizeLine({ growth: 'not lab-grown' }).growth, 'natural');
 });

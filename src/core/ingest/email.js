@@ -51,15 +51,19 @@ export function emailAsText(email) {
   return `${header.join('\n')}\n\n${email.text}`;
 }
 
-/** A small HTML to text conversion: no scripts or styles, line breaks at block ends, common entities. */
+/**
+ * A small HTML to text conversion: no scripts or styles, line breaks at block ends, common entities.
+ * Every step runs in time proportional to the length of the HTML. Anyone can email the house, and the
+ * plain regular expressions for these steps rescan the rest of the text from each "<style" with no end
+ * tag, each "<" with no ">" and each space not followed by a line break: 200 KB of that took 20 seconds.
+ */
 export function htmlToText(html) {
   if (!html) return '';
-  return String(html)
-    .replace(/<(script|style|head)\b[\s\S]*?<\/\1>/gi, ' ')
+  const marked = dropBlocks(String(html))
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)>/gi, '\n')
-    .replace(/<\/t[dh]>/gi, '\t')
-    .replace(/<[^>]*>/g, '')
+    .replace(/<\/t[dh]>/gi, '\t');
+  return stripTags(marked)
     .replace(/&nbsp;/gi, ' ')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
@@ -67,9 +71,44 @@ export function htmlToText(html) {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&#(\d+);/g, (whole, code) => (Number(code) <= 0x10ffff ? String.fromCodePoint(Number(code)) : ''))
     .replace(/&amp;/gi, '&') // last, so "&amp;lt;" stays "&lt;"
-    .replace(/[ \t]+\n/g, '\n')
+    .replace(/(?<![ \t])[ \t]+\n/g, '\n') // tried from the first space of a run only, so a long run is read once
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+const BLOCK_START = /<(script|style|head)\b/gi;
+const BLOCK_END = { script: /<\/script>/gi, style: /<\/style>/gi, head: /<\/head>/gi };
+
+/**
+ * Drops <script>, <style> and <head> blocks: the same as .replace(/<(script|style|head)\b[\s\S]*?<\/\1>/gi, ' ').
+ * Once a block has no end tag left, the same kind of block cannot end later either, so its end tag is
+ * looked for once instead of once for every opening.
+ */
+function dropBlocks(html) {
+  const unclosed = new Set();
+  let out = '';
+  let from = 0;
+  BLOCK_START.lastIndex = 0;
+  for (let start = BLOCK_START.exec(html); start; start = BLOCK_START.exec(html)) {
+    const tag = start[1].toLowerCase();
+    if (unclosed.has(tag)) continue;
+    const end = BLOCK_END[tag];
+    end.lastIndex = BLOCK_START.lastIndex;
+    if (!end.exec(html)) {
+      unclosed.add(tag);
+      continue;
+    }
+    out += `${html.slice(from, start.index)} `;
+    from = end.lastIndex;
+    BLOCK_START.lastIndex = end.lastIndex;
+  }
+  return out + html.slice(from);
+}
+
+/** Removes tags: the same as .replace(/<[^>]*>/g, ''). After the last ">" no tag can end, so that tail stays as it is. */
+function stripTags(text) {
+  const end = text.lastIndexOf('>') + 1;
+  return text.slice(0, end).replace(/<[^>]*>/g, '') + text.slice(end);
 }
 
 function isPaper(attachment) {

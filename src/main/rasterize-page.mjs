@@ -47,30 +47,45 @@ function toPng(canvas) {
   return url;
 }
 
+// executeJavaScript turns a rejected promise into "Script failed to execute", so load and render answer
+// { error } instead of throwing: rasterize.js then shows the real reason (a damaged PDF, a page that is not there).
+async function answer(work) {
+  try {
+    return await work();
+  } catch (error) {
+    return { error: String(error?.message || error || 'The page could not be drawn.') };
+  }
+}
+
 window.raster = {
   has(key) {
     return docs.has(key);
   },
 
-  async load(key, b64, wasmUrl) {
-    if (!docs.has(key)) {
-      const loading = openPdf(b64, wasmUrl);
-      loading.catch(() => docs.delete(key)); // a broken PDF is not kept
-      docs.set(key, loading);
-    }
-    while (docs.size > KEEP_OPEN) {
-      const [oldKey, oldDoc] = docs.entries().next().value;
-      docs.delete(oldKey);
-      oldDoc.then((d) => d.loadingTask.destroy()).catch(() => {});
-    }
-    return (await docs.get(key)).numPages;
+  // The number of pages, or { error }.
+  load(key, b64, wasmUrl) {
+    return answer(async () => {
+      if (!docs.has(key)) {
+        const loading = openPdf(b64, wasmUrl);
+        loading.catch(() => docs.delete(key)); // a broken PDF is not kept
+        docs.set(key, loading);
+      }
+      while (docs.size > KEEP_OPEN) {
+        const [oldKey, oldDoc] = docs.entries().next().value;
+        docs.delete(oldKey);
+        oldDoc.then((d) => d.loadingTask.destroy()).catch(() => {});
+      }
+      return (await docs.get(key)).numPages;
+    });
   },
 
-  // One page as a PNG data URL.
-  async render(key, pageNumber, scale) {
-    if (!docs.has(key)) throw new Error('The PDF is not loaded.');
-    const doc = await docs.get(key);
-    return toPng(await drawPage(doc, pageNumber, scale));
+  // One page as a PNG data URL, or { error }.
+  render(key, pageNumber, scale) {
+    return answer(async () => {
+      if (!docs.has(key)) throw new Error('The PDF is not loaded.');
+      const doc = await docs.get(key);
+      return toPng(await drawPage(doc, pageNumber, scale));
+    });
   },
 
   // For printing: every page as a picture on its own sheet, sized like the PDF's first page.

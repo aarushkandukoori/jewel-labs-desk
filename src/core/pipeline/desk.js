@@ -1,8 +1,9 @@
 // The Jewel Labs desk: packs held for review wait here. Approve makes a pack ready to sign; hold keeps it held.
 // Both post a message to the house. Only a change to the content counts as a desk edit (approving alone is not).
 import { PAPER_KIND_LABELS, FIELD_LABELS } from '../types.js';
-import { personName } from './context.js';
+import { personName, plural } from './context.js';
 import { applyAnswers } from './answers.js';
+import { failedChecks } from './origin-stage.js';
 
 export function createDesk(ctx, { run, buildPapers }) {
   const { store } = ctx;
@@ -23,7 +24,16 @@ export function createDesk(ctx, { run, buildPapers }) {
   async function approve(paperId, message, by, changes) {
     let paper = await paperToReview(paperId);
     paper = (await applyDeskChanges(paper, changes, by)) || paper;
-    const approved = { ...paper, status: 'ready_to_sign', deskNote: message || null, approvedBy: personName(by), approvedAt: ctx.nowIso() };
+    // Nothing uncertain reaches a pack: the house answers its open questions before the desk can approve.
+    const open = await store.list('questions', (q) => q.shipmentId === paper.shipmentId && q.status === 'open');
+    if (open.length) {
+      throw new Error(`${plural(open.length, 'question')} on this shipment ${open.length === 1 ? 'is' : 'are'} still open: ${open.map((q) => q.text).join(' ')} They come first.`);
+    }
+    const current = await unchanged(paper);
+    if (current.status === 'draft') {
+      throw new Error(`${current.ref} v${current.version} is only a draft: the shipment changed since the agents last checked it. Approve it once they have built it again.`);
+    }
+    const approved = { ...current, status: 'ready_to_sign', deskNote: message || null, approvedBy: personName(by), approvedAt: ctx.nowIso() };
     await store.put('papers', approved);
     await markShipment(approved, by, 'ready_to_sign');
 
@@ -41,7 +51,7 @@ export function createDesk(ctx, { run, buildPapers }) {
     paper = (await applyDeskChanges(paper, changes, by)) || paper;
     const label = PAPER_KIND_LABELS[paper.kind] || 'Paper';
     const text = message || `${label} ${paper.ref} is held for review. Jewel Labs will write with what to fix.`;
-    const held = { ...paper, status: 'held_for_review', deskNote: text, heldBy: personName(by), heldAt: ctx.nowIso() };
+    const held = { ...(await unchanged(paper)), status: 'held_for_review', deskNote: text, heldBy: personName(by), heldAt: ctx.nowIso() };
     await store.put('papers', held);
     await markShipment(held, by, 'held_for_review');
     await postDeskMessage(held, text, by);
@@ -56,6 +66,16 @@ export function createDesk(ctx, { run, buildPapers }) {
     if (!paper) throw new Error('That paper is no longer there.');
     if (paper.status === 'signed' || paper.status === 'sent') throw new Error('This paper is already signed.');
     return paper;
+  }
+
+  /**
+   * The paper as it is now, read again right before the desk's decision is saved. If someone signed it, or the
+   * agents built a new version meanwhile, the decision is not saved: the desk looks at it again.
+   */
+  async function unchanged(paper) {
+    const latest = await paperToReview(paper.id);
+    if (latest.version !== paper.version) throw new Error(`A new version of ${paper.ref} was built meanwhile. Check v${latest.version}, then decide.`);
+    return latest;
   }
 
   /** A desk edit: new values go onto the shipment, the rules run again and the paper gets a new version. */
@@ -89,7 +109,11 @@ export function createDesk(ctx, { run, buildPapers }) {
     const others = await store.list('papers', (p) => p.shipmentId === paper.shipmentId && p.id !== paper.id && p.status === 'held_for_review');
     if (status === 'ready_to_sign' && others.length) return; // another paper of this shipment still waits for the desk
     const next = { ...shipment, status };
-    if (status === 'ready_to_sign') next.deskApproved = { basis: shipment.checkedBasis || null, by: personName(by), at: ctx.nowIso() };
+    if (status === 'ready_to_sign') {
+      // The approval covers these papers and these failed checks only: a check that fails later holds it again.
+      const checks = await store.list('checks', (c) => c.shipmentId === paper.shipmentId);
+      next.deskApproved = { basis: shipment.checkedBasis || null, failing: failedChecks(checks), by: personName(by), at: ctx.nowIso() };
+    }
     await store.put('shipments', next);
   }
 

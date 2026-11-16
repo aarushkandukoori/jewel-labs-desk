@@ -5,8 +5,9 @@ import { useApp } from '../lib/context.js';
 import { Section, Chip, Empty, Skeleton, Button } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
 import { Timeline } from '../components/timeline.js';
-import { carat, growthLabel, labCheckStatus, country, route, shortLab } from '../lib/format.js';
+import { carat, growthLabel, labCheckStatus, labCheckToast, canCheckOnline, country, route, shortLab } from '../lib/format.js';
 import { squash } from '../lib/search.js';
+import { isLot, sortStones } from '../lib/store.js';
 
 export function StonesView({ reportNumber }) {
   const { state, nav, jl, call, toast } = useApp();
@@ -16,15 +17,12 @@ export function StonesView({ reportNumber }) {
 
   const stones = useMemo(() => {
     const q = squash(query);
-    return state.data.stones
-      .filter((s) => !q || squash(s.reportNumber).includes(q) || squash(s.ref).includes(q))
-      .slice()
-      .sort((a, b) => Number(b.carat || 0) - Number(a.carat || 0));
+    return sortStones(state.data.stones.filter((s) => !q || squash(s.reportNumber).includes(q) || squash(s.ref).includes(q)));
   }, [state.data.stones, query]);
 
-  // Open the stone in the address (or the biggest one) when the page opens.
+  // Open the stone in the address (or the biggest single stone) when the page opens.
   useEffect(() => {
-    const target = reportNumber || state.data.stones.slice().sort((a, b) => Number(b.carat || 0) - Number(a.carat || 0))[0]?.reportNumber;
+    const target = reportNumber || sortStones(state.data.stones)[0]?.reportNumber;
     if (target) load(target);
     else setResult(null);
   }, [reportNumber, state.data.stones.length, state.data.papers.length]);
@@ -49,7 +47,8 @@ export function StonesView({ reportNumber }) {
       await call(jl.app.openExternal(r.url));
       toast(`Opened the ${r.lab} report check`, 'Compare the grades on the lab’s own page.', 'info');
     } else {
-      toast(`${stone.lab || 'Lab'} report ${stone.reportNumber}`, labCheckStatus(r).text, 'ok');
+      const t = labCheckToast(r);
+      toast(`${stone.lab || 'Lab'} report ${stone.reportNumber}`, t.text, t.tone);
       load(stone.reportNumber);
     }
   }
@@ -73,7 +72,7 @@ export function StonesView({ reportNumber }) {
           ${!stones.length ? html`<${Empty} title=${state.data.stones.length ? 'No stone matches' : 'No stones yet'}>${state.data.stones.length ? 'Press Enter to look the number up anyway.' : 'Stones appear once an invoice or packing list is read.'}<//>`
             : stones.slice(0, 60).map((s) => html`<button type="button" key=${s.id} class=${`stone-item${stone?.id === s.id ? ' active' : ''}`} onClick=${() => nav.stone(s.reportNumber || s.id)}>
                 <span class="rn" title=${s.reportNumber || s.ref}>${s.reportNumber || s.ref}</span><span class="muted tiny" title=${s.lab || ''}>${shortLab(s.lab)}</span>
-                <span class="grades">${[carat(s.carat), s.color, s.clarity, s.shape].filter(Boolean).join(' · ')}</span>
+                <span class="grades">${isLot(s) ? `Lot, ${s.pieces} pcs, ${carat(s.carat)}` : [carat(s.carat), s.color, s.clarity, s.shape].filter(Boolean).join(' · ')}</span>
                 <span>${s.growth ? html`<${Chip} small tone=${/lab/i.test(s.growth) ? 'info' : 'plain'}>${growthLabel(s.growth)}<//>` : null}</span>
               </button>`)}
         </div>
@@ -85,9 +84,9 @@ export function StonesView({ reportNumber }) {
           : html`<div class="passport">
               <div class="passport-top">
                 <div>
-                  <div class="label">${stone.lab || 'Lab'} report</div>
-                  <div class="rn">${stone.reportNumber || '–'}</div>
-                  <div class="lab">${[stone.shape, carat(stone.carat), stone.color, stone.clarity].filter(Boolean).join(' · ')}</div>
+                  <div class="label">${isLot(stone) ? 'Lot' : `${stone.lab || 'Lab'} report`}</div>
+                  <div class="rn">${stone.reportNumber || (isLot(stone) ? stone.ref : null) || '–'}</div>
+                  <div class="lab">${isLot(stone) ? `${stone.pieces} pcs, ${carat(stone.carat)}` : [stone.shape, carat(stone.carat), stone.color, stone.clarity].filter(Boolean).join(' · ')}</div>
                 </div>
                 <svg class="passport-gem" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true">
                   <path d="M16 10h32l12 16L32 58 4 26z" /><path d="M4 26h56M24 10l-6 16 14 32 14-32-6-16M18 26l6-16M46 26l-6-16M32 10v16" opacity="0.6" />
@@ -105,7 +104,8 @@ export function StonesView({ reportNumber }) {
                 <${Chip} tone=${check.tone}>${check.text}<//>
                 ${stone.labCheck?.diffs?.length ? html`<span class="small fail">${stone.labCheck.diffs.map((d) => `${d.field}: ours ${d.ours}, lab ${d.lab}`).join('; ')}</span>` : null}
                 <span class="spacer" style=${{ flex: 1 }}></span>
-                <${Button} size="sm" onClick=${() => verify(stone)} icon=${Icon.shield} title=${`Open ${stone.lab || 'the lab'}'s own report check`}>Verify on ${shortLab(stone.lab) || 'the lab site'}<//>
+                <${Button} size="sm" onClick=${() => verify(stone)} icon=${Icon.shield} disabled=${!canCheckOnline(stone)}
+                  title=${canCheckOnline(stone) ? `Open ${stone.lab || 'the lab'}'s own report check` : `${stone.lab || 'This lab'} has no online report check`}>Verify on ${shortLab(stone.lab) || 'the lab site'}<//>
               </div>
             </div>
             <${Section} title="History">

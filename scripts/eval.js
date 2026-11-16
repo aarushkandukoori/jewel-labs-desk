@@ -28,7 +28,8 @@ import * as ocr from '../src/core/ocr/index.js';
 import { loadSdn } from '../src/core/sanctions/index.js';
 import { normalizeRef, parseNumber, parseDate } from '../src/core/rules/fields.js';
 import { normalizeCountry, splitCountries, normalizeShape } from '../src/core/rules/formats.js';
-import { SUPABASE_URL, SUPABASE_ANON_KEY, AI_MODELS } from '../src/core/config.js';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, AI_MODELS } from '../src/core/config.js';
+import { SAMPLE_HOUSE } from '../src/core/pipeline/sample.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SAMPLES = path.join(ROOT, 'samples', 'sample-shipment');
@@ -39,28 +40,16 @@ const PROXY_ACCOUNT_FILE = path.join(OUT_DIR, 'proxy-account.json'); // gitignor
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 const CHANNELS = ['whatsapp', 'email', 'drop'];
 
-// USD per 1M tokens, standard tier, from https://developers.openai.com/api/docs/pricing (15 Nov 2026).
-// (https://openai.com/api/pricing answered 403 to the fetch tool; the developer docs page is the same table.)
+// USD per 1M tokens, standard tier. Prices from https://developers.openai.com/api/docs/pricing, checked 15 Nov 2026.
 export const PRICES = {
   'gpt-5.4-mini': { input: 0.75, cached: 0.075, output: 4.5 },
   'gpt-5-mini': { input: 0.25, cached: 0.025, output: 2.0 },
   'gpt-4.1-mini': { input: 0.4, cached: 0.1, output: 1.6 },
 };
 
-/** The fictional SAMPLE house, from the answer key. */
+/** The fictional SAMPLE house the app gives its sandbox (src/core/pipeline/sample.js), with its email from the answer key. */
 export function sampleHouseProfile(answers) {
-  const house = answers.house;
-  return {
-    name: house.name,
-    legalEntity: house.name,
-    country: house.country,
-    city: 'Surat',
-    role: 'exporter',
-    sample: true,
-    environment: 'sandbox',
-    contactEmails: [house.email],
-    letterhead: { companyName: house.name, address: house.address, iec: house.iec, email: house.email, phone: house.phone },
-  };
+  return { ...SAMPLE_HOUSE, sample: true, contactEmails: [answers.house.email] };
 }
 
 export const EVAL_PERSON = { id: 'eval-person', name: 'Asha Mehta (SAMPLE)', email: 'asha@kavya-gems.example.com' };
@@ -218,7 +207,7 @@ async function readKey() {
 
 /** Signs in the jl-test account saved in test/.tmp, or creates one through the signup function. */
 async function proxyLogin() {
-  const cloud = createCloud({ url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+  const cloud = createCloud({ url: SUPABASE_URL, anonKey: SUPABASE_PUBLISHABLE_KEY });
   const saved = safeJson(await fs.readFile(PROXY_ACCOUNT_FILE, 'utf8').catch(() => '')) || null;
   if (saved?.email && saved?.password && saved?.workspaceId) {
     try {
@@ -685,11 +674,18 @@ export async function runEval(args) {
     if (shipmentsWanted.includes('A')) {
       await ask('What is still missing?');
       await ask('Build the packing list from the chat');
+      // The draft counts as the packing list only once a person checked it: the clerk confirms it, as in the app.
+      const drafted = findShipment(await h.store.list('shipments'), answers.shipments.A);
+      const check = (await h.store.list('questions', (q) => q.shipmentId === drafted?.id && q.status === 'open' && q.key === 'doc.checkedBy'))[0];
+      if (check) {
+        await h.services.answerQuestion(check.id, 'Yes, use it as our packing list', EVAL_PERSON);
+        await withTimeout(h.services.idle(), IDLE_TIMEOUT_MS, 'The checked draft');
+      }
       const snapDraft = await snapshot(h.store);
       const a = findShipment(snapDraft.shipments, answers.shipments.A);
       const draft = snapDraft.documents.find((d) => d.source?.kind === 'generated' && d.shipmentId === a?.id && d.docType === 'packing_list');
       report.packingDraft = {
-        drafted: Boolean(draft), lines: draft ? draft.lines.length : 0,
+        drafted: Boolean(draft), lines: draft ? draft.lines.length : 0, checked: Boolean(check),
         stones: draft ? draft.lines.map((l) => `${l.reportNumber || 'no report'} ${l.carat} ${l.shape || ''} ${l.color || ''} ${l.clarity || ''}`.trim()) : [],
         question: packingQuestionClosed(snapDraft, a),
       };
@@ -712,7 +708,9 @@ export async function runEval(args) {
     };
     if (shipmentsWanted.includes('A')) report.packingQuestionAfterLater = packingQuestionClosed(snap2, findShipment(snap2.shipments, answers.shipments.A));
 
-    // 4. Prepare the papers: the agents stop at open questions; a person answers the carat one.
+    // 4. Prepare the papers: the agents stop at open questions; a person answers the carat one. The invoice and the
+    // packing list still print 0.71 ct, so the agents then ask to accept shipping with that difference (or to add
+    // corrected copies): the clerk accepts it.
     await ask('Prepare the papers for my latest shipment');
     if (shipmentsWanted.includes('A')) {
       const a = findShipment((await snapshot(h.store)).shipments, answers.shipments.A);
@@ -721,12 +719,21 @@ export async function runEval(args) {
         h.meter.during('answer');
         await h.services.answerQuestion(question.id, '0.70 ct, as on the lab report', EVAL_PERSON);
         await withTimeout(h.services.idle(), IDLE_TIMEOUT_MS, 'The answer');
+        const accept = (await h.store.list('questions', (q) => q.shipmentId === a.id && q.status === 'open' && q.key === 'stone.7391020002.carat.accepted'))[0];
+        if (accept) {
+          await h.services.answerQuestion(accept.id, 'Ship with this difference', EVAL_PERSON);
+          await withTimeout(h.services.idle(), IDLE_TIMEOUT_MS, 'Accepting the difference');
+        }
         const after = await h.store.get('shipments', a.id);
-        report.answered = { question: question.text, statusAfter: after.status, papersBuiltByAgents: (await h.store.list('papers', (p) => p.shipmentId === a.id)).map((p) => `${p.kind} ${p.ref} v${p.version} ${p.status}`) };
+        report.answered = {
+          question: question.text, accepted: accept ? accept.text : null, statusAfter: after.status,
+          papersBuiltByAgents: (await h.store.list('papers', (p) => p.shipmentId === a.id)).map((p) => `${p.kind} ${p.ref} v${p.version} ${p.status}`),
+        };
       }
     }
 
-    // 5. Papers for every shipment, then one is signed.
+    // 5. Papers for every shipment, then one is signed. A shipment whose questions are still open (B and C wait for
+    // their packing lists) gets draft papers: the rules never call it ready to sign on a guess.
     h.meter.during('papers');
     report.papers = {};
     const shipmentsNow = await h.store.list('shipments');
@@ -735,10 +742,14 @@ export async function runEval(args) {
       if (!shipment) continue;
       let papers = (await h.store.list('papers', (p) => p.shipmentId === shipment.id && p.kind !== 'packing_list_draft'));
       if (!papers.length) papers = (await h.services.buildPapers(shipment.id, { by: EVAL_PERSON })).papers;
+      const openQuestions = (await h.store.list('questions', (q) => q.shipmentId === shipment.id && q.status === 'open')).length;
       const rows = [];
       for (const paper of papers) {
         const bytes = await h.store.getFile(paper.fileKey);
-        rows.push({ kind: paper.kind, ref: paper.ref, version: paper.version, status: paper.status, pages: paper.pages, sha256: paper.sha256, pdf: await pdfCheck(bytes) });
+        rows.push({
+          kind: paper.kind, ref: paper.ref, version: paper.version, status: paper.status, pages: paper.pages, sha256: paper.sha256,
+          openQuestions, draftAsExpected: paper.status !== 'draft' || openQuestions > 0, pdf: await pdfCheck(bytes),
+        });
       }
       report.papers[letter] = rows;
     }
@@ -906,15 +917,18 @@ export function reportText(report) {
     add(`- questions before the late packing list: ${report.phase1.rules[letter].questions.map((q) => `${q.want} ${q.ok ? 'ok' : 'NO'}`).join('; ') || 'none expected'}`);
     add(`- open questions now: ${r.openQuestions.join(' | ') || 'none'}`);
     add(`- parties: ${r.parties.map((p) => `${p.name} ${p.status}`).join(', ')}`);
-    for (const p of report.papers?.[letter] || []) add(`- paper ${p.kind} ${p.ref} v${p.version} ${p.status}: ${p.pdf.pdfjsPages} pages (pdfinfo ${p.pdf.pdfinfoPages ?? 'n/a'}) ${p.pdf.ok ? 'valid' : `INVALID ${p.pdf.error || ''}`}`);
+    for (const p of report.papers?.[letter] || []) {
+      const why = p.status === 'draft' ? (p.openQuestions ? ` (${p.openQuestions} question${p.openQuestions === 1 ? '' : 's'} open)` : ' (NO question open)') : '';
+      add(`- paper ${p.kind} ${p.ref} v${p.version} ${p.status}${why}: ${p.pdf.pdfjsPages} pages (pdfinfo ${p.pdf.pdfinfoPages ?? 'n/a'}) ${p.pdf.ok ? 'valid' : `INVALID ${p.pdf.error || ''}`}`);
+    }
   }
   add('');
   add('## Tell the agents');
   add('');
   for (const a of report.asks || []) add(`- "${a.text}" -> ${a.intent} (${a.seconds} s): ${a.reply.replace(/\n/g, ' / ')} [steps: ${a.steps.join(', ')}]`);
-  if (report.packingDraft) add(`- packing list draft: ${report.packingDraft.drafted ? `${report.packingDraft.lines} lines (${report.packingDraft.stones.join('; ')})` : 'not drafted'}; packing list question ${report.packingDraft.question.open ? 'still open' : `closed: ${report.packingDraft.question.closed.join(', ')}`}`);
+  if (report.packingDraft) add(`- packing list draft: ${report.packingDraft.drafted ? `${report.packingDraft.lines} lines (${report.packingDraft.stones.join('; ')})` : 'not drafted'}${report.packingDraft.checked ? ', checked by the clerk' : ''}; packing list question ${report.packingDraft.question.open ? 'still open' : `closed: ${report.packingDraft.question.closed.join(', ')}`}`);
   if (report.packingQuestionAfterLater) add(`- after the late packing list: packing list question ${report.packingQuestionAfterLater.open ? 'OPEN' : 'closed'}`);
-  if (report.answered) add(`- answered "${report.answered.question}": shipment now ${report.answered.statusAfter}; agents built ${report.answered.papersBuiltByAgents.join(', ') || 'nothing'}`);
+  if (report.answered) add(`- answered "${report.answered.question}"${report.answered.accepted ? `, then accepted "${report.answered.accepted}"` : ''}: shipment now ${report.answered.statusAfter}; agents built ${report.answered.papersBuiltByAgents.join(', ') || 'nothing'}`);
   if (report.signing) {
     add('');
     add('## Signing');

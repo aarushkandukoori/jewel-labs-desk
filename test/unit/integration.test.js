@@ -26,7 +26,7 @@ import { createLocalWorkspace, openLocalStore } from '../../src/core/store/index
 test('a row that prints "No report" has no report number, so it never becomes a stone called NOREPORT', () => {
   const line = normalizeLine({ lineNo: 4, reportNumber: 'No report', carat: '0.45', color: 'E', clarity: 'SI1' });
   assert.equal(line.reportNumber, null);
-  assert.equal(normalizeLine({ reportNumber: 'GIA 2141 438 172' }).reportNumber, 'GIA2141438172');
+  assert.equal(normalizeLine({ reportNumber: 'GIA 2141 438 172' }).reportNumber, '2141438172', 'without the lab name');
   assert.equal(normalizeField({ key: 'lab.reportNumber', value: 'N/A', confidence: 0.9 }), null);
 });
 
@@ -270,19 +270,34 @@ test('loadSample gives a sample workspace the SAMPLE house and holds the late pa
     }
     const workspace = await createLocalWorkspace({ dir, profile: { name: 'Sample workspace', sample: true } });
     const store = await openLocalStore({ dir, workspaceId: workspace.id });
-    const services = createServices({ store, ai: null, paths: { samples, cacheDir: path.join(dir, 'cache') }, pace: 0, sanctionsLoader: async () => null });
+    const services = createServices({ store, ai: null, paths: { samplesDir: samples, cacheDir: path.join(dir, 'cache') }, pace: 0, sanctionsLoader: async () => null });
     await store.updateWorkspace({ autopilot: false });
     const first = await services.loadSample();
     assert.equal(first.files, 3);
     const names = (await store.list('documents')).map((d) => d.fileName);
     assert.deepEqual(names, ['chat.txt', 'po.txt', 'sb.txt'], 'the chat, then the email, then the dropped files; later/ waits');
-    assert.equal((await store.workspace()).legalEntity, 'Kavya Gems LLP (SAMPLE)');
-    assert.equal((await store.workspace()).name, 'Sample workspace', 'the name is kept');
+    const house = await store.workspace();
+    assert.equal(house.legalEntity, 'Kavya Gems LLP (SAMPLE)');
+    assert.equal(house.name, 'Kavya Gems LLP (SAMPLE)', 'the default sandbox name becomes the house name');
+    assert.equal(house.taxId, 'SAMPLE00012');
+    assert.equal(house.environment, 'sandbox');
+    assert.equal(house.letterhead.iec, 'SAMPLE00012');
     const late = await services.loadSample({ later: true });
     assert.equal(late.files, 1);
     assert.ok((await store.list('documents')).some((d) => d.fileName === 'packing.txt'));
     await services.shutdown();
     await store.close();
+
+    // A name the person chose for the sandbox is kept.
+    const named = await createLocalWorkspace({ dir, profile: { name: 'Training house', sample: true } });
+    const namedStore = await openLocalStore({ dir, workspaceId: named.id });
+    const namedServices = createServices({ store: namedStore, ai: null, paths: { samplesDir: samples, cacheDir: path.join(dir, 'cache2') }, pace: 0, sanctionsLoader: async () => null });
+    await namedStore.updateWorkspace({ autopilot: false });
+    await namedServices.loadSample();
+    assert.equal((await namedStore.workspace()).name, 'Training house');
+    assert.equal((await namedStore.workspace()).legalEntity, 'Kavya Gems LLP (SAMPLE)');
+    await namedServices.shutdown();
+    await namedStore.close();
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

@@ -10,6 +10,8 @@ export const HISTORY_STAGES = [
   'mined', 'grown', 'rough_purchased', 'cut_and_polished', 'graded', 'invoiced', 'packed',
   'cleared_for_export', 'cleared_for_import', 'flown', 'statement_drafted', 'statement_signed', 'statement_sent',
 ];
+// The statements an importer signs. On an export the house prepares and checks them (pipeline/signing.js).
+const IMPORTER_STATEMENTS = ['eu_dds', 'us_cbp_certificate'];
 
 /**
  * Build the timeline for one stone.
@@ -104,16 +106,19 @@ export function buildHistory({ stone, shipment, documents = [], papers = [] }) {
     add('packed', dateOf(doc, ['doc.date', 'invoice.date']), 'Packed', `Line ${source.lineNo} of ${what} for ${shipment.ref}.`, doc.id, 'doc.date');
   }
 
-  // Customs and transport papers cover every stone in the parcel.
+  // Customs and transport papers cover every stone in the parcel. Only the Let Export Order clears an export: a
+  // shipping bill without one is a declaration still waiting. A bill of entry is the import declaration; the
+  // papers carry no out-of-charge order, so it never reads as cleared.
   for (const doc of shipmentDocs.filter((d) => d.docType === 'shipping_bill')) {
     const number = getField(doc, 'shippingBill.number') || getField(doc, 'doc.number');
     const leo = parseDate(getField(doc, 'leo.date'));
     const detail = `Shipping bill ${number || ''}${leo ? `, Let Export Order ${formatDate(leo)}` : ', no Let Export Order yet'}.`.replace(/ ,/, ',');
-    add('cleared_for_export', leo || dateOf(doc, ['shippingBill.date', 'doc.date']), 'Cleared for export', detail, doc.id, leo ? 'leo.date' : 'shippingBill.date');
+    const title = leo ? 'Cleared for export' : 'Shipping bill on file (no Let Export Order yet)';
+    add('cleared_for_export', leo || dateOf(doc, ['shippingBill.date', 'doc.date']), title, detail, doc.id, leo ? 'leo.date' : 'shippingBill.date');
   }
   for (const doc of shipmentDocs.filter((d) => d.docType === 'bill_of_entry')) {
     const number = getField(doc, 'billOfEntry.number') || getField(doc, 'doc.number');
-    add('cleared_for_import', dateOf(doc, ['billOfEntry.date', 'doc.date']), 'Cleared for import',
+    add('cleared_for_import', dateOf(doc, ['billOfEntry.date', 'doc.date']), 'Declared for import',
       `Bill of entry ${number || 'on file'}.`, doc.id, 'billOfEntry.date');
   }
   for (const doc of shipmentDocs.filter((d) => d.docType === 'air_waybill')) {
@@ -126,15 +131,22 @@ export function buildHistory({ stone, shipment, documents = [], papers = [] }) {
     add('flown', dateOf(doc, ['awb.date', 'doc.date']), 'Flown', `Air waybill${parts.length ? ` ${parts.join(', ')}` : ''}.`, doc.id, 'awb.date');
   }
 
-  // The statement and pack: drafted, signed, sent.
+  // The statement and pack: drafted, signed, sent. On an export the EU statement and the US certificate are the
+  // importer's: the house prepares and checks them, and the importer signs them.
   for (const paper of papers.filter((p) => p.shipmentId === shipment.id && p.kind !== 'packing_list_draft')) {
     const label = (PAPER_KIND_LABELS[paper.kind] || 'Paper').replace(' (draft)', '');
+    const forImporter = IMPORTER_STATEMENTS.includes(paper.kind) && shipment.direction !== 'import';
     add('statement_drafted', paper.createdAt, `${label} drafted`, `${paper.ref}, version ${paper.version || 1}.`);
     if (paper.signedAt || paper.status === 'signed' || paper.status === 'sent') {
-      add('statement_signed', paper.signedAt, `${label} signed`, `${paper.ref}${paper.signedBy ? ` signed by ${paper.signedBy}` : ' signed'}.`);
+      if (forImporter) {
+        add('statement_signed', paper.signedAt, `${label} checked by the house`, `${paper.ref} prepared and checked by ${paper.signedBy || 'the house'}.`);
+      } else {
+        add('statement_signed', paper.signedAt, `${label} signed`, `${paper.ref}${paper.signedBy ? ` signed by ${paper.signedBy}` : ' signed'}.`);
+      }
     }
     if (paper.sentAt || paper.status === 'sent') {
-      add('statement_sent', paper.sentAt, `${label} sent`, `${paper.ref}${paper.sentTo ? ` sent to ${paper.sentTo}` : ' sent'}.`);
+      const sent = `${paper.ref}${paper.sentTo ? ` sent to ${paper.sentTo}` : ' sent'}.`;
+      add('statement_sent', paper.sentAt, forImporter ? `${label} sent to the importer` : `${label} sent`, sent);
     }
   }
 

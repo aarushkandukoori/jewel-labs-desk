@@ -15,7 +15,8 @@ import * as XLSX from 'xlsx';
 import { simpleParser } from 'mailparser';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { buildSampleSet } from '../../samples/lib/build.js';
-import { FOOTER, SHIPMENTS } from '../../samples/lib/facts.js';
+import { FOOTER, SHIPMENTS, HOUSE } from '../../samples/lib/facts.js';
+import { SAMPLE_HOUSE } from '../../src/core/pipeline/sample.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SAMPLES = path.join(ROOT, 'samples');
@@ -269,4 +270,17 @@ describe('committed sample set', () => {
       for (const line of file.lines) assert.equal(Math.round(line.carat * line.rate * 100) / 100, line.amount);
     }
   });
+});
+
+test('the SAMPLE house the app gives its sandbox is the house the sample papers are made out to', () => {
+  assert.equal(SAMPLE_HOUSE.name, HOUSE.name);
+  assert.equal(SAMPLE_HOUSE.legalEntity, HOUSE.name);
+  assert.equal(SAMPLE_HOUSE.address, HOUSE.address);
+  assert.equal(SAMPLE_HOUSE.country, HOUSE.country);
+  assert.equal(SAMPLE_HOUSE.taxId, HOUSE.iec);
+  assert.equal(SAMPLE_HOUSE.environment, 'sandbox');
+  assert.deepEqual(
+    { ...SAMPLE_HOUSE.letterhead },
+    { companyName: HOUSE.name, address: HOUSE.address, cityCountry: `Surat, ${HOUSE.country}`, iec: HOUSE.iec, email: HOUSE.email, phone: HOUSE.phone },
+  );
 });

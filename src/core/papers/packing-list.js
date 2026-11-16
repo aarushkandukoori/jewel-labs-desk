@@ -5,13 +5,16 @@ import {
   drawSignatureBlock, drawTable, drawText, ensureSpace, finishPaper, sectionLabel, startPaper, wrap,
 } from './layout.js';
 import {
-  formatCarat, formatDateTime, formatDay, growthText, isBlank, isSampleData, partyLine, toNumber,
+  formatCarat, formatDateTime, formatDay, growthText, isBlank, isSampleData, labKey, partyLine, shortLab, toNumber,
 } from './format.js';
 import { houseName } from './statements.js';
 
 export const DRAFT_NOTICE = 'Drafted by Jewel Labs agents from the sources below. Check every line before use.';
 
-/** Table of packing list lines with a total row. Also used for spreadsheet originals inside a pack. */
+/**
+ * Table of packing list lines with a total row. Also used for spreadsheet originals inside a pack.
+ * Labs print by a short name ("NGL"), with the full names under the table, so a long name never breaks mid-word.
+ */
 export function drawLinesTable(ctx, lines) {
   const columns = [
     { title: 'No.', width: 22, empty: '' },
@@ -34,7 +37,7 @@ export function drawLinesTable(ctx, lines) {
     pieces += count !== null ? count : 1;
     return {
       cells: [
-        line.lineNo ?? i + 1, line.description, line.reportNumber, line.lab, line.shape,
+        line.lineNo ?? i + 1, line.description, line.reportNumber, shortLab(line.lab), line.shape,
         carat === null ? null : formatCarat(carat), line.color, line.clarity, count, isBlank(line.growth) ? null : growthText(line.growth),
       ],
     };
@@ -45,6 +48,11 @@ export function drawLinesTable(ctx, lines) {
   }
   rows.push({ strong: true, empty: '', cells: ['', 'Total', '', '', '', formatCarat(carats), '', '', pieces, ''] });
   drawTable(ctx, { columns, rows });
+  const key = labKey((lines || []).map((line) => line.lab).filter((lab) => !isBlank(lab)));
+  if (key) {
+    ctx.y -= 4;
+    drawParagraph(ctx, key, { size: 7.2, color: COLOR.muted, gapAfter: 0 });
+  }
 }
 
 function sourceKindText(kind) {
@@ -87,21 +95,24 @@ function drawSourceQuotes(ctx, sources) {
 /**
  * Builds the agents' packing list draft.
  * sources: [{ kind: 'chat'|'email'|'document', ref?, quote, author?, at?, fileName? }].
- * Optional extras beyond the contract: ref, version, printedAt, status (default 'draft').
+ * Optional extras beyond the contract: ref, version, printedAt, status (default 'draft'), and checkedBy / checkedAt
+ * once a person checked every line: the copy then says who checked it instead of "check every line before use".
  */
-export async function buildPackingListDraft({ shipment = {}, lines = [], sources = [], house = {}, ref, version = 1, printedAt = new Date(), status = 'draft' }) {
+export async function buildPackingListDraft({ shipment = {}, lines = [], sources = [], house = {}, ref, version = 1, printedAt = new Date(), status = 'draft', checkedBy = null, checkedAt = null }) {
   const paperRef = ref || nextRef('packing_list_draft', printedAt, []);
   const ctx = await startPaper({ ref: paperRef, version, printedAt, sample: isSampleData({ house, shipment }) });
   addPage(ctx, 'Packing list');
   const exporter = shipment?.exporter?.name || 'Exporter not on file';
   const consignee = shipment?.consignee?.name || 'consignee not on file';
   drawHeader(ctx, {
-    label: 'Packing list · drafted by agents',
+    label: checkedBy ? 'Packing list · drafted by agents, checked by the house' : 'Packing list · drafted by agents',
     title: shipment?.invoiceNumber ? `Packing list for ${shipment.invoiceNumber}` : 'Packing list',
     subtitle: `${exporter} to ${consignee}`,
     status,
   });
-  drawNotice(ctx, DRAFT_NOTICE);
+  drawNotice(ctx, checkedBy
+    ? `Drafted by Jewel Labs agents from the sources below, then checked line by line by ${checkedBy}${isBlank(checkedAt) ? '' : ` on ${formatDay(checkedAt)}`}.`
+    : DRAFT_NOTICE);
   sectionLabel(ctx, 'Shipment');
   drawRows(ctx, [
     { label: 'Exporter', value: partyLine(shipment?.exporter) },

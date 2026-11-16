@@ -1,9 +1,11 @@
 // Runs the ai and signup Edge Functions under Deno against a local stand-in for Supabase and OpenAI, and checks
-// how they answer (sign-in checks, house membership, model list, daily cap, sign-up rules, rate limit, logs).
+// how they answer (sign-in checks, house membership, model list, what is forwarded to OpenAI, body size, daily
+// limits, sign-up rules, desk invites, rate limit, logs).
 // Nothing leaves this computer and nothing is downloaded: the functions use the supabase-js copy already in
 // node_modules. Needs Deno (https://deno.com). Run: node backend/supabase/tests/check-functions.mjs
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -47,11 +49,19 @@ const OPENAI_KEY = ['test', 'openai', 'key'].join('-');
 // ---------- the stand-in ----------
 const log = [];
 let aiCalls = 0;
+let nextVerdict = null; // reserve_ai_call's answer for the next call, when a test wants a particular limit
 let allowSignupTries = true;
+let signupCounterFails = false;
 let redeemWorks = true;
 const users = new Map([['taken@sample.example', { id: '66666666-6666-4666-8666-666666666666' }]]);
 const deleted = [];
 let lastOpenAIBody = null;
+let openAICalls = 0;
+const inviteRows = {
+  ABCDEFGH: { role: 'preparer', email: null },
+  DESKABCD: { role: 'desk', email: 'hire@sample.example' }, // a desk invite for one person
+  DESKWXYZ: { role: 'desk', email: null }, // a desk invite from before 0005
+};
 
 const fake = http.createServer(async (req, res) => {
   const chunks = [];
@@ -86,19 +96,28 @@ const fake = http.createServer(async (req, res) => {
   if (p === '/rest/v1/profiles' && req.method === 'GET') return send(200, q.user_id === `eq.${DESK}` ? [{ is_desk: true }] : [{ is_desk: false }]);
   if (p === '/rest/v1/profiles' && req.method === 'POST') return send(201);
   if (p === '/rest/v1/rpc/reserve_ai_call') {
+    if (nextVerdict) {
+      const verdict = nextVerdict;
+      nextVerdict = null;
+      return send(200, verdict);
+    }
     aiCalls += 1;
-    return send(200, aiCalls <= body.p_cap);
+    return send(200, aiCalls <= body.p_house_calls ? 'ok' : 'house_calls');
   }
   if (p === '/rest/v1/rpc/bump_ai_usage') return send(204);
-  if (p === '/rest/v1/rpc/note_signup_attempt') return send(200, allowSignupTries);
+  if (p === '/rest/v1/rpc/note_signup_attempt') {
+    return signupCounterFails ? send(500, { code: 'XX000', message: 'counter is down' }) : send(200, allowSignupTries);
+  }
   if (p === '/rest/v1/invites') {
-    return send(200, q.code === 'eq.ABCDEFGH' ? [{ expires_at: new Date(Date.now() + 86400000).toISOString(), uses: 0, max_uses: 20 }] : []);
+    const row = inviteRows[String(q.code || '').replace(/^eq\./, '')];
+    return send(200, row ? [{ ...row, expires_at: new Date(Date.now() + 86400000).toISOString(), uses: 0, max_uses: 20 }] : []);
   }
   if (p === '/rest/v1/rpc/redeem_invite') return send(200, redeemWorks ? WS : null);
   if (p === '/rest/v1/rpc/create_house_for') return send(200, { id: OTHER, name: body.p_payload.name, environment: 'sandbox' });
   if (p === '/openai') {
     assert.equal(req.headers.authorization, `Bearer ${OPENAI_KEY}`);
     lastOpenAIBody = body;
+    openAICalls += 1;
     if (body.messages[0].content === 'make OpenAI fail') return send(400, { error: { message: 'Bad request from OpenAI', type: 'invalid_request_error' } });
     return send(200, { id: 'chatcmpl-sample', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: '{"docType":"lab_report"}' } }], usage: { prompt_tokens: 120, completion_tokens: 30 } });
   }
@@ -148,12 +167,35 @@ async function startFunction(file, env) {
 
 const post = (url, body, headers = {}) =>
   fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+
+// Sends only the headers of a POST (fetch would refuse a Content-Length that does not match the body) and
+// returns the answer the server gives without waiting for a body.
+function headersOnly(url, headers) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { method: 'POST', headers }, (res) => {
+      let text = '';
+      res.on('data', (d) => (text += d));
+      res.on('end', () => {
+        req.destroy();
+        resolve({ status: res.statusCode, text });
+      });
+    });
+    req.on('error', reject);
+    req.flushHeaders();
+  });
+}
 const ok = (label) => console.log(`ok - ${label}`);
 
 // ---------- ai ----------
-const ai = await startFunction('ai.ts', { OPENAI_API_KEY: OPENAI_KEY, OPENAI_CHAT_URL: `${fakeUrl}/openai`, AI_DAILY_CAP: '3' });
+const ai = await startFunction('ai.ts', { OPENAI_API_KEY: OPENAI_KEY, OPENAI_CHAT_URL: `${fakeUrl}/openai`, AI_DAILY_CAP: '5', AI_TRIAL_DAILY_CAP: '7' });
 try {
-  const request = { model: 'gpt-5-mini', messages: [{ role: 'user', content: 'Classify this page' }], stream: true, store: true, n: 4, max_completion_tokens: 999999 };
+  // Everything a caller could add to use the Jewel Labs key for something else.
+  const extras = {
+    stream: true, stream_options: { include_usage: true }, store: true, n: 4, tools: [{ type: 'function', function: { name: 'x' } }],
+    service_tier: 'priority', metadata: { a: 'b' }, user: 'someone', prediction: { type: 'content', content: 'x' }, logit_bias: { 1: 5 },
+    verbosity: 'high', max_tokens: 50,
+  };
+  const request = { model: 'gpt-5-mini', messages: [{ role: 'user', content: 'Classify this page' }], reasoning_effort: 'high', max_completion_tokens: 999999, ...extras };
   const member = { Authorization: 'Bearer member-token', 'x-jl-workspace': WS };
 
   let r = await fetch(ai.url, { method: 'GET' });
@@ -167,29 +209,79 @@ try {
   r = await post(ai.url, request, { Authorization: 'Bearer member-token', 'x-jl-workspace': OTHER });
   assert.equal(r.status, 403); assert.equal((await r.json()).error.code, 'not_member'); ok('ai: not a member, 403');
   r = await post(ai.url, { ...request, model: 'gpt-4.5-preview' }, member);
-  assert.equal(r.status, 400); assert.equal((await r.json()).error.code, 'model_not_allowed'); ok('ai: model outside the list, 400');
+  assert.equal(r.status, 404); assert.equal((await r.json()).error.code, 'model_not_allowed');
+  ok('ai: model outside the list, 404 (as OpenAI answers), so the app tries its next model');
   r = await post(ai.url, { model: 'gpt-5-mini' }, member);
   assert.equal(r.status, 400); ok('ai: no messages, 400');
+  const declared = await headersOnly(ai.url, { ...member, 'content-type': 'application/json', 'content-length': String(26 * 1024 * 1024) });
+  assert.equal(declared.status, 413);
+  ok('ai: a declared body over 25 MB is refused before it is read');
+  const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+  const chunked = new ReadableStream({
+    start(controller) {
+      for (let i = 0; i < 26; i += 1) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  r = await fetch(ai.url, { method: 'POST', headers: { ...member, 'content-type': 'application/json' }, body: chunked, duplex: 'half' }).catch((err) => err);
+  // The server may answer and close before the client finishes sending, which the client reports as an error.
+  assert.ok(r instanceof Error || r.status === 413, `a chunked body over 25 MB is refused (got ${r.status})`);
+  ok(`ai: a chunked body over 25 MB is refused while it is read (${r instanceof Error ? 'closed early' : r.status})`);
   assert.equal(aiCalls, 0, 'nothing was counted for refused requests');
+  assert.equal(openAICalls, 0, 'nothing reached OpenAI for refused requests');
 
   r = await post(ai.url, request, member);
   assert.equal(r.status, 200);
   const answer = await r.json();
   assert.equal(answer.choices[0].message.content, '{"docType":"lab_report"}');
   ok('ai: a member gets OpenAI\'s answer as it is');
-  assert.ok(!('stream' in lastOpenAIBody) && !('store' in lastOpenAIBody), 'stream and store removed');
-  assert.equal(lastOpenAIBody.n, 1);
-  assert.equal(lastOpenAIBody.max_completion_tokens, 32000);
-  ok('ai: the request is tidied (no stream, not stored, one answer, capped length)');
+  assert.deepEqual(Object.keys(lastOpenAIBody).sort(), ['max_completion_tokens', 'messages', 'model', 'reasoning_effort', 'safety_identifier']);
+  assert.equal(lastOpenAIBody.max_completion_tokens, 16000);
+  assert.equal(lastOpenAIBody.reasoning_effort, 'low');
+  assert.match(lastOpenAIBody.safety_identifier, /^[0-9a-f]{64}$/);
+  assert.notEqual(lastOpenAIBody.safety_identifier, MEMBER);
+  ok('ai: the request is rebuilt: only the app\'s settings, answer length capped at 16000, no tools/stream/store/tier');
+  const reserve = log.filter((l) => l.path === '/rest/v1/rpc/reserve_ai_call').at(-1);
+  assert.deepEqual(reserve.body, {
+    p_workspace: WS, p_user: MEMBER, p_house_calls: 5, p_trial_calls: 7, p_user_calls: 600,
+    p_house_tokens: 10000000, p_trial_tokens: 1000000, p_user_tokens: 10000000,
+  });
+  ok('ai: the call is counted for the house and the person, with the limits from the secrets or their defaults');
   const bump = log.filter((l) => l.path === '/rest/v1/rpc/bump_ai_usage').at(-1);
-  assert.deepEqual(bump.body, { p_workspace: WS, p_input: 120, p_output: 30 });
+  assert.deepEqual(bump.body, { p_workspace: WS, p_user: MEMBER, p_input: 120, p_output: 30 });
   assert.equal(bump.auth, `Bearer ${SERVICE_KEY}`);
-  ok('ai: tokens are recorded with the service key');
+  ok('ai: tokens are recorded for the house and the person, with the service key');
+
+  const appRequest = {
+    model: 'gpt-5.4-mini', messages: [{ role: 'user', content: 'Read this page' }], reasoning_effort: 'none',
+    response_format: { type: 'json_schema', json_schema: { name: 'x', strict: true, schema: { type: 'object' } } },
+  };
+  r = await post(ai.url, appRequest, member);
+  assert.equal(r.status, 200, 'gpt-5.4-mini (the app\'s first model) is allowed by default');
+  assert.deepEqual(lastOpenAIBody.response_format, appRequest.response_format);
+  assert.equal(lastOpenAIBody.reasoning_effort, 'none');
+  assert.equal(lastOpenAIBody.max_completion_tokens, 16000, 'no length asked: the cap');
+  r = await post(ai.url, { model: 'gpt-4.1-mini', messages: appRequest.messages, temperature: 0, max_tokens: 400 }, member);
+  assert.equal(r.status, 200);
+  assert.deepEqual({ ...lastOpenAIBody, safety_identifier: undefined }, { model: 'gpt-4.1-mini', messages: appRequest.messages, temperature: 0, max_completion_tokens: 400, safety_identifier: undefined });
+  ok('ai: what the app sends goes through as it is (gpt-5.4-mini, json schema, reasoning none, temperature, max_tokens)');
 
   r = await post(ai.url, request, { Authorization: 'Bearer desk-token', 'x-jl-workspace': WS });
   assert.equal(r.status, 200); ok('ai: a desk user may work on any house');
   r = await post(ai.url, { ...request, messages: [{ role: 'user', content: 'make OpenAI fail' }] }, member);
   assert.equal(r.status, 400); assert.equal((await r.json()).error.message, 'Bad request from OpenAI'); ok('ai: OpenAI errors pass through with their status');
+  nextVerdict = 'trial_calls';
+  r = await post(ai.url, request, member);
+  let refusal = (await r.json()).error;
+  assert.equal(r.status, 429); assert.equal(refusal.code, 'daily_limit'); assert.match(refusal.message, /7 AI calls a day until Jewel Labs approves it/);
+  nextVerdict = 'user_tokens';
+  r = await post(ai.url, request, member);
+  refusal = (await r.json()).error;
+  assert.equal(r.status, 429); assert.match(refusal.message, /You have used your AI allowance/);
+  ok('ai: trial and per-person limits answer 429 daily_limit with a plain reason');
+  nextVerdict = 'no_house';
+  r = await post(ai.url, request, { Authorization: 'Bearer desk-token', 'x-jl-workspace': OTHER });
+  assert.equal(r.status, 403); ok('ai: a house that does not exist, 403');
   r = await post(ai.url, request, member);
   assert.equal(r.status, 429); assert.equal((await r.json()).error.code, 'daily_limit'); ok('ai: the daily cap answers 429');
   assert.ok(!ai.output().includes('Classify this page'), 'request content is never logged');
@@ -246,8 +338,39 @@ try {
   r = await post(signup.url, { ...form, email: 'fifth@sample.example' });
   assert.equal(r.status, 429); ok('signup: too many tries from one network, 429');
   allowSignupTries = true;
-  const attempt = log.filter((l) => l.path === '/rest/v1/rpc/note_signup_attempt').at(-1).body;
+  const lastAttempt = () => log.filter((l) => l.path === '/rest/v1/rpc/note_signup_attempt').at(-1).body;
+  const attempt = lastAttempt();
   assert.match(attempt.p_ip_hash, /^[0-9a-f]{64}$/); ok('signup: only a hash of the network address is stored');
+  assert.equal(attempt.p_limit, 10); assert.equal(attempt.p_global_limit, 100);
+  ok('signup: 10 tries an hour per network, and 100 an hour for all networks together');
+
+  // The address comes from cf-connecting-ip (set by the platform), not from X-Forwarded-For (written by the caller).
+  const hashOf = (address) => createHash('sha256').update(`jl-signup:${address}`).digest('hex');
+  await post(signup.url, { ...form, email: 'net1@sample.example' }, { 'cf-connecting-ip': '203.0.113.7', 'x-forwarded-for': '198.51.100.1' });
+  const first = lastAttempt().p_ip_hash;
+  await post(signup.url, { ...form, email: 'net2@sample.example' }, { 'cf-connecting-ip': '203.0.113.7', 'x-forwarded-for': '198.51.100.2' });
+  assert.equal(first, hashOf('203.0.113.7'));
+  assert.equal(lastAttempt().p_ip_hash, first, 'a new X-Forwarded-For value does not give a new allowance');
+  await post(signup.url, { ...form, email: 'net3@sample.example' }, { 'x-forwarded-for': '198.51.100.3, 203.0.113.9' });
+  assert.equal(lastAttempt().p_ip_hash, hashOf('198.51.100.3'), 'without cf-connecting-ip: the first X-Forwarded-For entry');
+  ok('signup: the rate limit uses the address the platform sets');
+
+  signupCounterFails = true;
+  r = await post(signup.url, { ...form, email: 'counter@sample.example' });
+  assert.equal(r.status, 500);
+  assert.ok(!users.has('counter@sample.example'));
+  signupCounterFails = false;
+  ok('signup: when the counter cannot be read, nobody signs up (fails closed)');
+
+  r = await post(signup.url, { ...form, email: 'someone@sample.example', inviteCode: 'DESKABCD' });
+  assert.equal(r.status, 400); assert.ok(!users.has('someone@sample.example'));
+  ok('signup: a desk invite for another email, 400, no account made');
+  r = await post(signup.url, { ...form, email: 'Hire@Sample.example', inviteCode: 'DESKABCD' });
+  assert.equal(r.status, 200); ok('signup: a desk invite works for the email it names');
+  r = await post(signup.url, { ...form, email: 'old.desk@sample.example', inviteCode: 'DESKWXYZ' });
+  assert.equal(r.status, 400); assert.ok(!users.has('old.desk@sample.example'));
+  ok('signup: a desk invite that names nobody (made before 0005) no longer works');
+
   assert.ok(!signup.output().includes('a long sample password'), 'passwords never reach the logs');
   ok('signup: passwords never reach the logs');
 } finally {

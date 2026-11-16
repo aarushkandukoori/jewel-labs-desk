@@ -19,20 +19,24 @@
     "dist:mac": "electron-builder --mac --publish never",
     "dist:win": "electron-builder --win --publish never",
     "site:build": "node scripts/build-site.js",
-    "demo:record": "node scripts/record-demo.js"
+    "eval": "node scripts/eval.js",
+    "eval:offline": "node scripts/eval.js --offline",
+    "e2e": "node test/e2e/flow.spec.mjs",
+    "e2e:packaged": "node test/e2e/packaged.spec.mjs",
+    "demo:run": "node scripts/record-run.js",
+    "demo:video": "node scripts/record-demo.js",
+    "check:backend": "node backend/supabase/tests/check-sql.mjs && node backend/supabase/tests/check-functions.mjs"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
     "@supabase/supabase-js": "^2.119.0",
     "@tesseract.js-data/eng": "^1.0.0",
-    "htm": "^3.1.1",
     "imapflow": "^2.12.1",
     "jszip": "^3.10.2",
     "mailparser": "^3.14.4",
     "nodemailer": "^10.6.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.5.438",
-    "preact": "^11.2.0",
     "qrcode": "^1.5.4",
     "tesseract.js": "^7.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
@@ -42,6 +46,7 @@
     "electron": "^45.3.2",
     "electron-builder": "^26.18.0",
     "geist": "^1.9.2",
+    "htm": "^3.1.1",
     "playwright": "^1.65.1"
   }
 }

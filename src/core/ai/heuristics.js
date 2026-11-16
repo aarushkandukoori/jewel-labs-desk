@@ -23,6 +23,8 @@ const SEP = '[)\\]]?[ \\t]*(?:[.…]{2,}[ \\t]*)?[:\\-–=+;©]?[ \\t]*\\.?[ \\t
 const REF = '([A-Z0-9][A-Z0-9/\\-.]*\\d[A-Z0-9/\\-]*)'; // a reference with at least one digit
 const DATE = `(${DATE_PATTERN})`;
 const NUMBER = '((?:\\d{1,3}(?:,\\d{2,3})+|\\d+)(?:\\.\\d+)?)';
+// A weight with the unit printed after it, so "5.10 ct" (a carat total) is never read as kilograms.
+const WEIGHT = NUMBER + '(?:\\s*(?:kgs?|kilograms?|grams?|gms?|g|cts?|carats?)(?![A-Za-z]))?';
 const MONEY = `(?:USD|US\\$|EUR|INR|AED|HKD|GBP|\\$|€|₹)?\\s*${NUMBER}`;
 const LINE = '([^\\n]+)';
 const hasDigit = (v) => /\d/.test(v);
@@ -74,6 +76,8 @@ function countryValue(raw) {
 function weightValue(raw, printed) {
   const n = parseNumber(raw);
   if (n === null) return null;
+  // "Net weight : 5.10 ct" is the stones' carat total, not the parcel's weight.
+  if (/\d\s*(?:cts?|carats?)(?![A-Za-z])/i.test(printed)) return null;
   const unit = /(?<![A-Za-z])(?:g|grams?|gms?)(?![A-Za-z])/i.test(printed) && !/kg/i.test(printed) ? 'g' : 'kg';
   return `${n} ${unit}`;
 }
@@ -151,8 +155,8 @@ const SIMPLE_FIELDS = [
   ['goods.destinationCountry', '(?:country\\s+of\\s+(?:final\\s+)?dest(?:ination)?\\.?|final\\s+destination|destination\\s+country)', LINE, countryValue],
   ['goods.portOfLoading', '(?:port\\s+of\\s+loading|airport\\s+of\\s+departure)', LINE, cleanValue],
   ['goods.portOfDischarge', '(?:port\\s+of\\s+discharge|airport\\s+of\\s+destination)', LINE, cleanValue],
-  ['goods.grossWeight', 'gross\\s*w(?:eigh)?t\\.?(?:\\s*\\(?\\s*(?:kgs?|grams?|gms?)\\s*\\)?)?', NUMBER, weightValue],
-  ['goods.netWeight', 'net\\s*w(?:eigh)?t\\.?(?:\\s*\\(?\\s*(?:kgs?|grams?|gms?)\\s*\\)?)?', NUMBER, weightValue],
+  ['goods.grossWeight', 'gross\\s*w(?:eigh)?t\\.?(?:\\s*\\(?\\s*(?:kgs?|grams?|gms?)\\s*\\)?)?', WEIGHT, weightValue],
+  ['goods.netWeight', 'net\\s*w(?:eigh)?t\\.?(?:\\s*\\(?\\s*(?:kgs?|grams?|gms?)\\s*\\)?)?', WEIGHT, weightValue],
   ['goods.description', '(?:description\\s+of\\s+goods|goods\\s+description|insured\\s+interest|nature\\s+of\\s+goods)', LINE, cleanValue],
   // Grading report fields
   ['lab.reportNumber', '(?:(?:GIA|IGI|HRD)\\s+)?(?:report|certificate|cert\\b\\.?|dossier)\\s*(?:no\\b\\.?|number|#)',

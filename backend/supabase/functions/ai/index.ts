@@ -4,20 +4,35 @@
 // ships in the app. Headers: Authorization: Bearer <the person's Supabase access token>, x-jl-workspace: <house id>.
 // This function:
 //   1. checks the token (auth.getUser) and that the person belongs to the house (or is Jewel Labs desk staff),
-//   2. allows only the models in AI_MODELS and counts the call against the house's daily cap (AI_DAILY_CAP),
-//   3. forwards the request to OpenAI with the OPENAI_API_KEY secret,
+//   2. allows only the models in AI_MODELS and counts the call against the daily limits (reserve_ai_call): per house
+//      (a small trial allowance until Jewel Labs approves the house) and per person, in calls and in tokens,
+//   3. rebuilds the request from the few settings the app uses and forwards it with the OPENAI_API_KEY secret,
 //   4. records the tokens used, and answers with OpenAI's own status and JSON.
 // Errors from this function use OpenAI's error shape: { error: { message, type, code } }.
 import { createClient } from 'npm:@supabase/supabase-js@2.119.0';
 
 // OPENAI_CHAT_URL is only for local tests; in production the default is used.
 const OPENAI_URL = Deno.env.get('OPENAI_CHAT_URL') || 'https://api.openai.com/v1/chat/completions';
-const DEFAULT_MODELS = 'gpt-5-mini,gpt-4.1-mini,gpt-4o-mini';
-const DEFAULT_DAILY_CAP = 600;
+// Must include every model in src/core/config.js AI_MODELS. The AI_MODELS secret, when set, replaces this list.
+const DEFAULT_MODELS = 'gpt-5.4-mini,gpt-5-mini,gpt-4.1-mini,gpt-4o-mini';
 const MAX_BODY_BYTES = 25 * 1024 * 1024; // page images are sent inline, so allow big bodies
-const MAX_OUTPUT_TOKENS = 32000;
+const MAX_OUTPUT_TOKENS = 16_000; // the app's longest answer (reading a whole document)
+const REASONING_EFFORTS = ['none', 'minimal', 'low']; // what the app asks for; anything else becomes 'low'
 const OPENAI_TIMEOUT_MS = 140_000; // stay under the Edge Function time limit
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Daily limits (UTC days), passed to reserve_ai_call. Each one can be changed with the secret named here.
+const LIMITS: Record<string, [string, number]> = {
+  p_house_calls: ['AI_DAILY_CAP', 600], // calls for a house Jewel Labs approved
+  p_trial_calls: ['AI_TRIAL_DAILY_CAP', 50], // calls for a house not approved yet (made by self sign-up)
+  p_user_calls: ['AI_USER_DAILY_CAP', 600], // calls for one person across all their houses (desk staff: no limit)
+  p_house_tokens: ['AI_DAILY_TOKENS', 10_000_000], // input + output tokens, approved house
+  p_trial_tokens: ['AI_TRIAL_DAILY_TOKENS', 1_000_000], // input + output tokens, house not approved yet
+  p_user_tokens: ['AI_USER_DAILY_TOKENS', 10_000_000], // input + output tokens, one person (desk staff: no limit)
+};
+
+// deno-lint-ignore no-explicit-any
+type Json = Record<string, any>;
 
 // Newer projects have named secret keys; older ones the legacy service role key. Either bypasses RLS.
 function serviceKey(): string {
@@ -45,9 +60,35 @@ function allowedModels(): string[] {
     .filter(Boolean);
 }
 
-function dailyCap(): number {
-  const cap = Number.parseInt(Deno.env.get('AI_DAILY_CAP') || '', 10);
-  return Number.isFinite(cap) && cap >= 0 ? cap : DEFAULT_DAILY_CAP;
+function dailyLimits(): Record<string, number> {
+  const limits: Record<string, number> = {};
+  for (const [param, [secret, fallback]] of Object.entries(LIMITS)) {
+    const value = Number.parseInt(Deno.env.get(secret) || '', 10);
+    limits[param] = Number.isFinite(value) && value >= 0 ? value : fallback;
+  }
+  return limits;
+}
+
+// What the person reads when reserve_ai_call says no.
+function limitMessage(reason: string, limits: Record<string, number>): string {
+  const resets = 'The count resets at midnight UTC.';
+  const approve = 'Ask Jewel Labs to approve the house for the full allowance.';
+  switch (reason) {
+    case 'trial_calls':
+      return `This house can make ${limits.p_trial_calls} AI calls a day until Jewel Labs approves it. ${approve} ${resets}`;
+    case 'trial_tokens':
+      return `This house has used its trial AI allowance for today. ${approve} ${resets}`;
+    case 'house_calls':
+      return `This house has used its ${limits.p_house_calls} AI calls for today. ${resets}`;
+    case 'house_tokens':
+      return `This house has used its AI allowance for today. ${resets}`;
+    case 'user_calls':
+      return `You have used your ${limits.p_user_calls} AI calls for today. ${resets}`;
+    case 'user_tokens':
+      return `You have used your AI allowance for today. ${resets}`;
+    default:
+      return `The AI cannot be used for this house right now. ${resets}`;
+  }
 }
 
 // Members of the house, or desk users (Jewel Labs staff), may use the agents for it.
@@ -65,16 +106,58 @@ async function mayUseHouse(userId: string, workspaceId: string): Promise<boolean
   return Boolean(profile.data?.is_desk);
 }
 
-// Keep each call to one answer, as JSON, within a sane length, and never stored by OpenAI.
-// deno-lint-ignore no-explicit-any
-function tidyBody(body: Record<string, any>): void {
-  delete body.stream;
-  delete body.stream_options;
-  delete body.store;
-  if (body.n !== undefined && body.n !== null) body.n = 1;
-  for (const key of ['max_tokens', 'max_completion_tokens']) {
-    if (typeof body[key] === 'number' && body[key] > MAX_OUTPUT_TOKENS) body[key] = MAX_OUTPUT_TOKENS;
+// Reads the body, counting bytes as they arrive: a chunked upload has no Content-Length to check first.
+// Returns null as soon as the body is larger than `limit`.
+async function readBody(req: Request, limit: number): Promise<Uint8Array | null> {
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
   }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+// The answer length the caller asked for (max_completion_tokens, or the older max_tokens), at most
+// MAX_OUTPUT_TOKENS. With no usable number, MAX_OUTPUT_TOKENS.
+function answerLength(body: Json): number {
+  const asked = body.max_completion_tokens ?? body.max_tokens;
+  return Number.isInteger(asked) && asked > 0 ? Math.min(asked, MAX_OUTPUT_TOKENS) : MAX_OUTPUT_TOKENS;
+}
+
+// The request OpenAI gets is rebuilt from the settings the app sends (src/core/ai/client.js): model, messages,
+// response_format, temperature and reasoning_effort, with a capped answer length. Everything else is dropped
+// (streaming, storing, several answers, tools, priority tier, ...), so the key can only be used to read papers.
+// safety_identifier lets OpenAI tell one person's calls from another's (a hash, never the account itself).
+function upstreamBody(body: Json, safetyIdentifier: string): Json {
+  const out: Json = { model: body.model, messages: body.messages, max_completion_tokens: answerLength(body) };
+  const format = body.response_format;
+  if (format && typeof format === 'object' && !Array.isArray(format)) out.response_format = format;
+  if (typeof body.temperature === 'number' && Number.isFinite(body.temperature)) out.temperature = body.temperature;
+  if (body.reasoning_effort !== undefined && body.reasoning_effort !== null) {
+    out.reasoning_effort = REASONING_EFFORTS.includes(body.reasoning_effort) ? body.reasoning_effort : 'low';
+  }
+  out.safety_identifier = safetyIdentifier;
+  return out;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function readUsage(text: string): { input: number; output: number } {
@@ -100,13 +183,13 @@ async function handle(req: Request): Promise<Response> {
   if (!(await mayUseHouse(user.id, workspaceId))) return fail(403, 'You are not a member of this house.', 'not_member');
 
   // 2. What is being asked?
-  if (Number(req.headers.get('content-length') || 0) > MAX_BODY_BYTES) {
-    return fail(413, 'This request is too large. Send fewer or smaller page images.', 'too_large');
-  }
-  // deno-lint-ignore no-explicit-any
-  let body: Record<string, any>;
+  const tooLarge = () => fail(413, 'This request is too large. Send fewer or smaller page images.', 'too_large');
+  if (Number(req.headers.get('content-length') || 0) > MAX_BODY_BYTES) return tooLarge(); // no need to read it
+  const bytes = await readBody(req, MAX_BODY_BYTES);
+  if (!bytes) return tooLarge();
+  let body: Json;
   try {
-    body = await req.json();
+    body = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return fail(400, 'The request body is not valid JSON.', 'bad_json');
   }
@@ -115,30 +198,32 @@ async function handle(req: Request): Promise<Response> {
   }
   const models = allowedModels();
   if (!models.includes(body.model)) {
-    return fail(400, `Model not allowed: ${String(body.model)}. Allowed: ${models.join(', ')}.`, 'model_not_allowed');
+    // 404, as OpenAI answers for a model the account cannot use, so the app moves on to its next model.
+    const asked = String(body.model).slice(0, 100);
+    return fail(404, `Model not allowed: ${asked}. Allowed: ${models.join(', ')}.`, 'model_not_allowed');
   }
   const openaiKey = Deno.env.get('OPENAI_API_KEY');
   if (!openaiKey) return fail(500, 'The AI key is not set up on the server yet.', 'no_key');
 
-  // The daily cap: count this call first, so many calls at once cannot slip past it.
-  const cap = dailyCap();
-  const { data: reserved, error: capError } = await admin.rpc('reserve_ai_call', {
+  // The daily limits: count this call first, so many calls at once cannot slip past them.
+  const limits = dailyLimits();
+  const { data: verdict, error: limitError } = await admin.rpc('reserve_ai_call', {
     p_workspace: workspaceId,
-    p_cap: cap,
+    p_user: user.id,
+    ...limits,
   });
-  if (capError) throw new Error(`reserve_ai_call failed: ${capError.message}`);
-  if (!reserved) {
-    return fail(429, `This house has used its ${cap} AI calls for today. The count resets at midnight UTC.`, 'daily_limit');
-  }
+  if (limitError) throw new Error(`reserve_ai_call failed: ${limitError.message}`);
+  if (verdict === 'no_house') return fail(403, 'This house was not found.', 'no_house');
+  if (verdict !== 'ok') return fail(429, limitMessage(String(verdict), limits), 'daily_limit');
 
   // 3. Forward to OpenAI.
-  tidyBody(body);
+  const request = upstreamBody(body, await sha256Hex(user.id));
   let upstream: Response;
   try {
     upstream = await fetch(OPENAI_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(request),
       signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     });
   } catch (err) {
@@ -154,12 +239,13 @@ async function handle(req: Request): Promise<Response> {
   if (usage.input || usage.output) {
     const { error } = await admin.rpc('bump_ai_usage', {
       p_workspace: workspaceId,
+      p_user: user.id,
       p_input: usage.input,
       p_output: usage.output,
     });
     if (error) console.error('bump_ai_usage failed:', error.message);
   }
-  console.log(JSON.stringify({ user: user.id, workspace: workspaceId, model: body.model, status: upstream.status, ...usage }));
+  console.log(JSON.stringify({ user: user.id, workspace: workspaceId, model: request.model, status: upstream.status, ...usage }));
   return new Response(text, {
     status: upstream.status,
     headers: { 'Content-Type': upstream.headers.get('Content-Type') || 'application/json' },

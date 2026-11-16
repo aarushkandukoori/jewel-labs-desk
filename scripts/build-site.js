@@ -2,6 +2,7 @@
 //
 //   site/                          the page, styles, scripts and images     ->  site-dist/
 //   src/renderer/fonts/*.woff2     the fonts (self-hosted, no Google Fonts)  ->  site-dist/fonts/
+//   src/renderer/fonts/OFL.txt     the fonts' license, which goes with them  ->  site-dist/fonts/
 //   assets/logo.svg                the favicon                               ->  site-dist/favicon.svg
 //   src/renderer/                  the real app UI, for the live demo        ->  site-dist/app/
 //   samples/sample-shipment/       the fictional sample shipment, if built   ->  site-dist/app/samples/
@@ -9,7 +10,6 @@
 // Then it:
 //   - marks the "Watch it work" video as ready when site/media/demo.mp4 exists (until then the page
 //     hides that section, and never asks for a file that is not there),
-//   - writes a placeholder app page if the app UI is not there yet,
 //   - warns when the app imports a file the website does not ship (the demo would break),
 //   - checks the recorded run the live demo replays (app/demo/sample-run.json) and warns about any
 //     file it points to that is missing,
@@ -22,11 +22,13 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// The SIL Open Font License asks that every copy of the fonts carries the license, so it is copied with them.
+const FONT_LICENSE = 'OFL.txt';
 
 /**
  * Builds the site. `root` is the repository folder, `out` the folder to write (emptied first).
- * Returns a summary: { out, files, bytes, app: 'renderer'|'placeholder', demo: 'recorded'|'scripted'|'none',
- * demoSteps, samples, video: 'ready'|'pending', fonts, warnings }.
+ * Returns a summary: { out, files, bytes, app: 'renderer', demo: 'recorded'|'none', demoSteps, samples,
+ * video: 'ready'|'pending', fonts, warnings }.
  */
 export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log = console.log } = {}) {
   root = path.resolve(root);
@@ -35,7 +37,7 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
   const from = (...parts) => path.join(root, ...parts);
   const to = (...parts) => path.join(out, ...parts);
   const summary = {
-    out, files: 0, bytes: 0, app: 'placeholder', demo: 'none', demoSteps: 0, samples: false, video: 'pending', fonts: 0, warnings: [],
+    out, files: 0, bytes: 0, app: 'renderer', demo: 'none', demoSteps: 0, samples: false, video: 'pending', fonts: 0, warnings: [],
   };
   const warn = (message) => {
     summary.warnings.push(message);
@@ -43,6 +45,8 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
   };
 
   if (!fs.existsSync(from('site', 'index.html'))) throw new Error(`No site/index.html in ${root}`);
+  // The live demo is the app's own screens; without them there is nothing to show.
+  if (!fs.existsSync(from('src', 'renderer', 'index.html'))) throw new Error(`No src/renderer/index.html in ${root}: the live demo needs the app's screens.`);
 
   // 1. Start from an empty folder, so files deleted from site/ do not linger.
   fs.rmSync(out, { recursive: true, force: true });
@@ -59,6 +63,11 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
       fs.copyFileSync(path.join(fontDir, name), to('fonts', name));
       summary.fonts++;
     }
+    if (existsExactly(fontDir, path.join(fontDir, FONT_LICENSE))) {
+      fs.copyFileSync(path.join(fontDir, FONT_LICENSE), to('fonts', FONT_LICENSE));
+    } else if (summary.fonts) {
+      warn(`src/renderer/fonts has no ${FONT_LICENSE}: the site would ship the fonts without their license.`);
+    }
   } else {
     warn('src/renderer/fonts is missing: the site will fall back to system fonts.');
   }
@@ -68,21 +77,13 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
   else warn('assets/logo.svg is missing: no favicon.');
 
   // 5. The app UI for the live demo. Without window.jl (the Electron bridge) it runs on demo/mock-api.js.
-  const rendererDir = from('src', 'renderer');
-  if (fs.existsSync(rendererDir)) copyDir(rendererDir, to('app'));
-  if (fs.existsSync(path.join(rendererDir, 'index.html'))) {
-    summary.app = 'renderer';
-    for (const problem of checkAppImports(to('app'))) warn(problem);
-    // The live demo replays the recorded run when there is one (otherwise the app's built-in scripted run).
-    const run = checkDemoRun(to('app'));
-    summary.demo = run.kind;
-    summary.demoSteps = run.steps;
-    for (const problem of run.problems) warn(problem);
-  } else {
-    fs.mkdirSync(to('app'), { recursive: true });
-    fs.writeFileSync(to('app', 'index.html'), PLACEHOLDER_APP);
-    warn('src/renderer/index.html is missing: the live demo shows a placeholder.');
-  }
+  copyDir(from('src', 'renderer'), to('app'));
+  for (const problem of checkAppImports(to('app'))) warn(problem);
+  // The live demo replays the recorded run. Without one it shows an error banner.
+  const run = checkDemoRun(to('app'));
+  summary.demo = run.kind;
+  summary.demoSteps = run.steps;
+  for (const problem of run.problems) warn(problem);
 
   // 6. The fictional sample shipment the demo replays.
   const samplesDir = from('samples', 'sample-shipment');
@@ -210,23 +211,31 @@ export function checkAppImports(appDir) {
 }
 
 /**
- * The live demo replays app/demo/sample-run.json when it holds a recorded run (steps), and the app's
- * built-in scripted run otherwise. Returns { kind: 'recorded'|'scripted'|'none', steps, files, problems },
- * where problems lists every file the recording points to that the website does not ship.
+ * The live demo replays app/demo/sample-run.json, the recorded run (steps). There is no other run to fall back
+ * on: without a recording the demo shows an error banner. Returns { kind: 'recorded'|'none', steps, files,
+ * problems }, where problems also lists every file the recording points to that the website does not ship.
  */
 export function checkDemoRun(appDir) {
   const runFile = path.join(appDir, 'demo', 'sample-run.json');
   const result = { kind: 'none', steps: 0, files: 0, problems: [] };
-  if (!fs.existsSync(runFile)) return result;
+  const banner = 'so the demo shows an error banner instead of the run';
+  if (!fs.existsSync(runFile)) {
+    result.problems.push(`app/demo/sample-run.json is missing, ${banner}.`);
+    return result;
+  }
   let run;
   try {
     run = JSON.parse(fs.readFileSync(runFile, 'utf8'));
   } catch (error) {
-    result.problems.push(`app/demo/sample-run.json is not valid JSON (${error.message}), so the demo plays the scripted run.`);
+    result.problems.push(`app/demo/sample-run.json is not valid JSON (${error.message}), ${banner}.`);
     return result;
   }
   result.steps = Array.isArray(run.steps) ? run.steps.length : 0;
-  result.kind = result.steps ? 'recorded' : 'scripted';
+  if (!result.steps) {
+    result.problems.push(`app/demo/sample-run.json has no recorded steps, ${banner}.`);
+    return result;
+  }
+  result.kind = 'recorded';
   // File addresses are relative to sample-run.json; data: addresses carry the file inside them.
   for (const url of Object.values(run.files || {})) {
     if (typeof url !== 'string' || url.startsWith('data:')) continue;
@@ -243,31 +252,6 @@ export function checkDemoRun(appDir) {
   }
   return result;
 }
-
-// Shown in the live demo frame until the real app UI exists in src/renderer.
-const PLACEHOLDER_APP = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Jewel Labs</title>
-  <style>
-    html, body { height: 100%; margin: 0; background: #000; }
-    body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
-      color: #99a2b2; font: 500 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; text-align: center; }
-    svg { width: 44px; height: 44px; color: #e9ecf2; }
-  </style>
-</head>
-<body>
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true">
-    <polygon points="12,2.5 21.5,12 12,21.5 2.5,12"/><polygon points="12,7.5 16.5,12 12,16.5 7.5,12"/>
-    <line x1="12" y1="2.5" x2="12" y2="7.5"/><line x1="12" y1="21.5" x2="12" y2="16.5"/>
-    <line x1="2.5" y1="12" x2="7.5" y2="12"/><line x1="21.5" y1="12" x2="16.5" y2="12"/>
-  </svg>
-  <p>The app preview is being prepared.</p>
-</body>
-</html>
-`;
 
 // Run from the command line.
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

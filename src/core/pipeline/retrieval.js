@@ -4,10 +4,13 @@ import { newId, toBytes } from './context.js';
 import { safeFileName } from './files.js';
 
 export const MAX_RETRIES = 3; // the worker reads a failed document again at most this many times
+const adding = new WeakMap(); // store -> Map(sha256 -> Promise of the document id) for files being added right now
 
 /**
- * files: [{ name, bytes, source, by? }] -> { documentIds, duplicates: [{ name, docId }], failed: [{ name, error }] }
+ * files: [{ name, bytes, source, by?, error? }] -> { documentIds, duplicates: [{ name, docId }], failed: [{ name, error }] }
  * quiet: the mailbox and folder loops pass it, so a file seen again is not logged one line at a time.
+ * error: the file is not opened at all; it is kept as a paper that could not be read, with this reason (the worker
+ * passes it for a file that stopped the app last time).
  */
 export async function addFiles(ctx, files, { quiet = false } = {}) {
   const ingest = await ctx.load('ingest');
@@ -16,7 +19,7 @@ export async function addFiles(ctx, files, { quiet = false } = {}) {
     const source = { kind: 'upload', receivedAt: ctx.nowIso(), ...(file.source || {}) };
     let items;
     try {
-      items = (await ingest.ingestFile({ name: file.name, bytes: toBytes(file.bytes), source })).items || [];
+      items = file.error ? [unopened(ingest, file)] : (await ingest.ingestFile({ name: file.name, bytes: toBytes(file.bytes), source })).items || [];
     } catch (err) {
       // One broken file (a damaged zip, say) must not stop the rest of the drop.
       result.failed.push({ name: file.name, error: err.message });
@@ -27,7 +30,16 @@ export async function addFiles(ctx, files, { quiet = false } = {}) {
     // Lets an attachment point at the email or WhatsApp chat it came in.
     const batch = { idsByName: new Map(), chatId: null };
     for (const item of items) {
-      const added = await addItem(ctx, ingest, item, source, batch, { by: file.by, quiet });
+      let added;
+      try {
+        added = await addItem(ctx, ingest, item, source, batch, { by: file.by, quiet });
+      } catch (err) {
+        // A file the store refuses (too big for a shared house, say) must not stop the rest of the drop.
+        result.failed.push({ name: item.name, error: err.message });
+        await ctx.log(ctx.agentActor('retrieval'), 'error', `Could not add ${item.name}: ${err.message}`);
+        ctx.agentEvent('retrieval', 'error', `Could not add ${item.name}: ${err.message}`);
+        continue;
+      }
       if (added.duplicate) result.duplicates.push({ name: item.name, docId: added.docId });
       else result.documentIds.push(added.docId);
     }
@@ -35,10 +47,27 @@ export async function addFiles(ctx, files, { quiet = false } = {}) {
   return result;
 }
 
-async function addItem(ctx, ingest, item, fileSource, batch, { by, quiet }) {
-  const { store } = ctx;
+/**
+ * Adds one file, unless it is already on file. Two loops adding the same file at the same moment (the mailbox and
+ * a "Check now", say) must not store it twice: the second waits for the first and finds its document.
+ */
+async function addItem(ctx, ingest, item, fileSource, batch, options) {
   const bytes = toBytes(item.bytes);
   const hash = item.sha256 || ingest.sha256(bytes);
+  if (!adding.has(ctx.store)) adding.set(ctx.store, new Map());
+  const busy = adding.get(ctx.store);
+  while (busy.has(hash)) await busy.get(hash).catch(() => null);
+  const work = addNewItem(ctx, item, bytes, hash, fileSource, batch, options);
+  busy.set(hash, work);
+  try {
+    return await work;
+  } finally {
+    busy.delete(hash);
+  }
+}
+
+async function addNewItem(ctx, item, bytes, hash, fileSource, batch, { by, quiet }) {
+  const { store } = ctx;
   const existing = (await store.list('documents', (d) => d.sha256 === hash))[0];
   if (existing) {
     remember(batch, item, existing.id);
@@ -89,6 +118,13 @@ async function addItem(ctx, ingest, item, fileSource, batch, { by, quiet }) {
     ctx.agentEvent('retrieval', 'error', `${item.name}: ${item.error}`, { docId: id });
   }
   return { duplicate: false, docId: id };
+}
+
+/** A file kept as it is, unopened, as a paper that could not be read (reason: file.error). */
+function unopened(ingest, file) {
+  const bytes = toBytes(file.bytes);
+  const mime = ingest.detectMime(file.name, bytes);
+  return { name: file.name, mime, kind: ingest.kindForMime(mime), bytes, error: String(file.error) };
 }
 
 /** The parsed parts Intake needs later (chat messages, email text, sheet text), kept with the document. */

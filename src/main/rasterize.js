@@ -1,13 +1,8 @@
-// Renders one page of a PDF to a PNG, in a hidden window that runs the vendored pdf.js (rasterize.html).
-// Scanned PDFs have no text layer: OCR needs a picture of each page, and the AI reads page pictures too.
+// Renders one page of a PDF to a PNG, in a hidden window that runs the vendored pdf.js (rasterize.html, served
+// at app://pages/rasterize.html, see window.js). Scanned PDFs have no text layer: OCR needs a picture of each page,
+// and the AI reads page pictures too.
 //   rasterize(pdfBytes, pageNumber) -> Uint8Array (PNG, drawn at 2x)
 import crypto from 'node:crypto';
-import { pathToFileURL } from 'node:url';
-
-// pdf.js wants the folder of its image decoders as a URL ending in "/".
-export function wasmUrlFor(dir) {
-  return dir ? pathToFileURL(dir).href.replace(/\/?$/, '/') : null;
-}
 
 export function dataUrlToBytes(dataUrl) {
   const text = String(dataUrl || '');
@@ -16,9 +11,16 @@ export function dataUrlToBytes(dataUrl) {
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
 }
 
-export function createRasterizer({ BrowserWindow, htmlPath, wasmDir = null, scale = 2, idleMs = 60000 }) {
-  const wasmUrl = wasmUrlFor(wasmDir);
-  let windowPromise = null;
+/** The hidden page answers { error } instead of throwing (see rasterize-page.mjs): turn it back into an Error. */
+export function unwrap(result) {
+  if (result && typeof result === 'object' && typeof result.error === 'string') throw new Error(result.error);
+  return result;
+}
+
+// pageUrl: the hidden page's address. wasmUrl: where pdf.js finds its image decoders (a URL ending in "/"), or null.
+// timeoutMs: how long one call may take before the window counts as stuck and is replaced.
+export function createRasterizer({ BrowserWindow, pageUrl, wasmUrl = null, scale = 2, idleMs = 60000, timeoutMs = 60000 }) {
+  let current = null; // { promise of the window, waiting: Set of the calls' reject functions, gone(reason) }
   let idleTimer = null;
   let busy = 0;
 
@@ -29,23 +31,52 @@ export function createRasterizer({ BrowserWindow, htmlPath, wasmDir = null, scal
       height: 1600,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
     });
-    return win.loadFile(htmlPath).then(
+    const entry = { waiting: new Set(), promise: null };
+    // A crashed or hung page fails the calls waiting on it, and the next call gets a fresh window. Without this,
+    // every later page would queue behind the stuck one.
+    entry.gone = (reason) => {
+      if (current === entry) current = null;
+      const error = new Error(reason);
+      for (const reject of entry.waiting) reject(error);
+      entry.waiting.clear();
+      if (!win.isDestroyed()) win.destroy();
+    };
+    win.webContents.on?.('render-process-gone', (_event, details) => entry.gone(`The page drawer stopped (${details?.reason || 'it crashed'}).`));
+    win.on?.('unresponsive', () => entry.gone('The page drawer stopped responding.'));
+    entry.promise = win.loadURL(pageUrl).then(
       () => win,
       (error) => {
-        win.destroy();
+        if (current === entry) current = null;
+        if (!win.isDestroyed()) win.destroy();
         throw error;
       },
     );
+    return entry;
   }
 
   // One hidden window is shared by every call and reopened if it was closed.
   async function getWindow() {
-    if (windowPromise) {
-      const win = await windowPromise.catch(() => null);
-      if (win && !win.isDestroyed()) return win;
+    if (current) {
+      const entry = current;
+      const win = await entry.promise.catch(() => null);
+      if (win && !win.isDestroyed()) return { win, entry };
     }
-    windowPromise = openWindow();
-    return windowPromise;
+    current = openWindow();
+    const entry = current;
+    return { win: await entry.promise, entry };
+  }
+
+  /** Runs one step in the window. It fails when the window crashes or hangs, or after timeoutMs. */
+  function inWindow(entry, win, code) {
+    return new Promise((resolve, reject) => {
+      entry.waiting.add(reject);
+      const timer = setTimeout(() => entry.gone('Drawing the page took too long.'), timeoutMs);
+      timer.unref?.();
+      win.webContents.executeJavaScript(code).then(resolve, reject).finally(() => {
+        clearTimeout(timer);
+        entry.waiting.delete(reject);
+      });
+    });
   }
 
   async function rasterize(pdfBytes, pageNumber = 1) {
@@ -54,8 +85,8 @@ export function createRasterizer({ BrowserWindow, htmlPath, wasmDir = null, scal
     busy += 1;
     clearTimeout(idleTimer);
     try {
-      const win = await getWindow();
-      const run = (code) => win.webContents.executeJavaScript(code);
+      const { win, entry } = await getWindow();
+      const run = async (code) => unwrap(await inWindow(entry, win, code));
       // The PDF is sent once (keyed by its hash); later pages of the same PDF reuse it.
       const key = crypto.createHash('sha256').update(pdfBytes).digest('hex');
       if (!(await run(`window.raster.has(${JSON.stringify(key)})`))) {
@@ -74,9 +105,9 @@ export function createRasterizer({ BrowserWindow, htmlPath, wasmDir = null, scal
 
   function close() {
     clearTimeout(idleTimer);
-    const pending = windowPromise;
-    windowPromise = null;
-    pending?.then((win) => !win.isDestroyed() && win.destroy()).catch(() => {});
+    const entry = current;
+    current = null;
+    entry?.promise.then((win) => !win.isDestroyed() && win.destroy()).catch(() => {});
   }
 
   return { rasterize, close };

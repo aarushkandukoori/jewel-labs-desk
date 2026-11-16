@@ -2,6 +2,8 @@
 // evidence index, sources, then every original document in the order customs reads them.
 import { PAPER_KIND_LABELS } from '../types.js';
 import { normalizeLab } from '../rules/formats.js';
+import { isUncheckedDraft } from '../records/stones.js';
+import { RULES_VERSION } from '../rules/compliance.js';
 import { SOURCES, WORDING_VERSION } from './templates.js';
 import { nextRef } from './refs.js';
 import {
@@ -11,7 +13,7 @@ import {
 } from './layout.js';
 import {
   NOT_ON_FILE, countryName, docTitle, fieldOf, findField, firstOf, formatCarat, formatDay, growthText, isBlank,
-  isSampleData, partyLine, sourceText, stoneFacts, stonesText,
+  isSampleData, labKey, partyLine, shortLab, sourceText, stoneFacts, stonesText,
 } from './format.js';
 import { STATEMENT_KINDS, drawStatement, houseName } from './statements.js';
 import { appendOriginal, loadOriginal } from './originals.js';
@@ -47,16 +49,6 @@ export function customsOrder(documents, direction) {
     .map(({ doc }) => doc);
 }
 
-/** The pack needs RULES_VERSION from the rules module. Loaded lazily so papers still work without it. */
-async function loadRulesVersion() {
-  try {
-    const rules = await import('../rules/compliance.js');
-    return rules.RULES_VERSION || null;
-  } catch {
-    return null;
-  }
-}
-
 function pageText(range) {
   if (!range) return 'Not attached';
   return range.first === range.last ? `Page ${range.first}` : `Pages ${range.first} to ${range.last}`;
@@ -77,7 +69,7 @@ function shipmentFacts(shipment, documents, direction) {
     flight: firstOf(shipment.flight, findField(docs, 'awb.flight', ['air_waybill'])),
     awbRoute: firstOf(findField(docs, 'awb.route', ['air_waybill']), shipment.route),
     grossWeight: firstOf(shipment.grossWeight, findField(docs, 'goods.grossWeight', ['air_waybill', 'shipping_bill', 'commercial_invoice'])),
-    packages: firstOf(shipment.packages),
+    packages: firstOf(shipment.packages, findField(docs, 'goods.packages', ['air_waybill', 'shipping_bill', 'commercial_invoice'])),
     booking: firstOf(shipment.bookingRef, shipment.bookingReference),
     direction,
   };
@@ -205,7 +197,8 @@ function drawPapersList(ctx, job, places) {
 }
 
 function missingCorePapers(job) {
-  const have = new Set(job.documents.map((doc) => doc.docType));
+  // A packing list the agents drafted counts only once a person checked it.
+  const have = new Set(job.documents.filter((doc) => !isUncheckedDraft(doc)).map((doc) => doc.docType));
   return CORE_PAPERS[job.direction].filter(([type]) => !have.has(type)).map(([, label]) => label);
 }
 
@@ -216,11 +209,14 @@ function drawChecks(ctx, job, places) {
   const passed = summary?.passed ?? checks.filter((c) => c.severity === 'pass' || c.severity === 'info').length;
   const problems = checks.filter((c) => c.severity === 'fail' || c.severity === 'warn')
     .sort((a, b) => (a.severity === 'fail' ? 0 : 1) - (b.severity === 'fail' ? 0 : 1));
+  // Differences a person accepted (papers that still disagree with the value they chose) are printed as such.
+  const accepted = checks.filter((c) => c.accepted && c.severity !== 'fail' && c.severity !== 'warn');
   const missing = missingCorePapers(job);
   drawRows(ctx, [
     { label: 'Status', chip: job.status },
     { label: 'Consistent', value: total ? `${passed} of ${total} checks` : 'No checks run yet' },
     ...problems.map((check) => ({ label: check.severity === 'fail' ? 'Failed' : 'To check', value: check.title, note: check.detail })),
+    ...accepted.map((check) => ({ label: 'Accepted', value: check.title, note: check.detail })),
     { label: 'Not on file', value: missing.length ? missing.join(', ') : 'Nothing required is missing.' },
     { label: 'Pages', value: String(places ? places.total : 888) },
   ], { pad: 4 });
@@ -229,15 +225,18 @@ function drawChecks(ctx, job, places) {
 function drawStatementsList(ctx, job, places) {
   const wanted = job.required.filter((item) => item && !['export_pack', 'import_pack'].includes(item.kind));
   if (!wanted.length) {
-    drawRows(ctx, [{ label: 'Origin statements', value: 'None needed for this shipment.' }], { pad: 4 });
+    // Without a destination the rules cannot tell which statement the importer needs.
+    const value = isBlank(job.shipment.destinationCountry) ? 'Not decided yet: no paper names the destination.' : 'None needed for this shipment.';
+    drawRows(ctx, [{ label: 'Origin statements', value }], { pad: 4 });
     return;
   }
   drawRows(ctx, wanted.map((item) => {
     const inPack = STATEMENT_KINDS.includes(item.kind);
     const page = places?.sections[item.kind];
+    // Nothing here is signed until a person signs this pack.
     const who = item.kind === 'g7_gf_declaration'
       ? 'Note for the importer.'
-      : job.direction === 'export' ? 'Draft for the importer to sign.' : `Signed by ${houseName(job.house)}.`;
+      : job.direction === 'export' ? 'Draft for the importer to sign.' : `${job.status === 'signed' ? 'Signed' : 'To be signed'} by ${houseName(job.house)}.`;
     return {
       label: PAPER_KIND_LABELS[item.kind] || item.kind,
       value: firstOf(item.reason) || 'Required for this shipment.',
@@ -297,37 +296,45 @@ function lineNumberFor(stone, documents, types) {
 function drawStoneList(ctx, job) {
   const { stones, documents } = job;
   const facts = stoneFacts(stones);
+  const maybe = facts.maybeCount ? ` ${facts.maybeCount} more in lots may reach it.` : '';
   addPage(ctx, 'Stone list');
   drawHeader(ctx, {
     label: 'Stone list',
     title: 'Stones in this shipment',
-    subtitle: stones.length ? `${stonesText(facts.count, facts.carats)}. ${facts.inScopeCount} of 0.50 ct and up.` : 'No stones on file yet',
+    subtitle: stones.length ? `${stonesText(facts.count, facts.carats)}. ${facts.inScopeCount} of 0.50 ct and up.${maybe}` : 'No stones on file yet',
   });
   if (!stones.length) {
     drawParagraph(ctx, 'The list fills in as the agents read the invoice, the packing list and the grading reports.', { size: 8.5, color: COLOR.muted });
     return;
   }
+  // A lot line is one row with its piece count and total weight. Labs print by a short name (key under the table).
   const columns = [
-    { title: 'Report number', width: 92, mono: true },
-    { title: 'Lab', width: 44 },
+    { title: 'Report number', width: 86, mono: true },
+    { title: 'Lab', width: 40 },
     { title: 'Shape', width: 48 },
+    { title: 'Pcs', width: 26, align: 'right' },
     { title: 'Carat', width: 50, align: 'right' },
     { title: 'Colour', width: 44 },
     { title: 'Clarity', width: 44 },
-    { title: 'Growth', width: 55 },
-    { title: 'Invoice line', width: 55, align: 'right' },
-    { title: 'Packing line', width: 55, align: 'right' },
+    { title: 'Growth', width: 53 },
+    { title: 'Invoice line', width: 48, align: 'right' },
+    { title: 'Packing line', width: 48, align: 'right' },
   ];
   const rows = stones.map((stone) => ({
     cells: [
-      stone.reportNumber, stone.lab, stone.shape, isBlank(stone.carat) ? null : formatCarat(stone.carat),
+      stone.reportNumber, shortLab(stone.lab), stone.shape, stone.pieces > 1 ? stone.pieces : 1, isBlank(stone.carat) ? null : formatCarat(stone.carat),
       stone.color, stone.clarity, isBlank(stone.growth) ? null : growthText(stone.growth),
       lineNumberFor(stone, documents, ['commercial_invoice', 'proforma_invoice', 'invoice']),
       lineNumberFor(stone, documents, ['packing_list']),
     ],
   }));
-  rows.push({ strong: true, empty: '', cells: [`${facts.count} stones`, '', '', formatCarat(facts.carats), '', '', '', '', ''] });
+  rows.push({ strong: true, empty: '', cells: [`${facts.count} stones`, '', '', facts.count, formatCarat(facts.carats), '', '', '', '', ''] });
   drawTable(ctx, { columns, rows });
+  const key = labKey(stones.map((stone) => stone.lab).filter((lab) => !isBlank(lab)));
+  if (key) {
+    ctx.y -= 4;
+    drawParagraph(ctx, key, { size: 7.2, color: COLOR.muted, gapAfter: 0 });
+  }
 }
 
 function drawEvidenceIndex(ctx, job, places) {
@@ -372,15 +379,39 @@ function drawEvidenceIndex(ctx, job, places) {
   drawTable(ctx, { columns, rows });
 }
 
-function sourceKeysFor(job) {
+/** Which rules the papers answer to: the EU, the US, or both when the shipment needs neither statement. */
+function regimesFor(job) {
   const kinds = job.required.map((item) => item?.kind);
-  const keys = [];
   const eu = kinds.includes('eu_dds') || kinds.includes('g7_gf_declaration');
   const us = kinds.includes('us_cbp_certificate');
-  if (eu || !us) keys.push('eu_regulation', 'eu_faq', 'dds_template', 'awdc_guidelines', 'awdc_update');
-  if (us || !eu) keys.push('cbp_csms', 'ofac_determinations', 'ace_dis');
+  return { eu: eu || !us, us: us || !eu };
+}
+
+function sourceKeysFor(job) {
+  const { eu, us } = regimesFor(job);
+  const keys = [];
+  if (eu) keys.push('eu_regulation', 'eu_faq', 'dds_template', 'awdc_guidelines', 'awdc_update');
+  if (us) keys.push('cbp_csms', 'ofac_determinations', 'ace_dis');
   keys.push('ofac_sdn');
   return keys;
+}
+
+/** What the SDN source was used for: the pack never says the parties were screened when they were not. */
+function sdnUsedFor(job) {
+  if (job.house?.permissions?.ofacScreen === false) return 'OFAC screening was off for this house: the parties were not screened against this list.';
+  const check = job.checks.find((c) => c.code === 'sanctions');
+  if (check && /not (been )?screened/i.test(check.detail || '')) return 'Not every party has been screened against this list yet.';
+  return SOURCES.ofac_sdn.usedFor;
+}
+
+/** The thresholds of the rules that apply, in plain words. */
+function thresholdText(job) {
+  const { eu, us } = regimesFor(job);
+  const parts = [];
+  if (eu) parts.push('EU: diamonds of 0.50 ct and up a stone, natural and lab-grown. Rough also needs a KP certificate that lists the countries of mining.');
+  if (us) parts.push('US: non-industrial diamonds of 0.50 ct and up; diamond jewellery and unsorted diamonds at any weight.');
+  parts.push('Every rough shipment travels with a KP certificate.');
+  return parts.join(' ');
 }
 
 function drawSources(ctx, job) {
@@ -391,7 +422,8 @@ function drawSources(ctx, job) {
   for (const key of sourceKeysFor(job)) {
     const source = SOURCES[key];
     const titleLines = wrap(source.title, fonts.medium, 8.3, CONTENT_WIDTH - 12);
-    const metaLines = wrap(`${source.publisher}. ${source.usedFor}`, fonts.regular, 7.5, CONTENT_WIDTH - 12);
+    const usedFor = key === 'ofac_sdn' ? sdnUsedFor(job) : source.usedFor;
+    const metaLines = wrap(`${source.publisher}. ${usedFor}`, fonts.regular, 7.5, CONTENT_WIDTH - 12);
     const urlLines = wrap(source.url, fonts.mono, 6.9, CONTENT_WIDTH - 12);
     const height = 7 + titleLines.length * 11 + metaLines.length * 10 + urlLines.length * 9.4 + 5;
     ensureSpace(ctx, height);
@@ -407,7 +439,7 @@ function drawSources(ctx, job) {
   drawRows(ctx, [
     { label: 'Rules version', value: job.rulesVersion, mono: Boolean(job.rulesVersion) },
     { label: 'Statement wording checked', value: formatDay(WORDING_VERSION) },
-    { label: 'Threshold', value: 'Stones of 0.50 ct and up are in scope for the EU and US rules.' },
+    { label: 'Threshold', value: thresholdText(job) },
   ]);
   sectionLabel(ctx, 'How this pack was made');
   drawParagraph(ctx, `Jewel Labs agents read every document in the evidence index and took each value from the page it is printed on. The original documents follow, in the order customs reads them, reproduced unchanged. A person at ${houseName(job.house)} checks and signs the pack.`, { size: 8.4, color: COLOR.soft });
@@ -477,7 +509,8 @@ export async function buildPack(input) {
   // The pack kind decides whose letterhead the statements use, even if the shipment says "unknown".
   const shipment = { ...(input.shipment || {}), direction };
   const required = (input.required || []).filter(Boolean);
-  const envelope = customsOrder(documents, direction);
+  // An agents' packing list draft no person has checked stays out of the envelope (it is kept on record).
+  const envelope = customsOrder(documents.filter((doc) => !isUncheckedDraft(doc)), direction);
   const originals = [];
   for (const doc of envelope) originals.push(await loadOriginal(doc, input.getFile));
 
@@ -489,7 +522,7 @@ export async function buildPack(input) {
     status: input.status || 'draft',
     version: input.version || 1,
     ref: input.ref || nextRef(kind, printedAt, []),
-    rulesVersion: input.rulesVersion || (await loadRulesVersion()),
+    rulesVersion: input.rulesVersion || RULES_VERSION, // paperwork passes the rules that checked the shipment
     statementKinds: [...new Set(required.map((item) => item.kind).filter((k) => STATEMENT_KINDS.includes(k)))],
     sample: isSampleData({ house: input.house, shipment: input.shipment, documents }),
   };

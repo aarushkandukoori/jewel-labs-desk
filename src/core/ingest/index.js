@@ -5,7 +5,7 @@
 // - Spreadsheets become rows of text; text files become text.
 // A bad file never throws: its item carries an `error` message instead, so autopilot keeps going.
 import { decodeText, detectMime, kindForMime, sha256, toBytes } from './detect.js';
-import { baseName, cleanPath, unzip } from './zip.js';
+import { baseName, cleanPath, unpackBudget, unzip } from './zip.js';
 import { chatTitleFromName, isChatFileName, looksLikeChat, parseChat } from './whatsapp.js';
 import { emailAsText, htmlToText, readEmail } from './email.js';
 import { readSheet } from './sheet.js';
@@ -20,9 +20,10 @@ const MAX_CONTAINERS_DEEP = 4; // zips and emails inside each other, in any mix
 /**
  * ingestFile({ name, bytes, source }) -> { items }
  * name: the file name (a relative path is kept). source: where it came from, e.g. { kind: 'upload' }.
+ * maxUnpackedBytes: what all the zips in the file may unpack to together (512 MB; smaller in tests).
  * Each item: { name, mime, kind, bytes, sha256, source, parent?, chat?, email?, sheet?, text?, error? }.
  */
-export async function ingestFile({ name, bytes, source } = {}) {
+export async function ingestFile({ name, bytes, source, maxUnpackedBytes } = {}) {
   const items = [];
   const file = {
     name: cleanPath(name) || 'file',
@@ -31,6 +32,7 @@ export async function ingestFile({ name, bytes, source } = {}) {
     parent: null,
     depth: 0, // how many zips or emails this file sits inside
     zips: 0, // how many of those are zips
+    budget: unpackBudget(maxUnpackedBytes), // bytes all the zips in this file may unpack to, together
   };
   await addFile(items, file);
   return { items };
@@ -56,7 +58,7 @@ async function addZip(items, file) {
     items.push(makeItem(file, 'application/zip', { error }));
     return;
   }
-  const files = await unzip(file.bytes);
+  const files = await unzip(file.bytes, file.budget);
   const zip = { ...file, zips: file.zips + 1 };
   const chatFile = files.find((entry) => isChatFileName(entry.path));
   if (chatFile) {
@@ -141,6 +143,7 @@ function inside(container, name, bytes, source) {
     parent: container.name,
     depth: container.depth + 1,
     zips: container.zips,
+    budget: container.budget,
   };
 }
 

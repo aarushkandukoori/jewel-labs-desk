@@ -6,7 +6,7 @@ import { Button, Field, Toggle, Segmented, CopyButton, Chip } from '../component
 import { Icon } from '../components/icons.js';
 import { EmailForm } from './home.js';
 import { ROLE_LABELS } from '../lib/labels.js';
-import { ago, initials } from '../lib/format.js';
+import { ago, initials, folderProblem, offlineNote } from '../lib/format.js';
 
 const SECTIONS = [
   ['profile', 'House profile'], ['team', 'Team'], ['ai', 'AI'], ['mailbox', 'Mailbox'], ['folder', 'Watched folder'],
@@ -77,15 +77,26 @@ function Profile() {
 }
 
 function Team() {
-  const { state, jl, call } = useApp();
+  const { state, jl, call, toast } = useApp();
   const [members, setMembers] = useState(null);
   const [role, setRole] = useState('preparer');
   const [code, setCode] = useState(null);
-  useEffect(() => { call(jl.workspaces.members(), { quiet: true }).then((m) => setMembers(Array.isArray(m) ? m : [])); }, [state.workspace?.id]);
+  const loadMembers = () => call(jl.workspaces.members(), { quiet: true }).then((m) => setMembers(Array.isArray(m) ? m : []));
+  useEffect(() => { loadMembers(); }, [state.workspace?.id, state.settings?.userName]);
 
   async function invite() {
     const result = await call(jl.workspaces.invite(role));
     if (result?.code) setCode(result);
+  }
+
+  // A code given to the wrong person, or no longer needed, stops working at once.
+  async function revoke() {
+    if (!code?.code || !window.confirm('Withdraw this invite code? Nobody can join with it after this.')) return;
+    const result = await call(jl.workspaces.revoke(code.code));
+    if (result?.revoked) {
+      setCode(null);
+      toast('Code withdrawn', 'Nobody can join with it any more.', 'ok');
+    }
   }
 
   const signedIn = state.auth?.signedIn;
@@ -107,10 +118,42 @@ function Team() {
           <${Button} size="sm" onClick=${invite} icon=${Icon.plus}>Create an invite code<//>
         </div>
         ${code ? html`<div class="code-box mt-12"><span>${code.code}</span><span class="spacer" style=${{ flex: 1 }}></span><${CopyButton} text=${code.code} /></div>
-          <div class="form-help">They install Jewel Labs, choose Create an account, and paste this code. It works once.</div>` : null}`
+          <div class="form-help">They install Jewel Labs, choose Create an account, and paste this code. It works once.</div>
+          <div class="form-actions"><${Button} size="sm" kind="ghost" onClick=${revoke}>Withdraw the code<//></div>` : null}`
         : html`<div class="soft">Your work is on this computer only. ${state.demo ? 'In the desktop app, sign in' : html`<button class="link-btn" type="button" onClick=${() => location.assign('#/welcome')}>Sign in</button>`} to share one workspace with your whole team.</div>`}
     </div>
+    <${YourName} />
   </section>`;
+}
+
+/** The person's own name and title: the audit trail and the chat name them, and the Sign dialog starts with them. */
+function YourName() {
+  const { state, jl, call, dispatch, toast } = useApp();
+  const s = state.settings || {};
+  const [name, setName] = useState(s.userName || '');
+  const [title, setTitle] = useState(s.signerTitle || '');
+  useEffect(() => {
+    setName(s.userName || '');
+    setTitle(s.signerTitle || '');
+  }, [s.userName, s.signerTitle]);
+
+  async function save() {
+    const saved = await call(jl.settings.set({ userName: name.trim() || null, signerTitle: title.trim() || null }));
+    if (saved) {
+      dispatch({ type: 'settings', settings: saved });
+      toast('Saved', 'Your name goes on the audit trail, in chat and in the Sign dialog.', 'ok');
+    }
+  }
+
+  const signedIn = state.auth?.signedIn;
+  return html`<div class="section-body" style=${{ borderTop: '1px solid var(--line)' }}>
+    <div class="form-grid">
+      <${Field} label="Your name" hint=${signedIn ? 'Signed in, the audit trail uses the name on your account.' : 'Used instead of this computer’s login name.'}>
+        <input class="input" value=${name} onInput=${(e) => setName(e.currentTarget.value)} autocomplete="name" placeholder="As you sign" /><//>
+      <${Field} label="Your title" hint="The Sign dialog starts with it"><input class="input" value=${title} onInput=${(e) => setTitle(e.currentTarget.value)} placeholder="Director" /><//>
+    </div>
+    <div class="form-actions"><${Button} size="sm" onClick=${save}>Save your name<//></div>
+  </div>`;
 }
 
 function AISettings() {
@@ -137,12 +180,14 @@ function AISettings() {
   }
 
   const modeText = ai.mode === 'direct' ? 'Your own OpenAI key' : ai.mode === 'proxy' ? 'Jewel Labs cloud' : ai.mode === 'demo' ? 'Demo (recorded answers)' : 'Offline reader (no AI)';
+  const readOffline = (state.data?.documents || []).filter((d) => d.needsAiRead).length;
   return html`<section class="section" id="settings-ai" aria-label="AI">
     <div class="section-head"><div class="label">AI</div><div class="right-side"><${Chip} small tone=${ai.mode === 'off' ? 'warn' : 'ok'}>${modeText}<//></div></div>
     <div class="setting-row">
       <div><div class="t">Who reads the papers</div><div class="d">Signed in, the agents use the Jewel Labs cloud (OpenAI, billed to Jewel Labs). With your own OpenAI key, calls go straight from this computer to OpenAI. With neither, an offline reader reads the text layer and OCR; it is less accurate.</div>
         ${ai.calls ? html`<div class="d mt-8">${ai.calls} ${ai.calls === 1 ? 'call' : 'calls'} to the AI since the app started.</div>` : null}
-        ${ai.lastError?.message ? html`<div class="form-error mt-8" role="status">Last problem: ${ai.lastError.message} The agents read with the offline reader meanwhile.</div>` : null}</div>
+        ${ai.lastError?.message ? html`<div class="form-error mt-8" role="status">Last problem: ${ai.lastError.message} The agents read with the offline reader meanwhile.</div>` : null}
+        ${readOffline ? html`<div class="d mt-8" role="status">${offlineNote(readOffline)}</div>` : null}</div>
     </div>
     <div class="setting-row">
       <div style=${{ flex: 1 }}><div class="t">Your own OpenAI key</div><div class="d">${s.hasOpenAIKey ? 'A key is saved, encrypted on this computer.' : 'Optional. Stored encrypted with the system keychain, never in plain text.'}</div>
@@ -169,7 +214,7 @@ function Mailbox() {
     <div class="setting-row">
       <div><div class="t">${status?.connected ? status.email : 'Connect your company email'}</div>
         <div class="d">${status?.connected ? `Checked every 5 minutes${status.lastPollAt ? `, last ${ago(status.lastPollAt)}` : ''}. Signed packs are sent from this mailbox.` : 'The agents check it every 5 minutes, file new consignment mail, and send signed packs from it.'}
-          ${status?.lastError ? html`<div class="fail small mt-4">${status.lastError}</div>` : null}</div></div>
+          ${status?.lastError ? html`<div class="note-fail small mt-4">${status.lastError}</div>` : null}</div></div>
       <div class="ctl">${status?.connected
         ? html`<${Button} size="sm" onClick=${async () => { const r = await call(jl.mail.pollNow()); if (r) { setStatus(r); toast('Mailbox checked', '', 'ok'); } }}>Check now<//>
             <${Button} size="sm" kind="ghost" onClick=${async () => { await call(jl.mail.disconnect()); refresh(); }}>Disconnect<//>`
@@ -191,7 +236,8 @@ function Folder() {
     <div class="section-head"><div class="label">Watched folder</div></div>
     <div class="setting-row">
       <div><div class="t">${status?.watching ? html`<span class="mono">${status.path}</span>` : 'No folder yet'}</div>
-        <div class="d">${status?.watching ? `${status.files || 0} files seen${status.lastScanAt ? `, last looked ${ago(status.lastScanAt)}` : ''}.` : 'Save papers into a folder (or let your scanner do it) and the agents pick them up on their own.'}</div></div>
+        <div class="d">${status?.watching ? `${status.files || 0} files seen${status.lastScanAt ? `, last looked ${ago(status.lastScanAt)}` : ''}.` : 'Save papers into a folder (or let your scanner do it) and the agents pick them up on their own.'}
+          ${folderProblem(status) ? html`<div class="note-fail small mt-4">${folderProblem(status)}</div>` : null}</div></div>
       <div class="ctl"><${Button} size="sm" onClick=${choose} icon=${Icon.folder}>${status?.watching ? 'Change folder' : 'Choose a folder'}<//></div>
     </div>
   </section>`;

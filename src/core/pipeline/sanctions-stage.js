@@ -2,7 +2,8 @@
 // A name screened in the last 24 hours (against the same list) is not screened again.
 import { newId, normalizeName, hoursBetween } from './context.js';
 
-export const PARTY_ROLES = ['exporter', 'consignee', 'buyer', 'supplier', 'carrier', 'broker', 'insurer'];
+// insured: the party an insurance certificate covers (insured.name), screened like the others.
+export const PARTY_ROLES = ['exporter', 'consignee', 'buyer', 'supplier', 'carrier', 'broker', 'insurer', 'insured'];
 const RESCREEN_HOURS = 24;
 
 /** Returns the screenings for the rules: [{ name, role, roles, status, best, compared, listDate, partyId }]. */
@@ -22,6 +23,19 @@ export async function screenShipmentParties(ctx, shipment) {
   return screenings;
 }
 
+/**
+ * The date of the OFAC SDN list the agents screen against now, or null when screening is off or the list could not
+ * be loaded. A shipment screened against an older list is screened again before anyone signs it.
+ */
+export async function currentListDate(ctx) {
+  const house = await ctx.store.workspace();
+  if (house.permissions?.ofacScreen === false) return null;
+  const index = await ctx.getSdnIndex();
+  return index?.date ?? null;
+}
+
+const TRANSPORT_PHRASE = /\b(?:air\s*freight|sea\s*freight|door\s*to\s*door|window\s*to\s*door|by\s+air|by\s+sea|by\s+road)\b/i;
+
 /** Distinct parties from the shipment record and from every document field like "carrier.name". */
 export function collectParties(shipment, documents = []) {
   const byName = new Map();
@@ -40,7 +54,11 @@ export function collectParties(shipment, documents = []) {
   for (const doc of documents) {
     for (const field of doc.fields || []) {
       const [role, part] = String(field.key || '').split('.');
-      if (part === 'name' && PARTY_ROLES.includes(role) && field.value) add(role, field.value, null);
+      if (part !== 'name' || !PARTY_ROLES.includes(role) || !field.value) continue;
+      // An insurance certificate's "Conveyance" line ("Secured air freight, door to door") is not a company:
+      // the carrier comes from the air waybill or shipping bill, and transport phrases are never screened.
+      if (role === 'carrier' && (doc.docType === 'insurance_certificate' || TRANSPORT_PHRASE.test(field.value))) continue;
+      add(role, field.value, null);
     }
   }
   return [...byName.values()];

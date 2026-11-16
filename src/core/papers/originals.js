@@ -1,11 +1,12 @@
 // The original documents at the back of a pack. PDF pages are copied unchanged, photos are placed on an A4
 // page, and spreadsheet lines are shown as a table. Anything we cannot attach is listed as "not attached".
-import { PDFDocument, degrees } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, degrees } from 'pdf-lib';
 import {
   COLOR, CONTENT_WIDTH, MARGIN, addPage, drawCaps, drawHeader, drawNotice, drawText, fitLine,
 } from './layout.js';
 import { docTitle, sourceText } from './format.js';
 import { drawLinesTable } from './packing-list.js';
+import { isAgentDraft, isUncheckedDraft } from '../records/stones.js';
 
 /**
  * A fresh copy of the bytes. Small Node Buffers share one big memory pool, and pdf-lib's JPEG reader looks
@@ -88,6 +89,9 @@ export async function loadOriginal(doc, getFile) {
   } catch {
     bytes = null;
   }
+  // The agents' own packing list, once a person checked it, goes in as a clean table of its lines: the stored PDF
+  // is the draft, stamped DRAFT and "check every line before use".
+  if (isAgentDraft(doc) && !isUncheckedDraft(doc) && Array.isArray(doc.lines) && doc.lines.length) return { ...base, type: 'checked_draft' };
   if (!bytes || !bytes.length) return { ...base, type: 'none', note: 'No file on record' };
   const type = sniffType(bytes);
   if (type === 'pdf') {
@@ -161,6 +165,49 @@ function drawLinesPages(ctx, original) {
   drawLinesTable(ctx, original.doc.lines);
 }
 
+/** The agents' packing list a person checked: its lines as a table, with who checked it. */
+function drawCheckedDraftPages(ctx, original) {
+  addPage(ctx, 'Original');
+  drawHeader(ctx, {
+    label: 'Packing list · drafted by agents, checked by the house',
+    title: original.title,
+    subtitle: original.doc.fileName || null,
+  });
+  const checked = (original.doc.fields || []).find((field) => field.key === 'doc.checkedBy' && field.value);
+  const by = checked?.by ? `${checked.by} at the house` : 'a person at the house';
+  drawNotice(ctx, `Drafted by Jewel Labs agents from the chat and emails, then checked line by line by ${by}. These are its lines.`);
+  drawLinesTable(ctx, original.doc.lines);
+}
+
+// Annotations that carry files, media or 3D content: left out of the copy. Their look on the page is not content.
+const DROPPED_ANNOTATIONS = new Set(['FileAttachment', 'RichMedia', 'Screen', 'Movie', 'Sound', '3D']);
+
+/**
+ * Makes a copied page inert: what is printed stays exactly as it was, but nothing on it can run or open anything in
+ * the house's own pack. Page actions go, annotations lose their actions (JavaScript, Launch, SubmitForm, links), and
+ * attachment and media annotations are dropped. Form fields keep their printed values.
+ */
+export function makeInert(doc, page) {
+  const { context } = doc;
+  page.node.delete(PDFName.of('AA'));
+  const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
+  if (!annots) return;
+  for (let i = annots.size() - 1; i >= 0; i--) {
+    const annot = context.lookupMaybe(annots.get(i), PDFDict);
+    if (!annot) continue;
+    const subtype = annot.lookupMaybe(PDFName.of('Subtype'), PDFName);
+    if (subtype && DROPPED_ANNOTATIONS.has(subtype.decodeText())) {
+      annots.remove(i);
+      continue;
+    }
+    // A form field's actions can sit on the widget or on the field above it.
+    for (let node = annot, depth = 0; node && depth < 8; node = node.lookupMaybe(PDFName.of('Parent'), PDFDict), depth++) {
+      node.delete(PDFName.of('A'));
+      node.delete(PDFName.of('AA'));
+    }
+  }
+}
+
 /**
  * Appends one original to the pack. Returns { first, last } (page numbers, from 1) or null when it is
  * not attached. A failure here marks the original "not attached" so the next pass lists it that way.
@@ -170,7 +217,10 @@ export async function appendOriginal(ctx, original) {
   if (original.type === 'pdf') {
     try {
       const pages = await ctx.doc.copyPages(original.pdf, original.pdf.getPageIndices());
-      pages.forEach((page) => ctx.doc.addPage(page));
+      pages.forEach((page) => {
+        makeInert(ctx.doc, page);
+        ctx.doc.addPage(page);
+      });
     } catch {
       original.type = 'none';
       original.note = 'The PDF pages could not be copied';
@@ -180,6 +230,8 @@ export async function appendOriginal(ctx, original) {
     if (!(await drawPhotoPage(ctx, original))) return null;
   } else if (original.type === 'lines') {
     drawLinesPages(ctx, original);
+  } else if (original.type === 'checked_draft') {
+    drawCheckedDraftPages(ctx, original);
   } else {
     return null;
   }

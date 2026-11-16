@@ -54,10 +54,17 @@ const BATCH_BYTES = 1_000_000; // and roughly this much JSON per request
 const RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
 const REALTIME_WAIT_MS = 10000; // how long open() waits for the live connection before loading anyway
 const CLOSE_WAIT_MS = 3000; // how long close() gives the outbox to reach the server
+// The documents bucket takes files of up to 50 MB (file_size_limit in backend/supabase/migrations/0001_init.sql).
+// A bigger file is refused here, at once: queued, it would be dropped by the server while its record still
+// synced, and every other computer would wait for a file that never comes.
+export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 /**
- * openCloudStore({ cloud, workspaceId, cacheDir }) -> Store (same interface as openLocalStore).
+ * openCloudStore({ cloud, workspaceId, cacheDir, userId? }) -> Store (same interface as openLocalStore).
  * cacheDir: a folder for this app's cloud cache; the house is kept in cacheDir/<workspaceId>/.
+ * userId: who is signed in (read from cloud.auth.session() when not given). Every change waiting to be sent is
+ * marked with it, and changes another person made offline on this computer are set aside, never sent under this
+ * person's sign-in (they go out when their author opens the house here again).
  * Extra: store.syncStatus(), store.flush(), store.removeFile(key), and 'sync' events
  * ({ kind, online, realtime, pending, lastError, lastErrorAt, lastSyncedAt }) besides 'change' events
  * (with remote: true for changes from other computers). The other options are for tests.
@@ -66,22 +73,26 @@ export async function openCloudStore({
   cloud,
   workspaceId,
   cacheDir,
+  userId: givenUserId,
   api,
   flushDelayMs,
   retryDelaysMs = RETRY_DELAYS_MS,
   realtimeWaitMs = REALTIME_WAIT_MS,
+  maxFileBytes = MAX_FILE_BYTES,
 } = {}) {
   checkWorkspaceId(workspaceId);
   if (!cacheDir) throw new Error('openCloudStore needs a cacheDir');
   if (!api && !cloud?.client) throw new Error('openCloudStore needs a signed-in cloud (from createCloud)');
   const server = api || makeApi(cloud.client, workspaceId);
   const root = path.join(cacheDir, workspaceId);
+  const userId = givenUserId !== undefined ? givenUserId : (await cloud?.auth?.session?.().catch(() => null))?.user?.id ?? null;
 
   let settings = null; // the workspace (house settings)
   let settingsRev = 0;
   const collections = new Map(); // collection name -> Map(id -> record)
   const versions = new Map(); // "collection/id" -> { rev, at } of the row we last saw from the server
   const outbox = new Map(); // key -> change waiting to be sent, oldest first
+  let setAside = []; // changes another person queued offline on this computer: kept, never sent by this person
   const doubt = new Set(); // keys that changed on the server while our own change was on its way
   const touched = new Map(); // key -> number of our latest local change to it (used by reload)
   let changeCount = 0;
@@ -113,6 +124,7 @@ export async function openCloudStore({
         workspaceRev: settingsRev,
         versions: Object.fromEntries(versions),
         outbox: [...outbox.values()].map(({ seq, ...entry }) => entry),
+        setAside,
       });
     }
     return JSON.stringify(Object.fromEntries(collections.get(name) || []));
@@ -172,7 +184,15 @@ export async function openCloudStore({
     const sync = (await folder.read('_sync')) || {};
     settingsRev = Number(sync.workspaceRev) || 0;
     for (const [key, version] of Object.entries(sync.versions || {})) versions.set(key, version);
-    for (const entry of sync.outbox || []) outbox.set(entryKey(entry), { ...entry, seq: ++entryCount });
+    // A change marked with another person's id stays aside; one with no mark (an older copy) is sent as before.
+    const byOthers = (entry) => Boolean(entry.userId) && entry.userId !== userId;
+    const queued = [...(sync.setAside || []), ...(sync.outbox || [])];
+    setAside = queued.filter(byOthers);
+    for (const entry of queued.filter((e) => !byOthers(e))) outbox.set(entryKey(entry), { ...entry, seq: ++entryCount });
+    if (setAside.length) {
+      console.warn(`[store] ${setAside.length} change(s) made offline by another person on this computer were set aside, not sent.`);
+      setError('Changes another person made offline on this computer were not sent under your sign-in. They are sent when that person opens this house here again.', false);
+    }
     for (const name of await savedCollectionNames(root)) {
       collections.set(name, new Map(Object.entries((await folder.read(name)) || {})));
     }
@@ -381,7 +401,7 @@ export async function openCloudStore({
   function queue(entry) {
     const key = entryKey(entry);
     outbox.delete(key); // a newer change replaces an older one and goes to the back of the line
-    outbox.set(key, { ...entry, seq: ++entryCount });
+    outbox.set(key, { ...entry, ...(userId ? { userId } : {}), seq: ++entryCount });
     touched.set(key, ++changeCount);
     folder.markDirty('_sync');
     emitSync();
@@ -579,6 +599,22 @@ export async function openCloudStore({
     },
 
     /** Saves house settings on the server first (needs the network), then here. */
+    /**
+     * The number for a new paper's ref, handed out by the server so two computers of the house never give two papers
+     * the same one: at least floor + 1. null when the server cannot hand out numbers yet (an older back end without
+     * reserve_paper_ref): the caller then numbers it as before. Throws when the cloud cannot be reached.
+     */
+    async reserveRef(stem, floor = 0) {
+      ensureOpen();
+      try {
+        const number = Number(await server.reservePaperRef(stem, floor));
+        return Number.isInteger(number) && number > 0 ? number : null;
+      } catch (err) {
+        if (err.code === 'PGRST202' || err.status === 404) return null; // the function is not there yet
+        throw Object.assign(new Error(`Could not get a paper number from Jewel Labs. ${friendlyMessage(err)}`), { cause: err, retryable: isRetryableError(err) });
+      }
+    },
+
     async updateWorkspace(patch) {
       ensureOpen();
       const merged = applyWorkspacePatch(settings, patch);
@@ -640,7 +676,12 @@ export async function openCloudStore({
     async putFile(key, bytes, mime) {
       ensureOpen();
       checkFileKey(key);
-      await writeFileAtomic(cachedFile(key), toBytes(bytes));
+      const data = toBytes(bytes);
+      if (data.length > maxFileBytes) {
+        const mb = (n) => Math.ceil(n / (1024 * 1024));
+        throw new Error(`${key.split('/').pop()} is ${mb(data.length)} MB, and a house shared online keeps files of up to ${mb(maxFileBytes)} MB.`);
+      }
+      await writeFileAtomic(cachedFile(key), data);
       queue({ op: 'putFile', fileKey: key, mime: mime || 'application/octet-stream' });
       await folder.flush(); // the upload must survive a crash
       return key;

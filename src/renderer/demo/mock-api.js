@@ -1,16 +1,23 @@
 // The in-browser stand-in for window.jl, so the app runs on the website and in tests without Electron.
-// Same methods and answers as src/main/preload.cjs + ipc.js. It plays a run of the agents: a recorded one
-// from demo/sample-run.json when that file holds one, else the built-in scripted run (demo/sample.js).
-// Everything happens in memory in this tab: nothing is uploaded, sent or saved anywhere.
-import { HOUSE, LOCAL, A, B, C, D, QUESTION_A, buildScriptedRun, checksForA, sampleHistory } from './sample.js';
-import { exportPackPdf, statementPdf } from './sample-papers.js';
+// Same methods and answers as src/main/preload.cjs + ipc.js. It replays a recorded run of the real desktop
+// agents on the fictional SAMPLE house (demo/sample-run.json, written by scripts/record-run.js): the house, its
+// people, its papers and every step come from that recording. What a visitor does on top (answer, sign, send)
+// happens in memory in this tab only: nothing is uploaded, sent or saved anywhere, and the demo never says the
+// agents did something they did not do in the recording.
 import { qrDataUrl } from './qr.js';
+import { PAPER_KIND_LABELS } from '../lib/labels.js';
+import { plural } from '../lib/format.js';
 
 const COLLECTIONS = ['documents', 'shipments', 'stones', 'checks', 'questions', 'papers', 'parties', 'activity', 'messages', 'events'];
-const WORLD = { 'shp-a': A, 'shp-b': B, 'shp-c': C, 'shp-d': D };
-const OFAC = { count: 19565, date: '2026-11-15', source: 'OFAC SDN list (the desktop app refreshes it every day)' };
-const MODEL = 'gpt-5.4-mini';
+const SAMPLE_ID = 'ws-sample'; // the recorded SAMPLE house
+const LOCAL = { id: 'ws-local', kind: 'local', sample: false, name: 'Local workspace', autopilot: true };
+const MODEL = 'gpt-5.4-mini'; // the model the run was recorded with
 const DEMO_ONLY = 'This demo runs in your browser only. Download the desktop app to do this for real.';
+const NO_OFAC = 'The demo does not carry the OFAC list. The desktop app screens every name against all of it.';
+const ANSWER_FIRST = 'Answer this question; the agents need to know which is right.';
+const NOT_NEEDED = /^(not needed|not required|no need|n\/?a|none needed|not applicable)\.?$/i;
+const IMPORTER_STATEMENTS = ['eu_dds', 'us_cbp_certificate'];
+const ONLINE_CHECK_LABS = ['GIA', 'IGI', 'HRD', 'GCAL'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // A deep copy (typed arrays such as file bytes survive it), so callers never change our records by accident.
 const copy = (v) => (v === undefined ? v : structuredClone(v));
@@ -23,20 +30,54 @@ async function sha256Hex(bytes) {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+
 /**
- * options: run (a run object to play instead of loading one), fetchRun (look for demo/sample-run.json; default true
- * in a browser), speed (1 = real time), autoStart (play the run's end state at once; default true).
+ * Moves every timestamp of the recording by offset ms, so the run shows as happening now, not on the day it
+ * was recorded. Only full timestamps inside [from, to] (the recording's own hour) move: paper dates
+ * ("2026-07-14") and chat or email times from before the run stay exactly as the papers say.
+ */
+export function shiftTimes(value, offset, from, to) {
+  if (typeof value === 'string') {
+    if (!ISO_TIME.test(value)) return value;
+    const t = Date.parse(value);
+    return t >= from && t <= to ? new Date(t + offset).toISOString() : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => shiftTimes(v, offset, from, to));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, shiftTimes(v, offset, from, to)]));
+  return value;
+}
+
+/** The recording's own time window: from its start to an hour later (the run takes a minute or two). */
+function recordingWindow(run) {
+  const start = Date.parse(run?.meta?.createdAt || '');
+  if (!Number.isFinite(start)) return null;
+  const from = start - 10 * 60000;
+  const to = start + 60 * 60000;
+  let end = start + (Number(run.meta.durationMs) || 0);
+  for (const step of run.steps) {
+    const at = Date.parse(step.payload?.at || step.payload?.updatedAt || '');
+    if (at > end && at <= to) end = at;
+  }
+  return { start, end, from, to };
+}
+
+/**
+ * options: run (a recorded run to play instead of loading demo/sample-run.json), fetchRun (load it; default true in
+ * a browser), speed (1 = real time), autoStart (show the run's end state at once; default true).
  */
 export function createMockApi({ run: givenRun = null, fetchRun = typeof window !== 'undefined', speed = 1, autoStart = true } = {}) {
   const listeners = new Map(); // event name -> Set of functions
-  const workspaces = new Map([[HOUSE.id, { ...HOUSE, createdAt: new Date(Date.now() - 90 * 864e5).toISOString() }], [LOCAL.id, { ...LOCAL, createdAt: new Date().toISOString() }]]);
+  const workspaces = new Map([[LOCAL.id, { ...LOCAL, createdAt: new Date().toISOString() }]]);
   const data = new Map(); // workspace id -> { collection -> Map(id -> record) }
-  const files = new Map(); // id -> { name, mime, bytes } | url string
+  const files = new Map(); // id -> { name, mime, bytes } | URL string from the recording
   const timers = new Set();
   const settings = { autopilot: true, notifications: true, launchAtLogin: false, userName: null, model: null, signerTitle: 'Director' };
-  let current = HOUSE.id;
-  let run = null;
-  let recorded = false;
+  const you = { type: 'person', name: 'You (demo)' };
+  let current = SAMPLE_ID;
+  let run = null; // the recorded run, or null when it could not be loaded
+  let window_ = null; // its time window (recordingWindow)
+  let offset = 0; // how far its times are moved (shiftTimes)
   let playing = false;
 
   // ---------- storage and events ----------
@@ -50,11 +91,13 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
       try { fn(copy(payload)); } catch (e) { console.error(e); }
     }
   }
-  function put(collection, record, { wsId = current, silent = false } = {}) {
+  // recorded: a record from the recording keeps its own (moved) times.
+  function put(collection, record, { wsId = current, silent = false, recorded = false } = {}) {
     const table = tables(wsId)[collection];
     const old = table.get(record.id);
     const at = new Date().toISOString();
-    const value = { ...(old || {}), ...record, workspaceId: wsId, createdAt: old?.createdAt || record.createdAt || at, updatedAt: record.updatedAt && !old ? record.updatedAt : at };
+    const updatedAt = recorded ? record.updatedAt || old?.updatedAt || at : at;
+    const value = { ...(old || {}), ...record, workspaceId: wsId, createdAt: old?.createdAt || record.createdAt || at, updatedAt };
     table.set(value.id, value);
     if (!silent && wsId === current) emit('change', { collection, id: value.id, op: 'put', value });
     return value;
@@ -82,29 +125,26 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
     return entry;
   }
   const agentEvent = (agent, action, message, extra = {}) => emit('agent', { agent, action, message, at: new Date().toISOString(), ...extra });
-  const you = { type: 'person', name: 'You (demo)' };
   const usage = (type, extra = {}) => put('events', { id: newId('evt'), type, at: new Date().toISOString(), userId: 'demo-visitor', ...extra }, { silent: true });
 
-  // ---------- playing a run ----------
+  // ---------- the recorded run ----------
 
   async function loadRun() {
     if (givenRun) return givenRun;
-    if (fetchRun) {
-      try {
-        const url = new URL('./sample-run.json', import.meta.url);
-        const response = await fetch(url, { cache: 'no-cache' });
-        const json = response.ok ? await response.json() : null;
-        if (json && Array.isArray(json.steps) && json.steps.length) {
-          recorded = true;
-          json.baseUrl = url.href;
-          return json;
-        }
-      } catch {
-        // no recording: use the scripted run
-      }
+    if (!fetchRun) return null;
+    try {
+      const url = new URL('./sample-run.json', import.meta.url);
+      const response = await fetch(url, { cache: 'no-cache' });
+      const json = response.ok ? await response.json() : null;
+      if (json && Array.isArray(json.steps) && json.steps.length) return { ...json, baseUrl: url.href };
+    } catch {
+      // no recording: the demo banner says so
     }
-    return buildScriptedRun(Date.now());
+    return null;
   }
+
+  // The recording's times moved by the current offset (a no-op without a recording window).
+  const shift = (value) => (window_ ? shiftTimes(value, offset, window_.from, window_.to) : value);
 
   function stopTimers() {
     for (const t of timers) clearTimeout(t);
@@ -114,27 +154,34 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
 
   function resetSample() {
     stopTimers();
-    data.delete(HOUSE.id);
+    data.delete(SAMPLE_ID);
     files.clear();
-    for (const [id, f] of Object.entries(run.files || {})) files.set(id, f);
+    for (const [id, f] of Object.entries(run?.files || {})) files.set(id, f);
   }
 
   function applyStep(step, { live }) {
-    if (step.kind === 'put') put(step.name, step.payload, { wsId: HOUSE.id, silent: !live || current !== HOUSE.id });
-    else if (step.kind === 'remove') { tables(HOUSE.id)[step.name].delete(step.payload?.id); if (live) emit('change', { collection: step.name, id: step.payload?.id, op: 'remove' }); }
-    else if (step.kind === 'event' && live && current === HOUSE.id) emit(step.name, step.payload);
+    const payload = shift(step.payload);
+    if (step.kind === 'put') put(step.name, payload, { wsId: SAMPLE_ID, silent: !live || current !== SAMPLE_ID, recorded: true });
+    else if (step.kind === 'remove') {
+      tables(SAMPLE_ID)[step.name]?.delete(payload?.id);
+      if (live && current === SAMPLE_ID) emit('change', { collection: step.name, id: payload?.id, op: 'remove' });
+    } else if (step.kind === 'event' && live && current === SAMPLE_ID) emit(step.name, payload);
   }
 
-  /** Applies the whole run at once (the state a returning visitor sees). */
+  /** Applies the whole run at once (the state a returning visitor sees), as if it had just finished. */
   function applyInstant() {
     resetSample();
+    if (!run) return;
+    offset = window_ ? Date.now() - window_.end : 0;
     for (const step of run.steps) applyStep(step, { live: false });
-    if (run.final?.collections) for (const [c, rows] of Object.entries(run.final.collections)) for (const r of rows) put(c, r, { wsId: HOUSE.id, silent: true });
+    for (const [c, rows] of Object.entries(run.final?.collections || {})) for (const r of rows) put(c, shift(r), { wsId: SAMPLE_ID, silent: true, recorded: true });
   }
 
-  /** Plays the run in real time: steps at their recorded times (divided by speed). */
+  /** Plays the run from now: steps at their recorded times (divided by speed). */
   function playLive() {
     resetSample();
+    if (!run) return;
+    offset = window_ ? Date.now() - window_.start : 0;
     playing = true;
     let last = 0;
     for (const step of run.steps) {
@@ -148,110 +195,106 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
 
   const ready = (async () => {
     run = await loadRun();
-    // A recorded run carries its own SAMPLE house (name, city, letterhead): show that one.
-    if (run?.meta?.recorded && run.workspace) {
-      const w = workspaces.get(HOUSE.id);
-      workspaces.set(HOUSE.id, { ...w, ...run.workspace, id: HOUSE.id });
-    }
+    window_ = run ? recordingWindow(run) : null;
+    // The SAMPLE house is the recording's own (name, city, letterhead): nothing else is mixed in.
+    const house = run?.workspace ? { ...run.workspace } : { name: 'Sample workspace' };
+    workspaces.set(SAMPLE_ID, { ...house, id: SAMPLE_ID, kind: 'local', sample: true, autopilot: true, createdAt: new Date(Date.now() - 90 * 864e5).toISOString() });
     if (autoStart) applyInstant();
     else resetSample();
   })();
 
   // ---------- files: originals and papers ----------
 
+  // A file of the recording: fetched once from its URL (next to sample-run.json), named as its document is.
   async function fileOf(id) {
     let f = files.get(id);
     if (typeof f === 'string') {
-      const response = await fetch(new URL(f, run.baseUrl || import.meta.url));
+      const response = await fetch(new URL(f, run?.baseUrl || import.meta.url));
       if (!response.ok) throw new Error('That file is not in this demo.');
       const bytes = new Uint8Array(await response.arrayBuffer());
-      f = { name: f.split('/').pop(), mime: response.headers.get('content-type') || '', bytes };
+      const doc = tables(SAMPLE_ID).documents.get(id);
+      f = { name: doc?.fileName || f.split('/').pop(), mime: doc?.mime || response.headers.get('content-type') || '', bytes };
       files.set(id, f);
     }
     return f || null;
   }
 
-  function shipmentData(shipmentId) {
-    return WORLD[shipmentId] || null;
-  }
-
+  // The recording keeps each paper as "<paperId>:<version>:<status>", plus a copy signed while it was recorded.
   async function paperBytes(paper) {
-    // Recorded runs ship the real PDFs; fetch them by "<paperId>:<version>:<status>".
-    const cached = await fileOf(`${paper.id}:${paper.version}:${paper.status}`)
-      || (paper.status === 'signed' ? null : await fileOf(`${paper.id}:${paper.version}:ready_to_sign`).catch(() => null));
-    if (cached) return cached;
-    const s = shipmentData(paper.shipmentId);
-    if (!s) throw new Error('This paper has no file in the demo.');
-    const shipmentDocs = all('documents').filter((d) => d.shipmentId === paper.shipmentId);
-    const stones = all('stones').filter((st) => st.shipmentId === paper.shipmentId).sort((a, b) => a.id.localeCompare(b.id));
-    const checks = all('checks').filter((c) => c.shipmentId === paper.shipmentId);
-    const statement = all('papers').find((p) => p.shipmentId === paper.shipmentId && p.kind !== 'export_pack');
-    const signer = paper.signedBy ? { name: paper.signedBy, title: paper.signerTitle, at: paper.signedAt } : null;
-    const common = { house: HOUSE, shipment: s, stones, ref: paper.ref, version: paper.version, status: paper.status, date: paper.builtAt || paper.createdAt, signer };
-    const originalsHash = await sha256Hex(new TextEncoder().encode(shipmentDocs.map((d) => d.sha256).join('')));
-    const summary = get('shipments', paper.shipmentId)?.summary;
-    const assumed = Array.from({ length: summary?.total || 1 }, () => ({ severity: 'pass' })); // older shipments keep only their summary
-    const built = paper.kind === 'export_pack'
-      ? exportPackPdf({ ...common, docs: shipmentDocs, checks: checks.length ? checks : assumed, originalsHash,
-        statementRef: statement?.ref, statementLabel: statement?.kind === 'eu_dds' ? 'EU Due Diligence Statement' : 'US CBP self-certification' })
-      : statementPdf({ ...common, kind: paper.kind });
-    const f = { name: `${paper.ref}-v${paper.version}${signer ? '-signed' : ''}.pdf`, mime: 'application/pdf', bytes: built.bytes, pages: built.pages, contents: built.contents };
-    files.set(`${paper.id}:${paper.version}:${paper.status}`, f);
-    return f;
+    const signed = paper.status === 'signed' || paper.status === 'sent';
+    for (const status of new Set([paper.status, signed ? 'signed' : null, 'ready_to_sign'].filter(Boolean))) {
+      const f = await fileOf(`${paper.id}:${paper.version}:${status}`);
+      if (f) return f;
+    }
+    throw new Error('This paper has no file in the demo.');
   }
 
-  /** Builds (or rebuilds) the papers for a shipment: statements first, then the pack. */
-  async function buildPapers(shipmentId, { kinds, status = 'ready_to_sign' } = {}) {
+  /** The refs of the shipments the recording has papers for ("KG/26-27/041"). */
+  function shipmentsWithPapers() {
+    const ids = new Set(all('papers', SAMPLE_ID).map((p) => p.shipmentId));
+    return all('shipments', SAMPLE_ID).filter((s) => ids.has(s.id)).map((s) => s.ref);
+  }
+
+  /**
+   * The agents build papers in the desktop app; the demo only has the ones the recording built. Asking for
+   * them again returns those, unchanged. A shipment the recording built nothing for says so.
+   */
+  function buildPapers(shipmentId) {
     const shipment = get('shipments', shipmentId);
     if (!shipment) throw new Error('That shipment is not here.');
-    const wanted = kinds?.length ? kinds : [...(shipment.required || []).map((r) => r.kind).filter((k) => k !== 'export_pack'), 'export_pack'];
-    const built = [];
-    const day = new Date();
-    const mmdd = `${String(day.getMonth() + 1).padStart(2, '0')}${String(day.getDate()).padStart(2, '0')}`;
-    for (const kind of wanted) {
-      const prefix = { export_pack: 'EXP', eu_dds: 'DDS', us_cbp_certificate: 'CBP', import_pack: 'IMP', g7_gf_declaration: 'G7' }[kind] || 'DOC';
-      const existing = all('papers').find((p) => p.shipmentId === shipmentId && p.kind === kind);
-      const label = { export_pack: 'Building the export paper', eu_dds: 'Writing the EU statement', us_cbp_certificate: 'Writing the US self-certification' }[kind] || 'Building the paper';
-      agentEvent('paperwork', 'paper', `${label} for ${shipment.ref}`, { shipmentId });
-      await sleep(900 / speed);
-      const now = new Date().toISOString();
-      const version = existing ? (existing.status === 'signed' || existing.status === 'sent' ? existing.version : existing.version + 1) : 1;
-      if (existing && (existing.status === 'signed' || existing.status === 'sent')) { built.push(existing); continue; }
-      const paper = {
-        id: existing?.id || `pap-${shipmentId.slice(4)}-${kind}`, shipmentId, kind, ref: existing?.ref || `JL-${prefix}-${mmdd}-01`, version, status,
-        fileKey: `papers/${kind}`, sha256: '', pages: 0, contents: [], deskEdits: 0, houseEdits: 0, builtAt: now, builtBy: 'Paperwork', signedBy: null, signedAt: null,
-        versions: [...(existing?.versions || []), { version, builtAt: now, status }],
-      };
-      const f = await paperBytes(paper);
-      paper.sha256 = await sha256Hex(f.bytes);
-      paper.pages = f.pages;
-      paper.contents = f.contents;
-      built.push(put('papers', paper));
-      log({ type: 'agent', name: 'Paperwork' }, 'built', `Built ${kind === 'export_pack' ? 'Export pack' : kind === 'eu_dds' ? 'EU Due Diligence Statement (draft)' : 'US CBP self-certification'} ${paper.ref} v${version}`, { shipmentId, paperId: paper.id });
+    const papers = all('papers').filter((p) => p.shipmentId === shipmentId);
+    if (!papers.length) {
+      const others = shipmentsWithPapers();
+      throw new Error(`In the desktop app the Paperwork agent builds the papers for ${shipment.ref} once nothing is open. This recording has papers for ${others.length ? others.join(', ') : 'no shipment'} only.`);
     }
-    put('shipments', { ...shipment, status });
-    agentEvent('paperwork', 'done', `${built.map((p) => p.ref).join(' and ')}: ${status === 'held_for_review' ? 'held for review' : 'ready to sign'}`, { shipmentId });
-    const ref = built.find((p) => p.kind === 'export_pack')?.ref || built[0]?.ref;
-    if (status === 'held_for_review') emit('notify', { title: `Held for review: ${ref}`, body: `${shipment.ref}: Jewel Labs checks it before you sign.`, kind: 'desk_message', shipmentId });
-    else emit('notify', { title: `Ready to sign: ${ref}`, body: `${shipment.ref}: every check is consistent. Sign it, then send it from your mailbox.`, kind: 'pack_ready', shipmentId });
-    return copy(built);
+    agentEvent('paperwork', 'done', `${papers.map((p) => p.ref).join(' and ')}: as the agents built them in the recording`, { shipmentId });
+    return copy(papers);
   }
 
-  // After a question is answered: the rules run again and, with nothing open, the papers are built.
-  async function afterAnswer(question, answer) {
+  // ---------- answers ----------
+
+  // The agents run the rules again after an answer. The demo cannot run them, so it says what happens next and
+  // changes nothing it cannot know: the shipment keeps the status the recording gave it.
+  async function afterAnswer(question) {
     const shipment = get('shipments', question.shipmentId);
     if (!shipment) return;
+    await sleep(600 / speed);
+    agentEvent('origin', 'check', `Checking ${shipment.ref} again with your answer`, { shipmentId: shipment.id });
     await sleep(700 / speed);
-    agentEvent('origin', 'check', `Re-checking ${shipment.ref} with your answer: ${answer}`, { shipmentId: shipment.id });
-    if (question.id === QUESTION_A.id) {
-      for (const c of checksForA({ answered: true })) put('checks', c);
-      put('shipments', { ...shipment, summary: { passed: 14, total: 14 } });
+    const open = all('questions').filter((q) => q.shipmentId === shipment.id && q.status === 'open').length;
+    if (open) {
+      agentEvent('review', 'done', `${shipment.ref}: ${plural(open, 'question')} still open`, { shipmentId: shipment.id });
+      return;
     }
-    await sleep(900 / speed);
-    agentEvent('origin', 'done', `${shipment.ref}: every check is consistent`, { shipmentId: shipment.id });
-    log({ type: 'agent', name: 'Origin' }, 'checked', `${shipment.ref}: 14 of 14 checks consistent after the house's answer`, { shipmentId: shipment.id });
-    const open = all('questions').filter((q) => q.shipmentId === shipment.id && q.status === 'open');
-    if (!open.length && settings.autopilot) await buildPapers(shipment.id);
+    agentEvent('review', 'done', `${shipment.ref}: nothing open`, { shipmentId: shipment.id });
+    emit('notify', {
+      title: `${shipment.ref}: your answers are saved`,
+      body: 'In the desktop app the agents now run the rules again and, when every check holds, build the papers. This demo replays a recording, so it stops here.',
+      kind: 'demo',
+      shipmentId: shipment.id,
+    });
+  }
+
+  // ---------- a stone's history ----------
+
+  // The recorded history, with the signing and sending a visitor did in this tab added (src/core/records/history.js
+  // writes the same lines). An importer's statement drafted by the house is checked by the house, not signed.
+  function stoneHistory(stone) {
+    const events = (stone.history || []).filter((e) => e.kind !== 'statement_signed' && e.kind !== 'statement_sent');
+    const shipment = get('shipments', stone.shipmentId);
+    for (const paper of all('papers').filter((p) => p.shipmentId === stone.shipmentId && p.kind !== 'packing_list_draft')) {
+      const label = (PAPER_KIND_LABELS[paper.kind] || 'Paper').replace(' (draft)', '');
+      const forImporter = IMPORTER_STATEMENTS.includes(paper.kind) && shipment?.direction !== 'import';
+      if (paper.signedAt) {
+        events.push(forImporter
+          ? { at: paper.signedAt, kind: 'statement_signed', title: `${label} checked by the house`, detail: `${paper.ref} prepared and checked by ${paper.signedBy}.`, docId: null, field: null }
+          : { at: paper.signedAt, kind: 'statement_signed', title: `${label} signed`, detail: `${paper.ref} signed by ${paper.signedBy}.`, docId: null, field: null });
+      }
+      if (paper.sentAt) {
+        events.push({ at: paper.sentAt, kind: 'statement_sent', title: forImporter ? `${label} sent to the importer` : `${label} sent`, detail: `${paper.ref} sent to ${paper.sentTo}.`, docId: null, field: null });
+      }
+    }
+    return events;
   }
 
   // ---------- reading files someone adds in the demo ----------
@@ -306,9 +349,9 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
     }
   }
 
-  async function addFiles(list) {
+  async function addFiles(fileList) {
     const ids = [];
-    for (const item of Array.from(list || [])) {
+    for (const item of Array.from(fileList || [])) {
       const name = item.name || 'file';
       const bytes = item.bytes instanceof Uint8Array ? item.bytes : new Uint8Array(await item.arrayBuffer());
       const mime = item.type || (/\.pdf$/i.test(name) ? 'application/pdf' : /\.(png|jpe?g)$/i.test(name) ? 'image/png' : 'application/octet-stream');
@@ -349,11 +392,13 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
 
   // ---------- "Tell the agents" ----------
 
+  // Answers from what is in the demo: what is missing, where each shipment stands, which papers exist.
+  // Anything that needs the agents to work says it happens in the desktop app.
   async function ask(text, { shipmentId } = {}) {
     const request = String(text || '').trim();
     if (!request) throw new Error('Type a request for the agents.');
     const at = () => new Date().toISOString();
-    put('messages', { id: newId('msg'), at: at(), from: 'house', author: 'You (demo)', text: request, shipmentId: shipmentId || null });
+    put('messages', { id: newId('msg'), at: at(), from: 'house', author: you.name, text: request, shipmentId: shipmentId || null });
     log(you, 'asked', `Asked the agents: ${request}`, { shipmentId });
     const shipments = all('shipments');
     const byRef = shipments.find((s) => request.toUpperCase().replace(/[^0-9A-Z]/g, '').includes(s.ref.replace(/[^0-9A-Z]/g, '')));
@@ -377,33 +422,25 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
     } else if (/prepare|build|paper|statement|pack|export/i.test(request)) {
       if (!shipment) reply = 'There is no shipment yet. Add its papers and the agents will start.';
       else {
-        steps.push('Matching your documents');
-        agentEvent('records', 'done', `Matched ${all('documents').filter((d) => d.shipmentId === shipment.id).length} documents to ${shipment.ref}`, { shipmentId: shipment.id });
-        await sleep(800 / speed);
-        steps.push('Sanctions check');
-        agentEvent('sanctions', 'screen', `${shipment.consignee?.name}: no match on the OFAC SDN list`, { shipmentId: shipment.id });
-        await sleep(800 / speed);
-        steps.push('Checking the documents');
-        agentEvent('origin', 'check', `Running the rules on ${shipment.ref}`, { shipmentId: shipment.id });
+        steps.push('Matching your documents', 'Checking the documents');
+        agentEvent('records', 'done', `${plural(all('documents').filter((d) => d.shipmentId === shipment.id).length, 'document')} on file for ${shipment.ref}`, { shipmentId: shipment.id });
         await sleep(800 / speed);
         const qs = all('questions').filter((q) => q.shipmentId === shipment.id && q.status === 'open');
+        const papers = all('papers').filter((p) => p.shipmentId === shipment.id);
         if (qs.length) {
           reply = `${shipment.ref} has ${qs.length === 1 ? 'one open question' : `${qs.length} open questions`} first: ${qs.map((q) => q.text).join(' ')}`;
           actions = qs.map((q) => ({ kind: 'question', questionId: q.id, text: q.text }));
-        } else {
-          const kinds = /eu|statement|dds/i.test(request) && shipment.destinationCountry === 'BE' ? ['eu_dds', 'export_pack'] : undefined;
-          for (const k of kinds || [...(shipment.required || []).map((r) => r.kind).filter((x) => x !== 'export_pack'), 'export_pack']) {
-            steps.push({ export_pack: 'Building the export paper', eu_dds: 'Writing the EU statement', us_cbp_certificate: 'Writing the US self-certification' }[k] || 'Building the paper');
-          }
-          const papers = await buildPapers(shipment.id, { kinds, status: shipment.status === 'held_for_review' ? 'held_for_review' : 'ready_to_sign' });
-          reply = `${papers.map((p) => `${p.ref} v${p.version}`).join(', ')}: ${papers.some((p) => p.status === 'held_for_review') ? 'held for review. Jewel Labs checks it before you sign.' : 'ready to sign.'}`;
+        } else if (papers.length) {
+          reply = papers.map((p) => `${PAPER_KIND_LABELS[p.kind] || p.kind} ${p.ref} v${p.version}: ${String(p.status).replace(/_/g, ' ')}.`).join('\n');
           actions = papers.map((p) => ({ kind: 'paper', paperId: p.id, ref: p.ref, status: p.status }));
+        } else {
+          reply = `In the desktop app the Paperwork agent builds the papers for ${shipment.ref} now. This demo replays a recording, which has no papers for it.`;
         }
       }
     } else if (/status|where|how.*going/i.test(request)) {
       reply = open.map((s) => `${s.ref}: ${s.status.replace(/_/g, ' ')}.`).join('\n') || 'Every shipment is signed or sent.';
     } else {
-      reply = 'I can prepare the papers for a shipment, tell you what is still missing, or say where each shipment stands. In the desktop app the agents answer with the AI model; this demo knows those three requests.';
+      reply = 'I can tell you what is still missing, where each shipment stands, or show the papers for a shipment. In the desktop app the agents answer anything with the AI model; this demo knows those three requests.';
     }
     const answer = { reply, actions, steps, intent: 'demo', shipmentId: shipment?.id || null };
     put('messages', { id: newId('msg'), at: at(), from: 'agents', text: reply, steps, actions, intent: 'demo', shipmentId: shipment?.id || null });
@@ -422,21 +459,36 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
   };
   const info = () => ({
     name: 'Jewel Labs', version: '1.0.0', platform: 'web', arch: '', isDev: false, demo: true, ready: true, error: null, mode: 'local',
-    workspaceId: current, sample: current === HOUSE.id, cloud: false, signedIn: false, role: 'owner', deskAllowed: true,
+    workspaceId: current, sample: current === SAMPLE_ID, cloud: false, signedIn: false, role: 'owner', deskAllowed: true, canApprove: false,
     ai: { mode: 'demo', model: MODEL, available: true }, autopilot: settings.autopilot, secureStorage: false, site: null, repo: null,
   });
-  const auth = () => ({ cloud: false, signedIn: false, user: null, role: 'owner', deskAllowed: true });
-  const workspaceOut = (w) => ({ ...w, kind: 'local', sample: w.id === HOUSE.id, role: 'owner' });
+  // A visitor may look at the desk, but approving a held pack needs a real Jewel Labs desk account.
+  const auth = () => ({ cloud: false, signedIn: false, user: null, role: 'owner', deskAllowed: true, canApprove: false });
+  const workspaceOut = (w) => ({ ...w, kind: 'local', sample: w.id === SAMPLE_ID, role: 'owner' });
   const select = (id) => {
     if (!workspaces.has(id)) throw new Error('That workspace was not found.');
     current = id;
     emit('sync', { reason: 'opened', workspaceId: id, kind: 'local' });
     return workspaceOut(workspaces.get(id));
   };
+  // The parties the recording screened keep their recorded result. Any other name was never screened here.
   const screenName = (name) => {
-    const known = all('parties', HOUSE.id).find((p) => p.name.toLowerCase() === String(name).toLowerCase());
-    if (known || /\(SAMPLE\)|nilgiri star|^jewel labs$/i.test(name)) return { name, status: 'clear', best: null, compared: known?.screening?.compared ?? 40, listDate: OFAC.date };
-    return { name, status: 'review', best: null, compared: 0, note: 'The demo does not carry the OFAC list. The desktop app screens every name against all 19,565 entries.' };
+    const known = all('parties', SAMPLE_ID).find((p) => String(p.name).toLowerCase() === String(name).toLowerCase());
+    if (known) return { name, status: known.status, best: known.best || null, compared: known.compared ?? 0, listDate: known.listDate || null };
+    return { name, status: 'review', best: null, compared: 0, note: NO_OFAC };
+  };
+  // The list the recording screened against (from its parties, so it shows from the first second of a replay).
+  const ofac = () => {
+    const party = (run?.steps || []).map((s) => (s.name === 'parties' ? s.payload : null)).find((p) => p?.listCount);
+    return party
+      ? { count: party.listCount, date: party.listDate, source: 'The OFAC SDN list as recorded with the run. The desktop app refreshes it every day.' }
+      : { count: 0, date: null, source: NO_OFAC };
+  };
+  // The people of the recorded house: everyone who acted in the recording, plus the visitor.
+  const members = () => {
+    const people = run?.members || [...new Set(all('activity', SAMPLE_ID).filter((a) => a.actor?.type === 'person' && a.actor.name !== you.name).map((a) => a.actor.name))]
+      .map((name) => ({ id: `person-${name}`, name, email: null, role: 'preparer' }));
+    return [{ name: you.name, email: null, role: 'owner', you: true }, ...(current === SAMPLE_ID ? people : [])];
   };
 
   const api = {
@@ -461,9 +513,8 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
       update: ok((patch) => { const next = { ...workspaces.get(current), ...patch, id: current, updatedAt: new Date().toISOString() }; workspaces.set(current, next); return workspaceOut(next); }),
       join: ok(() => { throw new Error(`Invite codes work in the desktop app. ${DEMO_ONLY}`); }),
       invite: ok(() => { throw new Error(`Invites work for shared workspaces in the desktop app. ${DEMO_ONLY}`); }),
-      members: ok(() => (current === HOUSE.id
-        ? [{ name: 'You (demo)', email: null, role: 'owner', you: true }, { id: 'u-kiran', name: 'Kiran (sample)', email: 'kiran@nilgiri-star.example.com', role: 'preparer' }, { id: 'u-asha', name: 'A. Mehta (sample)', email: 'asha@nilgiri-star.example.com', role: 'owner' }]
-        : [{ name: 'You (demo)', email: null, role: 'owner', you: true }])),
+      revoke: ok(() => { throw new Error(`Invites work for shared workspaces in the desktop app. ${DEMO_ONLY}`); }),
+      members: ok(members),
     },
     docs: {
       pick: ok(() => ({ canceled: true, documentIds: [] })),
@@ -488,41 +539,48 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
         const key = String(reportNumber || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
         const stone = all('stones').find((s) => String(s.reportNumber || '').toUpperCase().replace(/[^0-9A-Z]/g, '') === key || s.id === reportNumber);
         if (!stone) return { stone: null, shipment: null, events: [] };
-        const events = Array.isArray(stone.history) && stone.history.length ? stone.history : sampleHistory(stone, { documents: all('documents'), papers: all('papers') });
-        return { stone, shipment: get('shipments', stone.shipmentId), events };
+        return { stone, shipment: get('shipments', stone.shipmentId), events: stoneHistory(stone) };
       }),
-      verify: ok(async (stoneId) => {
+      // The demo never opens a lab's website, so it never says a report matched.
+      verify: ok((stoneId) => {
         const stone = get('stones', stoneId);
         if (!stone) throw new Error('That stone is no longer there.');
-        agentEvent('records', 'check', `Opening the ${stone.lab} report check for ${stone.reportNumber}`, { shipmentId: stone.shipmentId });
-        await sleep(1200 / speed);
-        const labCheck = { status: 'match', diffs: [], checkedAt: new Date().toISOString(), checkedBy: 'You (demo)', lab: stone.lab, demo: true };
+        const online = ONLINE_CHECK_LABS.includes(String(stone.lab || '').toUpperCase());
+        const reason = online ? 'The demo does not open lab websites. The desktop app opens the lab’s own report check.' : `${stone.lab || 'The lab'} has no online report check.`;
+        const labCheck = { status: 'unavailable', diffs: [], reason, lab: stone.lab || null, checkedAt: new Date().toISOString(), checkedBy: you.name };
         put('stones', { ...stone, labCheck });
-        log(you, 'lab check', `${stone.lab} report ${stone.reportNumber}: matches our record (demo: the desktop app opens the lab's own page)`, { shipmentId: stone.shipmentId });
+        log(you, 'lab check', `${stone.lab || 'Lab'} report ${stone.reportNumber} could not be checked: ${reason}`, { shipmentId: stone.shipmentId });
         return labCheck;
       }),
     },
     questions: {
       list: ok((q) => list('questions', q)),
-      answer: ok(async (id, answer) => {
+      answer: ok((id, answer) => {
         const q = get('questions', id);
         if (!q) throw new Error('That question is no longer there.');
-        const saved = put('questions', { ...q, status: 'answered', answer, answeredBy: 'You (demo)', answeredAt: new Date().toISOString() });
+        if (q.status !== 'open') throw new Error('That question is already closed.');
+        const text = String(answer ?? '').trim();
+        if (!text) throw new Error('Type an answer first.');
+        const notNeeded = q.kind === 'missing_document' && NOT_NEEDED.test(text);
+        const saved = put('questions', { ...q, status: 'answered', answer: notNeeded ? 'Not needed' : text, notNeeded, answeredBy: you.name, answeredAt: new Date().toISOString() });
+        const shipment = q.shipmentId ? get('shipments', q.shipmentId) : null;
+        if (shipment && notNeeded && q.docType) put('shipments', { ...shipment, notNeeded: [...new Set([...(shipment.notNeeded || []), q.docType])] });
         usage('question_answered', { shipmentId: q.shipmentId });
-        log(you, 'answered', `Answered: ${q.text} ${answer}`, { shipmentId: q.shipmentId });
-        afterAnswer(q, answer);
-        return saved;
+        log(you, 'answered', `${q.text} ${notNeeded ? 'Not needed.' : `Answer: ${text}`}`, { shipmentId: q.shipmentId });
+        if (shipment) afterAnswer(q);
+        return { question: saved, shipment: q.shipmentId ? get('shipments', q.shipmentId) : null, status: shipment?.status || null };
       }),
       dismiss: ok((id) => {
         const q = get('questions', id);
         if (!q) throw new Error('That question is no longer there.');
+        if (q.kind === 'mismatch' || q.kind === 'confirm') throw new Error(ANSWER_FIRST);
         log(you, 'question.dismiss', `Dismissed: ${q.text}`, { shipmentId: q.shipmentId });
-        return put('questions', { ...q, status: 'dismissed', answeredBy: 'You (demo)', answeredAt: new Date().toISOString() });
+        return put('questions', { ...q, status: 'dismissed', closedBy: you.name, closedAt: new Date().toISOString() });
       }),
     },
     papers: {
       list: ok((q) => list('papers', q)),
-      build: ok((shipmentId, kinds) => buildPapers(shipmentId, { kinds })),
+      build: ok((shipmentId) => buildPapers(shipmentId)),
       file: ok(async (id) => { const p = get('papers', id); if (!p) throw new Error('That paper was not found.'); const f = await paperBytes(p); return { name: f.name, mime: f.mime, bytes: f.bytes }; }),
       open: ok(async (id) => { const p = get('papers', id); const f = await paperBytes(p); window.open(URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' })), '_blank', 'noopener'); return { path: f.name }; }),
       print: ok(async (id) => { const p = get('papers', id); const f = await paperBytes(p); window.open(URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' })), '_blank', 'noopener'); return { printed: false, opened: f.name, reason: 'The demo opens the PDF in a new tab; print it from there.' }; }),
@@ -538,25 +596,36 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
         next.sha256 = await sha256Hex(f.bytes);
         next.versions = [...(paper.versions || []), { version: paper.version, builtAt: signedAt, status: 'signed' }];
         const saved = put('papers', next);
-        const others = all('papers').filter((p) => p.shipmentId === paper.shipmentId && !['signed', 'sent'].includes(p.status));
-        if (!others.length) put('shipments', { ...get('shipments', paper.shipmentId), status: 'signed' });
+        const waiting = all('papers').filter((p) => p.shipmentId === paper.shipmentId && !['signed', 'sent'].includes(p.status));
+        if (!waiting.length) put('shipments', { ...get('shipments', paper.shipmentId), status: 'signed' });
         usage('pack_signed', { paperId: id, shipmentId: paper.shipmentId });
         log({ type: 'person', name: next.signedBy }, 'signed', `Signed ${paper.ref} v${paper.version}`, { shipmentId: paper.shipmentId, paperId: id });
+        emit('notify', { title: 'The demo PDF carries the recorded signature', body: 'It was signed while the run was recorded (Demo signature, SAMPLE). The desktop app puts your own name, title and signature on the paper.', kind: 'demo' });
         return saved;
       }),
-      send: ok(() => ({ error: 'This demo cannot send email. In the desktop app the signed pack goes from your own mailbox. Download it instead.', code: 'no_mailbox', download: true })),
+      // Sending is marked in this tab only: no email leaves the browser.
+      send: ok((id, mail) => {
+        const paper = get('papers', id);
+        if (!paper) throw new Error('That paper is no longer there.');
+        if (paper.status !== 'signed' && paper.status !== 'sent') throw new Error('Sign the paper first.');
+        const to = String(mail?.to || '').split(/[,;]/).map((a) => a.trim()).filter(Boolean);
+        if (!to.length || !to.every((a) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a))) throw new Error('Add who it goes to, as email addresses.');
+        const saved = put('papers', { ...paper, status: 'sent', sentTo: to.join(', '), sentCc: mail.cc || null, sentAt: new Date().toISOString() });
+        const unsent = all('papers').filter((p) => p.shipmentId === paper.shipmentId && p.status !== 'sent');
+        if (!unsent.length) put('shipments', { ...get('shipments', paper.shipmentId), status: 'sent' });
+        usage('pack_sent', { paperId: id, shipmentId: paper.shipmentId });
+        log(you, 'sent', `Marked ${paper.ref} v${paper.version} as sent to ${to.join(', ')} (demo: no email left this tab)`, { shipmentId: paper.shipmentId, paperId: id });
+        return saved;
+      }),
       save: ok(() => ({ canceled: true })),
     },
     agents: {
-      run: ok(async ({ shipmentId } = {}) => {
+      run: ok(({ shipmentId } = {}) => {
         const s = shipmentId ? get('shipments', shipmentId) : null;
-        agentEvent('records', 'done', s ? `Re-filed every paper of ${s.ref}` : 'Looked over every open shipment', { shipmentId });
-        await sleep(500 / speed);
-        agentEvent('sanctions', 'screen', 'Parties screened again: no match on the OFAC SDN list', { shipmentId });
-        await sleep(500 / speed);
-        agentEvent('origin', 'done', 'Rules run again: nothing changed', { shipmentId });
-        log({ type: 'agent', name: 'Origin' }, 'checked', s ? `Ran the agents on ${s.ref}: nothing changed` : 'Ran the agents on every open shipment: nothing changed', { shipmentId });
-        return { ran: true };
+        const what = s ? s.ref : 'every open shipment';
+        agentEvent('records', 'done', `In the desktop app the agents now run again on ${what}. This demo replays a recording, so nothing changes here.`, { shipmentId });
+        log({ type: 'system', name: 'Demo' }, 'run', `Asked the agents to run on ${what} (the demo replays a recording)`, { shipmentId });
+        return { ran: false, demo: true };
       }),
       ask: ok(ask),
       autopilot: ok((on) => { if (typeof on === 'boolean') { settings.autopilot = on; emit('sync', { reason: 'autopilot', autopilot: on }); } return settings.autopilot; }),
@@ -564,7 +633,7 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
     activity: { list: ok((q) => list('activity', q)) },
     messages: {
       list: ok((q) => list('messages', q)),
-      send: ok((msg) => put('messages', { id: newId('msg'), at: new Date().toISOString(), from: msg.to === 'house' ? 'desk' : 'house', author: 'You (demo)', text: msg.text, shipmentId: msg.shipmentId || null })),
+      send: ok((msg) => put('messages', { id: newId('msg'), at: new Date().toISOString(), from: msg.to === 'house' ? 'desk' : 'house', author: you.name, text: msg.text, shipmentId: msg.shipmentId || null })),
     },
     desk: {
       queue: ok(() => all('papers').filter((p) => p.status === 'held_for_review').map((paper) => ({
@@ -572,34 +641,27 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
         checks: all('checks').filter((c) => c.shipmentId === paper.shipmentId && c.severity !== 'pass'),
         questions: all('questions').filter((q) => q.shipmentId === paper.shipmentId && q.status === 'open'),
       }))),
-      approve: ok((paperId, message) => {
-        const paper = get('papers', paperId);
-        if (!paper) throw new Error('That paper is no longer there.');
-        const text = message || `${paper.ref} is approved and ready to sign.`;
-        const saved = put('papers', { ...paper, status: 'ready_to_sign', deskNote: message || null, approvedBy: 'You (demo)', approvedAt: new Date().toISOString() });
-        put('shipments', { ...get('shipments', paper.shipmentId), status: 'ready_to_sign' });
-        put('messages', { id: newId('msg'), at: new Date().toISOString(), from: 'desk', to: 'house', kind: 'desk', author: 'You (demo)', text, shipmentId: paper.shipmentId, paperId });
-        log(you, 'approved', `Approved ${paper.ref} v${paper.version}`, { shipmentId: paper.shipmentId, paperId });
-        emit('notify', { title: `Ready to sign: ${paper.ref}`, body: text, kind: 'pack_ready' });
-        return saved;
-      }),
+      approve: ok(() => { throw new Error(`Only a signed-in Jewel Labs desk account can approve a held pack. ${DEMO_ONLY}`); }),
       hold: ok((paperId, message) => {
         const paper = get('papers', paperId);
         if (!paper) throw new Error('That paper is no longer there.');
         const text = message || `${paper.ref} is held for review.`;
-        const saved = put('papers', { ...paper, status: 'held_for_review', deskNote: text, heldBy: 'You (demo)', heldAt: new Date().toISOString() });
-        put('messages', { id: newId('msg'), at: new Date().toISOString(), from: 'desk', to: 'house', kind: 'desk', author: 'You (demo)', text, shipmentId: paper.shipmentId, paperId });
+        const saved = put('papers', { ...paper, status: 'held_for_review', deskNote: text, heldBy: you.name, heldAt: new Date().toISOString() });
+        put('messages', { id: newId('msg'), at: new Date().toISOString(), from: 'desk', to: 'house', kind: 'desk', author: you.name, text, shipmentId: paper.shipmentId, paperId });
         log(you, 'held', `Held ${paper.ref} v${paper.version}: ${text}`, { shipmentId: paper.shipmentId, paperId });
         return saved;
       }),
       houses: ok(() => [...workspaces.values()].map(workspaceOut)),
+      // Like the desktop app, the new house opens at once, so what follows (records, chat export) goes to it.
       onboard: ok((profile) => {
-        const w = { id: newId('ws'), name: profile.name, legalName: profile.legalName || null, country: profile.country || null, city: profile.city || null, autopilot: profile.autopilot !== false, createdAt: new Date().toISOString() };
+        const w = { id: newId('ws'), name: profile.name, legalEntity: profile.legalEntity || null, country: profile.country || null, city: profile.city || null, autopilot: profile.autopilot !== false, createdAt: new Date().toISOString() };
         workspaces.set(w.id, w);
-        return { workspace: workspaceOut(w), screening: screenName(profile.legalName || profile.name), invite: { error: `Portal logins are created in the desktop app. ${DEMO_ONLY}` } };
+        const screening = screenName(profile.legalEntity || profile.name);
+        select(w.id);
+        return { workspace: workspaceOut(w), screening, invite: { error: `Portal logins are created in the desktop app. ${DEMO_ONLY}` }, opened: true, openError: null };
       }),
     },
-    sanctions: { status: ok(() => OFAC), screen: ok(screenName), refresh: ok(() => OFAC) },
+    sanctions: { status: ok(ofac), screen: ok(screenName), refresh: ok(ofac) },
     mail: {
       connect: ok(() => { throw new Error(`Mailboxes connect in the desktop app. ${DEMO_ONLY}`); }),
       status: ok(() => ({ connected: false, provider: null, email: null, lastPollAt: null, nextPollAt: null, lastError: null, pulled: 0, needsPassword: false })),
@@ -621,10 +683,16 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
     },
     metrics: { get: ok(() => metrics()) },
     demo: {
-      load: ok(() => { if (current !== HOUSE.id) current = HOUSE.id; playLive(); emit('sync', { reason: 'opened', workspaceId: HOUSE.id, kind: 'local' }); return { started: true, recorded }; }),
-      reset: ok(() => { resetSample(); emit('sync', { reason: 'opened', workspaceId: HOUSE.id, kind: 'local' }); return true; }),
-      status: ok(() => ({ recorded, playing, title: run?.meta?.title || 'Sample run' })),
-      skip: ok(() => { applyInstant(); emit('sync', { reason: 'opened', workspaceId: HOUSE.id, kind: 'local' }); return true; }),
+      load: ok(() => {
+        if (!run) throw new Error('The recorded run of the agents could not be loaded. Reload the page.');
+        current = SAMPLE_ID;
+        playLive();
+        emit('sync', { reason: 'opened', workspaceId: SAMPLE_ID, kind: 'local' });
+        return { started: true, recorded: true };
+      }),
+      reset: ok(() => { resetSample(); emit('sync', { reason: 'opened', workspaceId: SAMPLE_ID, kind: 'local' }); return true; }),
+      status: ok(() => ({ recorded: Boolean(run), playing, title: run?.meta?.title || null })),
+      skip: ok(() => { applyInstant(); emit('sync', { reason: 'opened', workspaceId: SAMPLE_ID, kind: 'local' }); return true; }),
     },
     checks: { list: ok((q) => list('checks', q)) },
     parties: { list: ok((q) => list('parties', q)) },
@@ -638,7 +706,10 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
     ready: () => ready,
   };
 
+  // Usage numbers from what happened in this tab and in the recording. The SAMPLE house is a sandbox: it gets a
+  // row but stays out of the totals, like on the real desk.
   function metrics() {
+    const weekAgo = Date.now() - 7 * 864e5;
     const houses = [...workspaces.values()].map((w) => {
       const papers = all('papers', w.id);
       const events = all('events', w.id);
@@ -649,23 +720,26 @@ export function createMockApi({ run: givenRun = null, fetchRun = typeof window !
         return Number.isFinite(first) ? Math.max(1, Math.round((Date.parse(p.signedAt) - first) / 60000)) : null;
       }).filter((n) => n !== null).sort((a, b) => a - b);
       const median = minutes.length ? (minutes.length % 2 ? minutes[(minutes.length - 1) / 2] : Math.round((minutes[minutes.length / 2 - 1] + minutes[minutes.length / 2]) / 2)) : null;
-      const sample = w.id === HOUSE.id;
+      const recent = events.filter((e) => Date.parse(e.at) > weekAgo);
+      const sandbox = w.id === SAMPLE_ID;
       return {
-        id: w.id, name: w.name, environment: sample ? 'sandbox' : 'live', inTotals: true,
+        id: w.id, name: w.name, environment: sandbox ? 'sandbox' : 'live', inTotals: !sandbox,
         liveShipments: all('shipments', w.id).filter((s) => s.status !== 'sent').length,
-        signInsLast7d: sample ? 9 + events.filter((e) => e.type === 'sign_in').length : 1, activeUsers7d: sample ? 3 : 1,
-        uploads: events.filter((e) => e.type === 'upload').length + (sample ? 15 : 0),
+        signInsLast7d: recent.filter((e) => e.type === 'sign_in').length,
+        activeUsers7d: new Set(recent.map((e) => e.userId || e.deviceId).filter(Boolean)).size,
+        uploads: events.filter((e) => e.type === 'upload').length,
         packsSigned: signed.length, packsSent: papers.filter((p) => p.sentAt).length, medianMinutesToSigned: median,
         autonomyRate: signed.length ? Math.round((signed.filter((p) => !p.deskEdits && !p.houseEdits).length / signed.length) * 1000) / 1000 : null,
         lastActivityAt: all('activity', w.id).map((a) => a.at).sort().pop() || null,
       };
     });
-    const sum = (k) => houses.reduce((n, h) => n + (Number(h[k]) || 0), 0);
+    const counted = houses.filter((h) => h.inTotals);
+    const sum = (k) => counted.reduce((n, h) => n + (Number(h[k]) || 0), 0);
     return {
       houses,
       totals: { liveShipments: sum('liveShipments'), activeUsers7d: sum('activeUsers7d'), packsSigned: sum('packsSigned'), packsSent: sum('packsSent'),
-        medianMinutesToSigned: houses.find((h) => h.medianMinutesToSigned != null)?.medianMinutesToSigned ?? null,
-        autonomyRate: houses.find((h) => h.autonomyRate != null)?.autonomyRate ?? null },
+        medianMinutesToSigned: counted.find((h) => h.medianMinutesToSigned != null)?.medianMinutesToSigned ?? null,
+        autonomyRate: counted.find((h) => h.autonomyRate != null)?.autonomyRate ?? null },
       generatedAt: new Date().toISOString(),
     };
   }

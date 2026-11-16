@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { modelDir, ocrImage, ocrOptions, outsideAsar, terminateOcr } from '../../src/core/ocr/index.js';
+import { modelDir, ocrImage, ocrOptions, ocrStatus, outsideAsar, setOcrLimits, terminateOcr } from '../../src/core/ocr/index.js';
 import { locate } from '../../src/core/records/locate.js';
 
 const FIXTURES = fileURLToPath(new URL('../fixtures/ingest/', import.meta.url));
@@ -100,6 +100,27 @@ test('terminateOcr stops the worker and the next call starts a new one', async (
   await terminateOcr(); // stopping twice is fine
   const result = await ocrImage(PNG);
   assert.ok(result.words.length >= 10);
+});
+
+test('the worker is stopped after a while without work, and replaced after many images', async () => {
+  setOcrLimits({ idleMs: 50, imagesPerWorker: 2 });
+  try {
+    await terminateOcr();
+    assert.ok((await ocrImage(PNG)).words.length >= 10);
+    assert.equal(ocrStatus().running, true, 'kept for the next image');
+    const until = Date.now() + 5000;
+    while (ocrStatus().running && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(ocrStatus().running, false, 'stopped once idle, so its memory is given back');
+
+    await ocrImage(PNG);
+    assert.deepEqual(ocrStatus(), { running: true, imagesRead: 1 });
+    const [second, third] = await Promise.all([ocrImage(JPEG), ocrImage(PNG)]);
+    assert.ok(second.words.length >= 10 && third.words.length >= 10, 'a recycled worker reads the next image');
+    assert.equal(ocrStatus().imagesRead, 1, 'the second image ended the first worker; a new one read the third');
+  } finally {
+    setOcrLimits();
+    await terminateOcr();
+  }
 });
 
 // Node's permission model can forbid all network access (--permission without --allow-net). OCR run

@@ -1,25 +1,29 @@
 // Intake agent: reads every new document. Text layer first, OCR for photos and scans, then the model
 // (or the offline reader) classifies and extracts the fields, and each field gets its spot on the page.
 import { DOC_TYPE_LABELS, FIELD_LABELS } from '../types.js';
+import { MAX_RETRIES } from './retrieval.js';
 
 const MAX_OCR_PAGES = 8; // a scanned PDF longer than this is only read on its first pages
+const PAGE_DRAW_TIMEOUT_MS = 60_000; // drawing one page of a scan; a page that hangs must not stop every later run
+// Image types OCR or the model can look at. Anything else (HEIC, TIFF, AVIF) cannot be read yet.
+const READABLE_IMAGES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/bmp', 'image/gif'];
 const MAX_HINT_CHARS = 24000; // text sent to the model with each request
 const MAX_SAVED_TEXT = 20000; // text kept on the document for search and for people to read; the store copies it often
 const MIN_TEXT_LAYER_CHARS = 40; // a "text layer" shorter than this is really a scan
 const CHAT_KEPT = 40; // messages of a read chat kept on its record, for the chat view
 
-/** Reads documents, at most `parallel` at a time. */
-export async function readDocuments(ctx, docs, { parallel = 3 } = {}) {
+/** Reads documents, at most `parallel` at a time. shouldStop() true: start no more (the run lost its lease). */
+export async function readDocuments(ctx, docs, { parallel = 3, shouldStop = () => false } = {}) {
   const results = [];
-  await eachLimited(docs, parallel, async (doc) => { results.push(await readOneDocument(ctx, doc)); });
+  await eachLimited(docs, parallel, async (doc) => { results.push(await readOneDocument(ctx, doc)); }, shouldStop);
   return results;
 }
 
 /** Runs fn over the list with at most `limit` running at once. */
-export async function eachLimited(list, limit, fn) {
+export async function eachLimited(list, limit, fn, shouldStop = () => false) {
   let next = 0;
   async function worker() {
-    while (next < list.length) {
+    while (next < list.length && !shouldStop()) {
       const item = list[next];
       next += 1;
       await fn(item);
@@ -31,6 +35,11 @@ export async function eachLimited(list, limit, fn) {
 
 export async function readOneDocument(ctx, doc) {
   const { store } = ctx;
+  // A paper removed while it waited (or while it was read) stays removed: the agents never put it back.
+  const gone = async () => !(await store.get('documents', doc.id));
+  if (await gone()) return null;
+  const cannot = unreadableReason(doc);
+  if (cannot) return failRead(ctx, doc, cannotRead(cannot), gone);
   await store.put('documents', { ...doc, status: 'reading' });
   ctx.agentEvent('intake', 'start', `Reading ${doc.fileName}`, { docId: doc.id });
   try {
@@ -41,20 +50,53 @@ export async function readOneDocument(ctx, doc) {
     else if (doc.kind === 'email') result = await readEmail(ctx, ai, doc);
     else result = await readPaper(ctx, ai, doc, bytes);
 
-    const done = { ...doc, ...result, status: 'read', error: null, readBy: result.readBy || readerName(ai), readAt: ctx.nowIso() };
+    if (await gone()) return null;
+    // Read by the offline reader because an AI call failed (and could work later): the worker reads it again once
+    // the AI is back (worker.js), and until then the rules ask a person to confirm it (compliance.js read_offline).
+    const done = {
+      ...doc, ...result, status: 'read', error: null, readBy: result.readBy || readerName(ai), readAt: ctx.nowIso(),
+      needsAiRead: Boolean(result.aiError && ai.available),
+    };
     await store.put('documents', done);
     await ctx.log(ctx.agentActor('intake'), 'read', describe(done), { docId: doc.id });
     // Work is done and saved; now show it. The field events play on their own paced queue.
     ctx.playFields(fieldEvents(done));
     return done;
   } catch (err) {
-    const failed = { ...doc, status: 'error', error: err.message };
-    await store.put('documents', failed);
-    const message = `Could not read ${doc.fileName}: ${err.message}`;
-    ctx.agentEvent('intake', 'error', message, { docId: doc.id });
-    await ctx.log(ctx.agentActor('intake'), 'error', message, { docId: doc.id });
-    return failed;
+    return failRead(ctx, doc, err, gone);
   }
+}
+
+/** Saves a paper that could not be read with the reason. A file that can never be read is not tried again. */
+async function failRead(ctx, doc, err, gone) {
+  if (await gone()) return null;
+  const failed = { ...doc, status: 'error', error: err.message, ...(err.permanent ? { retries: MAX_RETRIES } : {}) };
+  await ctx.store.put('documents', failed);
+  const message = `Could not read ${doc.fileName}: ${err.message}`;
+  ctx.agentEvent('intake', 'error', message, { docId: doc.id });
+  await ctx.log(ctx.agentActor('intake'), 'error', message, { docId: doc.id });
+  return failed;
+}
+
+/** An error that reading again will not fix (a locked PDF, a photo format we cannot open). */
+function cannotRead(message) {
+  return Object.assign(new Error(message), { permanent: true });
+}
+
+/** Why the agents cannot read this kind of file at all, or null. Nothing is sent to the model for these. */
+export function unreadableReason(doc) {
+  const mime = String(doc.mime || '').toLowerCase();
+  if (doc.kind === 'image' && !READABLE_IMAGES.includes(mime)) {
+    const format = mime.replace(/^image\//, '').toUpperCase() || 'this format';
+    return `Pictures saved as ${format} cannot be read yet. Save it as JPEG or PDF and add it again.`;
+  }
+  if (doc.kind !== 'other') return null;
+  if (mime === 'application/vnd.ms-outlook') {
+    return 'Outlook .msg files cannot be read yet. Save the email as .eml, or its attachments as PDF, and add them again.';
+  }
+  if (/word/.test(mime)) return 'Word files cannot be read yet. Save it as PDF and add it again.';
+  if (/^(audio|video)\//.test(mime)) return 'Videos and voice notes are not read. If it shows a paper, add a photo or a PDF of the paper instead.';
+  return 'This kind of file cannot be read. Save it as PDF and add it again.';
 }
 
 async function readPaper(ctx, ai, doc, bytes) {
@@ -79,6 +121,7 @@ async function readPaper(ctx, ai, doc, bytes) {
     declarations: extraction.declarations || [],
     warnings: extraction.warnings || [],
     readBy: extraction.readBy ? readerLabel(extraction.readBy) : null,
+    aiError: extraction.aiError || classified.aiError || null,
     pages: page.pages,
     hasTextLayer: page.hasTextLayer,
     pageSizes: page.pageSizes,
@@ -165,6 +208,11 @@ async function pageText(ctx, doc, bytes) {
 async function pdfText(ctx, bytes) {
   const ingest = await ctx.load('ingest');
   const info = await ingest.pdfInfo(bytes);
+  // A locked or damaged PDF: say why in plain words, and do not try to draw pages it does not have.
+  if (info.error || !info.pages) {
+    const reason = info.error || 'This PDF has no pages.';
+    throw cannotRead(`${reason} ${/password/i.test(reason) ? 'Remove the password and add it again.' : 'Add a copy that opens.'}`);
+  }
   const result = {
     text: info.text || '', pageTexts: info.pageTexts, words: info.words || [], pages: info.pages || 1,
     hasTextLayer: !!info.hasTextLayer, pageSizes: info.pageSizes || [], pageImages: undefined, ocrUsed: false,
@@ -177,7 +225,7 @@ async function pdfText(ctx, bytes) {
   const words = [];
   const texts = [];
   for (let pageNo = 1; pageNo <= Math.min(result.pages, MAX_OCR_PAGES); pageNo += 1) {
-    const png = await ctx.rasterize(bytes, pageNo);
+    const png = await withTimeout(ctx.rasterize(bytes, pageNo), ctx.pageDrawTimeoutMs || PAGE_DRAW_TIMEOUT_MS, `Drawing page ${pageNo} of this scan took too long.`);
     pageImages.push(`data:image/png;base64,${Buffer.from(png).toString('base64')}`);
     const ocr = await ocrPage(ctx, png, pageNo);
     words.push(...ocr.words);
@@ -227,14 +275,18 @@ async function readChat(ctx, ai, doc) {
   await saveRequests(ctx, doc, insight.requests || [], 'chat');
   const total = chat.messages?.length || 0;
   return {
+    ...readByOf(insight),
     docType: 'whatsapp_chat', classifyConfidence: 1, pages: 0, hasTextLayer: true, fields: [], lines: [], declarations: [],
     summary: allowed ? `${total} messages, ${(insight.relevant || []).length} about shipments` : `${total} messages (reading chats is off for this house)`,
     insights: { relevant: insight.relevant || [], requests: insight.requests || [], packing: insight.packing || [] },
     refs: insight.refs || [],
+    aiError: insight.aiError || null,
     // Once read, the insights hold what matters and the full chat stays in the original _chat.txt file; the
-    // last messages stay on the record so the chat can be shown. (A chat that failed keeps all its messages,
-    // so a retry can read it again.)
-    content: allowed ? { chat: { title: chat.title, messageCount: total, messages: (chat.messages || []).slice(-CHAT_KEPT) } } : doc.content,
+    // last messages stay on the record so the chat can be shown. A chat the AI could not read keeps all its
+    // messages, so the AI can read it again later.
+    content: allowed && !insight.aiError
+      ? { chat: { title: chat.title, messageCount: total, messages: (chat.messages || []).slice(-CHAT_KEPT) } }
+      : doc.content,
   };
 }
 
@@ -243,10 +295,12 @@ async function readEmail(ctx, ai, doc) {
   const insight = (await ai.readEmail(email)) || {};
   await saveRequests(ctx, doc, insight.requests || [], 'email');
   return {
+    ...readByOf(insight),
     docType: 'email', classifyConfidence: 1, pages: 0, hasTextLayer: true, fields: [], lines: [], declarations: [],
     summary: `Email from ${email.from || 'unknown sender'}: ${email.subject || '(no subject)'}`,
     insights: { relevant: insight.relevant || [], requests: insight.requests || [] },
     refs: insight.refs || [],
+    aiError: insight.aiError || null,
   };
 }
 
@@ -291,4 +345,18 @@ function readerName(ai) {
 function readerLabel(readBy) {
   if (readBy === 'offline') return 'Offline reader';
   return String(readBy).replace(/^ai:/, '');
+}
+
+/**
+ * Who read a chat or an email ('ai:<model>', or 'offline' when the model failed and the offline reader stood in),
+ * and what went wrong ("Read offline: ..."). Without either, readOneDocument names the reader from the AI's mode.
+ */
+function readByOf(insight) {
+  return { warnings: insight.warnings || [], ...(insight.readBy ? { readBy: readerLabel(insight.readBy) } : {}) };
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }

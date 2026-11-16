@@ -7,6 +7,12 @@ import { encodeFileKey } from './shared.js';
 
 const PAGE_SIZE = 1000; // Supabase returns at most 1000 rows per request
 
+/** Storage's answer when a file is already there (409 "The resource already exists", or "Duplicate"). */
+function alreadyExists(error) {
+  const codes = [error?.status, error?.statusCode].map(Number);
+  return codes.includes(409) || /already exists|duplicate/i.test(String(error?.message || error?.error || ''));
+}
+
 /** The server calls the cloud store needs, on top of a supabase-js client (from createCloud). */
 export function makeApi(client, workspaceId, { pageSize = PAGE_SIZE } = {}) {
   const bucket = () => client.storage.from('documents');
@@ -72,9 +78,17 @@ export function makeApi(client, workspaceId, { pageSize = PAGE_SIZE } = {}) {
 
     updateWorkspace: (patch) => run(client.rpc('update_house', { p_workspace: workspaceId, p_patch: patch })),
 
+    /** The next free paper number for a ref stem ('JL-EXP-1116-'), above floor (0007_paper_refs.sql). */
+    reservePaperRef: (stem, floor) => run(client.rpc('reserve_paper_ref', { p_workspace: workspaceId, p_stem: stem, p_floor: floor })),
+
+    /**
+     * Files under papers/ are write-once on the server (0004_record_guards.sql): they are uploaded without replacing,
+     * and "already exists" means an earlier try got there (an answer lost on the way), so it counts as done.
+     */
     async uploadFile(fileKey, bytes, mime) {
-      const { error } = await bucket().upload(objectPath(fileKey), bytes, { contentType: mime, upsert: true });
-      if (error) throw toStorageError(error);
+      const writeOnce = String(fileKey).startsWith('papers/');
+      const { error } = await bucket().upload(objectPath(fileKey), bytes, { contentType: mime, upsert: !writeOnce });
+      if (error && !(writeOnce && alreadyExists(error))) throw toStorageError(error);
     },
 
     async downloadFile(fileKey) {

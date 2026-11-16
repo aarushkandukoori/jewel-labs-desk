@@ -9,21 +9,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as types from '../../src/core/types.js';
-import { TEMPLATES } from '../../src/core/papers/templates.js';
+import { HISTORY_STAGES } from '../../src/core/records/history.js';
+import { LABS } from '../../src/core/labs/index.js';
 import * as labels from '../../src/renderer/lib/labels.js';
 import { parseHash, href, shellFor } from '../../src/renderer/lib/router.js';
-import { reducer, initialState, stillNeeded, agentStripCounts, busyAgents, upsert } from '../../src/renderer/lib/store.js';
+import { reducer, initialState, stillNeeded, agentStripCounts, busyAgents, upsert, COLLECTIONS, piecesOf, sortStones, isLot } from '../../src/renderer/lib/store.js';
 import * as fmt from '../../src/renderer/lib/format.js';
+import { paperNote, sendBody, isImporterDraft } from '../../src/renderer/lib/papers.js';
+import { modelText, aiUnreachable } from '../../src/renderer/components/status-bar.js';
+import { questionLabel } from '../../src/renderer/components/questions.js';
 import { searchAll, squash } from '../../src/renderer/lib/search.js';
 import { displayAgent, cursorPoint, parkPoint, layoutChips, labelKeyFields, boxesOf, latestReadDocument, activityChip, pace, readLine, actorAgentId } from '../../src/renderer/lib/reading.js';
-import { makePdf, pageBuilder, textWidth } from '../../src/renderer/demo/mini-pdf.js';
 import { makeQr } from '../../src/renderer/demo/qr.js';
-import { EU_DDS_PARAGRAPHS, US_CBP_DIAMONDS } from '../../src/renderer/demo/sample-papers.js';
-import { buildScriptedRun, A } from '../../src/renderer/demo/sample.js';
-import { createMockApi } from '../../src/renderer/demo/mock-api.js';
+import { createMockApi, shiftTimes } from '../../src/renderer/demo/mock-api.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RENDERER = path.join(ROOT, 'src', 'renderer');
@@ -49,9 +50,16 @@ test('label maps match src/core/types.js', () => {
   assert.deepEqual(labels.AGENTS, types.AGENTS);
 });
 
-test('the demo statements use the official wording from src/core/papers/templates.js', () => {
-  assert.deepEqual(EU_DDS_PARAGRAPHS, TEMPLATES.eu_dds.paragraphs);
-  assert.equal(US_CBP_DIAMONDS, TEMPLATES.us_cbp_certificate.diamonds);
+test('every other copy of a src/core list in the screens stays the same as its original', () => {
+  // Each history stage has exactly one step on the stone timeline.
+  for (const kind of HISTORY_STAGES) assert.equal(labels.HISTORY_STEPS.filter((s) => s.kinds.includes(kind)).length, 1, kind);
+  assert.deepEqual(labels.HISTORY_STEPS.flatMap((s) => s.kinds).sort(), [...HISTORY_STAGES].sort());
+  assert.deepEqual(Object.keys(labels.SOURCE_LABELS).sort(), [...types.SOURCE_KINDS].sort());
+  assert.deepEqual(Object.keys(labels.ROLE_LABELS).sort(), [...types.ROLES].sort());
+  // The screens keep every collection but the usage log.
+  assert.deepEqual(COLLECTIONS, types.COLLECTIONS.filter((c) => c !== 'events'));
+  // The labs the app can check online.
+  assert.deepEqual([...fmt.LABS_WITH_ONLINE_CHECK].sort(), Object.keys(LABS).sort());
 });
 
 // ---------- router ----------
@@ -150,12 +158,107 @@ test('format helpers write short plain text', () => {
   for (const s of ['draft', 'held_for_review', 'ready_to_sign', 'signed', 'sent']) assert.doesNotMatch(fmt.paperStatus(s).text, /filed/i);
 });
 
+test('a paper date shows the same day west of UTC', () => {
+  const was = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    assert.equal(fmt.day('2026-11-12'), '12 Nov 2026');
+    assert.equal(fmt.day('2026-03-15'), '15 Mar 2026');
+    assert.equal(fmt.day('2026-11-12T03:00:00.000Z'), '11 Nov 2026'); // a timestamp still shows in local time
+    assert.equal(fmt.day(''), '');
+    assert.equal(fmt.day('garbage'), '');
+  } finally {
+    if (was === undefined) delete process.env.TZ;
+    else process.env.TZ = was;
+  }
+});
+
+test('a lab check that could not run reads "Could not check", and Verify is offered only where a lab check exists', () => {
+  assert.deepEqual(fmt.labCheckStatus({ status: 'unavailable' }), { text: 'Could not check', tone: 'muted' });
+  assert.deepEqual(fmt.labCheckStatus({ status: 'incomplete' }), { text: 'Could not check', tone: 'muted' });
+  assert.equal(fmt.labCheckStatus({ status: 'not_found' }).tone, 'warn');
+  assert.deepEqual(fmt.labCheckToast({ status: 'unavailable', reason: 'NGL has no online report check.' }), { text: 'Could not check: NGL has no online report check.', tone: 'info' });
+  assert.deepEqual(fmt.labCheckToast({ status: 'not_found' }), { text: 'Not found', tone: 'warn' });
+  assert.deepEqual(fmt.labCheckToast({ status: 'mismatch', reason: 'x' }).tone, 'error');
+  assert.deepEqual(fmt.labCheckToast({ status: 'match' }), { text: 'Matches lab', tone: 'ok' });
+  assert.equal(fmt.canCheckOnline({ reportNumber: '2141438171', lab: 'GIA' }), true);
+  assert.equal(fmt.canCheckOnline({ reportNumber: '2141438171', lab: null }), true); // the app tells the lab from the number
+  assert.equal(fmt.canCheckOnline({ reportNumber: '7391020001', lab: 'Northbridge Gem Laboratory (SAMPLE)' }), false);
+  assert.equal(fmt.canCheckOnline({ reportNumber: null, lab: 'GIA' }), false);
+});
+
+test('the closest SDN name shows only for a name worth a look', () => {
+  const best = { sdnName: 'JOINT STOCK COMPANY SALEK', score: 0.43 };
+  assert.equal(fmt.closestSdnName({ status: 'clear', best }), null);
+  assert.equal(fmt.closestSdnName({ status: 'review', best }), 'JOINT STOCK COMPANY SALEK (43%)');
+  assert.equal(fmt.closestSdnName({ status: 'match', best: { sdnName: 'X', score: 0.97 } }), 'X (97%)');
+  assert.equal(fmt.closestSdnName(null), null);
+});
+
+test('an importer statement on an export is checked by the house and sent to the importer, never to the broker "to lodge"', () => {
+  const exportShipment = { id: 's1', ref: 'KG/26-27/041', direction: 'export', consignee: { name: 'Lumen Diamant BV (SAMPLE)' } };
+  const dds = { kind: 'eu_dds', ref: 'JL-DDS-1116-01', version: 1, shipmentId: 's1' };
+  assert.equal(isImporterDraft(dds, exportShipment), true);
+  assert.equal(isImporterDraft(dds, { ...exportShipment, direction: 'import' }), false);
+  assert.equal(isImporterDraft({ ...dds, kind: 'export_pack' }, exportShipment), false);
+  assert.match(paperNote({ ...dds, status: 'ready_to_sign' }, { shipment: exportShipment }), /Draft for Lumen Diamant BV \(SAMPLE\)\. .*the importer signs the statement/);
+  assert.match(paperNote({ ...dds, status: 'signed', signedBy: 'Asha Mehta (SAMPLE)' }, { shipment: exportShipment }), /^Checked by Asha Mehta \(SAMPLE\)\. Send it to the importer to sign\.$/);
+  assert.match(paperNote({ ...dds, status: 'sent', sentTo: 'buying@lumen.example.com' }, { shipment: exportShipment }), /for the importer to sign/);
+  const body = sendBody({ ...dds, status: 'signed' }, { shipment: exportShipment, house: 'Kavya Gems LLP (SAMPLE)', signer: 'Asha' });
+  assert.match(body, /Attached is the EU Due Diligence Statement \(draft\) JL-DDS-1116-01 for shipment KG\/26-27\/041, prepared and checked by Kavya Gems LLP \(SAMPLE\)\. Please sign it as the importer\./);
+  assert.doesNotMatch(body, /lodge|originals/i);
+  assert.doesNotMatch(body, /\beu due/); // the label keeps its capitals
+  // The house's own pack still goes to its broker, with the originals.
+  const pack = sendBody({ kind: 'export_pack', ref: 'JL-EXP-1116-01', status: 'signed' }, { shipment: exportShipment, house: 'Kavya Gems LLP (SAMPLE)' });
+  assert.match(pack, /Attached is the signed Export pack JL-EXP-1116-01 .*The originals follow in the order customs reads them\.\n\nPlease lodge it with the declaration\./);
+  // On an import the house is the importer: its signed statement goes to its broker, without "(draft)" or originals.
+  const imported = sendBody({ ...dds, status: 'signed' }, { shipment: { ...exportShipment, direction: 'import' }, house: 'H' });
+  assert.match(imported, /Attached is the signed EU Due Diligence Statement JL-DDS-1116-01/);
+  assert.doesNotMatch(imported, /originals|\(draft\)/);
+});
+
+test('a held pack in a local workspace says what failed instead of promising a review', () => {
+  const held = { kind: 'export_pack', status: 'held_for_review' };
+  const checks = [{ severity: 'fail', title: 'Russian origin on the KP certificate' }, { severity: 'pass', title: 'Totals agree' }];
+  assert.match(paperNote(held, { checks, signedIn: true }), /Jewel Labs checks it before you sign/);
+  const local = paperNote(held, { checks, signedIn: false });
+  assert.match(local, /^A check failed: Russian origin on the KP certificate\. Fix it and run the agents again, or sign in/);
+  assert.doesNotMatch(local, /You get a message/);
+  assert.match(paperNote(held, { checks: [], signedIn: false }), /Sign in so Jewel Labs can review it/);
+});
+
+test('the status bar names the offline reader while the AI is unreachable', () => {
+  const now = Date.parse('2026-11-16T10:00:00Z');
+  const ai = { mode: 'direct', model: 'gpt-5.4-mini', lastError: null };
+  assert.equal(modelText({ ai }, now), 'gpt-5.4-mini · your OpenAI key');
+  const failing = { ...ai, lastError: { message: 'fetch failed', at: '2026-11-16T09:58:00Z' } };
+  assert.equal(aiUnreachable(failing, now), true);
+  assert.equal(modelText({ ai: failing }, now), 'Offline reader (AI unreachable)');
+  assert.equal(modelText({ ai: failing }, now + 60 * 60000), 'gpt-5.4-mini · your OpenAI key'); // an old problem
+  assert.equal(modelText({ ai: { ...ai, lastError: { message: 'No key', at: null } } }, now), 'gpt-5.4-mini · your OpenAI key');
+  assert.equal(modelText({ ai: { mode: 'off' } }, now), 'Offline reader');
+  assert.equal(modelText({}, now), 'Offline reader');
+});
+
+test('a parcel counts every stone in its lots, and single stones come before lots', () => {
+  const stones = [
+    { id: 'a', shipmentId: 's', carat: 0.9, pieces: 1 }, { id: 'b', shipmentId: 's', carat: 94.88, pieces: 119 },
+    { id: 'c', shipmentId: 's', carat: 1.52 }, { id: 'd', shipmentId: 's', carat: 59.97, pieces: 79 },
+  ];
+  assert.equal(piecesOf({ id: 's', totals: { pieces: 200 } }, stones), 200);
+  assert.equal(piecesOf({ id: 's', totals: {} }, stones), 200);
+  assert.equal(piecesOf({ id: 'other', totals: {} }, stones), '');
+  assert.deepEqual(sortStones(stones).map((s) => s.id), ['c', 'a', 'b', 'd']);
+  assert.equal(isLot(stones[1]), true);
+  assert.equal(isLot(stones[2]), false);
+});
+
 // ---------- search (Cmd/Ctrl+K) ----------
 
 test('search finds shipments, stones and report numbers', () => {
   const data = {
     shipments: [{ id: 's1', ref: 'KG/26-27/041', consignee: { name: 'Rhine Facet' } }],
-    stones: [{ id: 'st1', reportNumber: '2211458734', lab: 'GIA', carat: 0.71 }],
+    stones: [{ id: 'st1', reportNumber: '7391020002', lab: 'Northbridge Gem Laboratory (SAMPLE)', carat: 0.7 }],
     papers: [{ id: 'p1', ref: 'JL-EXP-1115-01', kind: 'export_pack', version: 1 }],
     documents: [{ id: 'd1', fileName: 'Invoice KG.pdf', docType: 'commercial_invoice', fields: [] }],
   };
@@ -163,7 +266,7 @@ test('search finds shipments, stones and report numbers', () => {
   const g = searchAll(data, 'kg 26 27 041');
   assert.equal(g[0].group, 'Shipments');
   assert.equal(g[0].items[0].id, 's1');
-  assert.equal(searchAll(data, '2211458734')[0].items[0].kind, 'stone');
+  assert.equal(searchAll(data, '7391020002')[0].items[0].kind, 'stone');
   const unknown = searchAll(data, '7712345678');
   assert.equal(unknown.at(-1).group, 'Stone history');
   assert.deepEqual(searchAll(data, '   '), []);
@@ -216,28 +319,7 @@ test('boxesOf and latestReadDocument pick what the still view shows', () => {
   assert.equal(activityChip('lab check').text, 'Lab');
 });
 
-// ---------- the demo's PDF writer and QR codes ----------
-
-test('mini-pdf writes a PDF that pdf.js reads, with field boxes on the printed text', async () => {
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const p = pageBuilder();
-  p.text(40, 60, 'COMMERCIAL INVOICE (SAMPLE)', { size: 16, font: 'B' });
-  p.value('invoice.number', 300, 100, 'NS/26-27/041', { size: 10 });
-  p.line(40, 120, 555, 120);
-  const bytes = makePdf([{ ops: p.ops }, { ops: [{ t: 'text', x: 50, y: 50, text: 'Page two (\\ and parens)', size: 9 }] }], { title: 'Test' });
-  const doc = await pdfjs.getDocument({ data: bytes, standardFontDataUrl: path.join(ROOT, 'node_modules', 'pdfjs-dist', 'standard_fonts') + path.sep, verbosity: 0 }).promise;
-  assert.equal(doc.numPages, 2);
-  const items = (await (await doc.getPage(1)).getTextContent()).items.filter((i) => i.str);
-  const value = items.find((i) => i.str === 'NS/26-27/041');
-  assert.ok(value, 'the value is in the text layer');
-  const [x0, y0, x1] = p.fields[0].box;
-  assert.ok(Math.abs(value.transform[4] - x0 * 595.28 - 2) < 0.5, 'the box starts where the text starts');
-  assert.ok(Math.abs(value.width - textWidth('NS/26-27/041', 'R', 10)) < 0.5, 'our text width matches pdf.js');
-  assert.ok(x1 > x0 && y0 > 0 && y0 < 0.13);
-  const page2 = (await (await doc.getPage(2)).getTextContent()).items.map((i) => i.str).join('');
-  assert.equal(page2, 'Page two (\\ and parens)');
-  await doc.loadingTask.destroy();
-});
+// ---------- the QR codes ----------
 
 test('qr.js matches the qrcode package module for module', () => {
   const QRCode = require('qrcode');
@@ -252,118 +334,265 @@ test('qr.js matches the qrcode package module for module', () => {
   assert.throws(() => makeQr('x'.repeat(400)), /too long/);
 });
 
-// ---------- the browser demo API ----------
+// ---------- the browser demo API (replays the recorded run in demo/sample-run.json) ----------
 
-test('the scripted run has the documented shape and only fictional SAMPLE parties', async () => {
-  const run = await buildScriptedRun(Date.parse('2026-11-15T10:00:00Z'));
-  assert.equal(run.meta.format, 1);
-  assert.equal(run.meta.recorded, false);
-  assert.ok(run.steps.length > 100);
-  assert.ok(run.steps.every((s) => typeof s.t === 'number' && ['put', 'remove', 'event'].includes(s.kind) && s.name && s.payload));
-  assert.ok(run.steps.every((s, i) => i === 0 || s.t >= run.steps[i - 1].t), 'steps are in time order');
-  const fields = run.steps.filter((s) => s.kind === 'event' && s.name === 'agent' && s.payload.action === 'field');
-  assert.ok(fields.length > 40);
-  assert.ok(fields.every((s) => s.payload.box.every((n) => n >= 0 && n <= 1) && s.payload.box[2] > s.payload.box[0] && s.payload.box[3] > s.payload.box[1]));
-  const parties = run.steps.filter((s) => s.kind === 'put' && s.name === 'parties').map((s) => s.payload.name);
-  assert.ok(parties.length && parties.every((n) => /\(SAMPLE\)/.test(n)));
-  const text = JSON.stringify(run.steps);
-  assert.doesNotMatch(text, /\bfiled by Jewel Labs\b/i);
-  assert.ok(run.files['doc-a-inv'].bytes.length > 1000);
+const DEMO_DIR = path.join(RENDERER, 'demo');
+
+function recordedRun() {
+  const file = path.join(DEMO_DIR, 'sample-run.json');
+  return { ...JSON.parse(fs.readFileSync(file, 'utf8')), baseUrl: pathToFileURL(file).href };
+}
+
+/** The end state of a recorded run, worked out from its steps: { collection: [records] }. */
+function endState(run) {
+  const out = {};
+  for (const step of run.steps) {
+    const table = (out[step.name] ||= new Map());
+    if (step.kind === 'put') table.set(step.payload.id, { ...(table.get(step.payload.id) || {}), ...step.payload });
+    else if (step.kind === 'remove') table.delete(step.payload.id);
+  }
+  return Object.fromEntries(Object.entries(out).map(([name, table]) => [name, [...table.values()]]));
+}
+
+// The demo fetches the recording's files next to sample-run.json; Node's fetch cannot read file:// addresses.
+async function withFileFetch(fn) {
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.protocol !== 'file:') return real(url, init);
+    const file = fileURLToPath(u);
+    if (!fs.existsSync(file)) return new Response('', { status: 404 });
+    return new Response(fs.readFileSync(file), { headers: { 'content-type': file.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream' } });
+  };
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+test('shiftTimes moves the recording\'s own times only', () => {
+  const start = Date.parse('2026-11-16T05:26:32.918Z');
+  const value = {
+    at: '2026-11-16T05:28:13.789Z', history: [{ at: '2026-03-15' }, { at: '2026-11-16T05:28:18.842Z' }],
+    chat: { at: '2026-11-10T11:52:18' }, email: '2026-11-09T08:00:00.000Z', n: 3,
+  };
+  const moved = shiftTimes(value, 60000, start - 600000, start + 3600000);
+  assert.equal(moved.at, '2026-11-16T05:29:13.789Z');
+  assert.deepEqual(moved.history, [{ at: '2026-03-15' }, { at: '2026-11-16T05:29:18.842Z' }]);
+  assert.equal(moved.chat.at, '2026-11-10T11:52:18'); // a chat time from the papers
+  assert.equal(moved.email, '2026-11-09T08:00:00.000Z'); // before the recording
+  assert.equal(moved.n, 3);
 });
 
-test('the demo API plays the run, answers, builds, signs and keeps the desktop rules', async () => {
-  const run = await buildScriptedRun(Date.now());
+test('the demo shows the recorded house, its people, papers and files, as if the run just happened', () => withFileFetch(async () => {
+  const run = recordedRun();
+  const recorded = endState(run);
   const jl = createMockApi({ run, fetchRun: false, speed: 1000 });
   await jl.ready();
-  const changes = [];
-  jl.on('change', (c) => changes.push(c));
+  assert.equal((await jl.demo.status()).recorded, true);
 
-  // The end state of the run: four shipments, one open question on NS/26-27/041.
-  const shipments = await jl.shipments.list();
-  assert.equal(shipments.length, 4);
-  const questions = await jl.questions.list({ status: 'open' });
-  const q = questions.find((x) => x.shipmentId === A.id);
-  assert.ok(q && q.options.length === 2);
-  assert.equal((await jl.shipments.get(A.id)).status, 'questions');
+  // The recorded house and nothing else: no field of a made-up house is mixed in.
+  const house = await jl.workspaces.current();
+  assert.equal(house.name, run.workspace.name);
+  assert.deepEqual(house.letterhead, run.workspace.letterhead);
+  assert.deepEqual(Object.keys(house).sort(), [...new Set([...Object.keys(run.workspace), 'id', 'kind', 'sample', 'autopilot', 'createdAt', 'role'])].sort());
+  // Its customer logins are the people of the recording (and the visitor).
+  const people = [...new Set(recorded.activity.filter((a) => a.actor?.type === 'person').map((a) => a.actor.name))];
+  assert.ok(people.length > 0);
+  assert.deepEqual((await jl.workspaces.members()).filter((m) => !m.you).map((m) => m.name).sort(), people.sort());
+  const everything = JSON.stringify([await jl.workspaces.list(), await jl.shipments.list(), await jl.stones.list(), await jl.parties.list()]);
+  assert.doesNotMatch(everything, /Nilgiri|nilgiri-star|NS\/26-27|2211458/);
 
-  // A file comes back as bytes (a real PDF).
-  const file = await jl.docs.file('doc-a-inv');
-  assert.equal(String.fromCharCode(...file.bytes.slice(0, 4)), '%PDF');
+  // The recorded times end now; the papers' own dates (a plain day) stay as the papers say.
+  const [latest] = await jl.activity.list({ limit: 1 });
+  assert.ok(Math.abs(Date.now() - Date.parse(latest.at)) < 2 * 60000, `latest activity at ${latest.at}`);
+  const stone = recorded.stones.find((x) => x.reportNumber && (x.history || []).some((e) => /^\d{4}-\d{2}-\d{2}$/.test(e.at || '')));
+  const history = await jl.stones.history(stone.reportNumber);
+  assert.deepEqual(history.events.map((e) => e.kind), stone.history.map((e) => e.kind));
+  const paperDay = stone.history.find((e) => /^\d{4}-\d{2}-\d{2}$/.test(e.at || ''));
+  assert.equal(history.events.find((e) => e.kind === paperDay.kind).at, paperDay.at);
 
-  // Answering builds the EU statement and the export pack, ready to sign.
-  await jl.questions.answer(q.id, q.options[0]);
-  await until(async () => (await jl.papers.list({ shipmentId: A.id })).length === 2, 5000, 'the papers');
-  const papers = await jl.papers.list({ shipmentId: A.id });
-  assert.deepEqual(papers.map((p) => p.kind).sort(), ['eu_dds', 'export_pack']);
-  assert.ok(papers.every((p) => p.status === 'ready_to_sign' && /^[0-9a-f]{64}$/.test(p.sha256)));
-  assert.ok(changes.some((c) => c.collection === 'papers' && c.op === 'put'));
-
-  // Signing needs a name, locks the paper with a new hash, and sending says the demo cannot email.
-  const pack = papers.find((p) => p.kind === 'export_pack');
-  assert.match((await jl.papers.sign(pack.id, { name: '' })).error, /name/);
-  const signed = await jl.papers.sign(pack.id, { name: 'Asha Mehta', title: 'Director' });
-  assert.equal(signed.status, 'signed');
-  assert.notEqual(signed.sha256, pack.sha256);
-  assert.match((await jl.papers.sign(pack.id, { name: 'Again' })).error, /already signed/);
-  const sent = await jl.papers.send(pack.id, { to: 'broker@example.com' });
-  assert.equal(sent.code, 'no_mailbox');
-  const pdf = await jl.papers.file(pack.id);
+  // A document opens under its own name; a paper opens as its recorded PDF.
+  const doc = recorded.documents.find((d) => run.files[d.id] && /\.(xlsx|pdf)$/.test(d.fileName));
+  const file = await jl.docs.file(doc.id);
+  assert.equal(file.name, doc.fileName);
+  assert.equal(file.bytes.length, fs.statSync(path.join(DEMO_DIR, run.files[doc.id])).size);
+  const paper = recorded.papers[0];
+  const pdf = await jl.papers.file(paper.id);
+  assert.equal(pdf.name, path.basename(run.files[`${paper.id}:${paper.version}:${paper.status}`]));
   assert.equal(String.fromCharCode(...pdf.bytes.slice(0, 4)), '%PDF');
 
-  // The desk approves the held Hong Kong pack.
-  const queue = await jl.desk.queue();
-  assert.equal(queue.length, 1);
-  assert.equal(queue[0].checks[0].severity, 'warn');
-  const approved = await jl.desk.approve(queue[0].paper.id, 'Same company. Approved.');
-  assert.equal(approved.status, 'ready_to_sign');
-  assert.equal((await jl.desk.queue()).length, 0);
+  // The OFAC list and screenings are the recorded ones; a name the recording never screened is never "clear".
+  const party = recorded.parties.find((x) => x.listCount);
+  assert.equal((await jl.sanctions.status()).count, party.listCount);
+  const screened = await jl.sanctions.screen(party.name);
+  assert.equal(screened.status, party.status);
+  assert.equal(screened.compared, party.compared);
+  for (const name of ['Some Real Company Ltd', 'Meridian Stones (SAMPLE)']) assert.equal((await jl.sanctions.screen(name)).status, 'review', name);
 
-  // A stone's history runs from the mine to the flight, each step tied to its paper.
-  const history = await jl.stones.history('2211 4587 34');
-  assert.equal(history.stone.reportNumber, '2211458734');
-  const kinds = history.events.map((e) => e.kind);
-  for (const k of ['mined', 'rough_purchased', 'cut_and_polished', 'graded', 'invoiced', 'packed', 'cleared_for_export', 'flown', 'statement_drafted']) assert.ok(kinds.includes(k), k);
-  assert.ok(history.events.find((e) => e.kind === 'mined').docId);
-  assert.equal((await jl.stones.history('0000000000')).stone, null);
+  const metrics = await jl.metrics.get();
+  assert.equal(metrics.houses.find((h) => h.id === house.id).inTotals, false, 'a sandbox house stays out of the totals');
+  assert.equal(metrics.totals.autonomyRate, null);
+  assert.equal((await jl.app.info()).ai.mode, 'demo');
+}));
+
+test('the demo answers, signs and sends in memory, and never claims what it did not do', () => withFileFetch(async () => {
+  const run = recordedRun();
+  const jl = createMockApi({ run, fetchRun: false, speed: 1000 });
+  await jl.ready();
+  const notices = [];
+  jl.on('notify', (n) => notices.push(n));
+
+  // "Not needed" closes a recorded missing paper; the shipment keeps its recorded status.
+  const missing = (await jl.questions.list({ status: 'open' })).find((q) => q.kind === 'missing_document');
+  const before = await jl.shipments.get(missing.shipmentId);
+  const answered = await jl.questions.answer(missing.id, 'Not needed');
+  assert.equal(answered.question.status, 'answered');
+  assert.equal(answered.question.answer, 'Not needed');
+  assert.ok((await jl.shipments.get(missing.shipmentId)).notNeeded.includes(missing.docType));
+  await sleep(20);
+  assert.equal((await jl.shipments.get(missing.shipmentId)).status, before.status);
+  assert.match((await jl.questions.answer(missing.id, 'again')).error, /already closed/);
+
+  // Signing needs a name; the paper then opens as the copy signed while recording, and a notice says so.
+  const papers = await jl.papers.list();
+  const pack = papers.find((x) => x.kind === 'export_pack');
+  const statement = papers.find((x) => x.kind === 'eu_dds' || x.kind === 'us_cbp_certificate');
+  const shipment = await jl.shipments.get(pack.shipmentId);
+  assert.match((await jl.papers.send(pack.id, { to: 'broker@example.com' })).error, /Sign the paper first/);
+  assert.match((await jl.papers.sign(pack.id, { name: '' })).error, /name/);
+  const signed = await jl.papers.sign(pack.id, { name: 'Visitor (SAMPLE)', title: 'Director' });
+  assert.equal(signed.status, 'signed');
+  assert.equal(signed.signedBy, 'Visitor (SAMPLE)');
+  assert.notEqual(signed.sha256, pack.sha256);
+  assert.equal((await jl.papers.file(pack.id)).name, path.basename(run.files[`${pack.id}:${pack.version}:signed`]));
+  assert.ok(notices.some((n) => /recorded signature/.test(n.title)));
+  assert.match((await jl.papers.sign(pack.id, { name: 'Again' })).error, /already signed/);
+
+  // On an export the statement is the importer's: the history says the house checked it and sent it to the importer.
+  assert.equal(shipment.direction, 'export');
+  await jl.papers.sign(statement.id, { name: 'Visitor (SAMPLE)', title: 'Director' });
+  assert.match((await jl.papers.send(statement.id, { to: 'not an email' })).error, /email addresses/);
+  const sent = await jl.papers.send(statement.id, { to: 'importer@example.com' });
+  assert.equal(sent.status, 'sent');
+  assert.equal(sent.sentTo, 'importer@example.com');
+  const stone = (await jl.stones.list()).find((x) => x.shipmentId === pack.shipmentId && x.reportNumber);
+  const events = (await jl.stones.history(stone.reportNumber)).events;
+  assert.ok(events.some((e) => / checked by the house$/.test(e.title) && /Visitor \(SAMPLE\)/.test(e.detail)));
+  assert.ok(events.some((e) => / sent to the importer$/.test(e.title)));
+  assert.ok(events.some((e) => e.title === 'Export pack signed'));
+  const audit = (await jl.activity.list()).map((a) => a.detail).join('\n');
+  assert.match(audit, /as sent to importer@example\.com \(demo: no email left this tab\)/);
+
+  // Lab checks, agent runs and builds say what the desktop app does; nothing is made up.
+  const check = await jl.stones.verify(stone.id);
+  assert.equal(check.status, 'unavailable');
+  assert.doesNotMatch(JSON.stringify(check), /match/);
+  assert.deepEqual(await jl.agents.run({}), { ran: false, demo: true });
+  const without = (await jl.shipments.list()).find((x) => !papers.some((p) => p.shipmentId === x.id));
+  assert.match((await jl.papers.build(without.id)).error, new RegExp(`This recording has papers for ${shipment.ref.replace(/\//g, '\\/')} only`));
+  assert.equal((await jl.papers.build(pack.shipmentId)).length, papers.filter((p) => p.shipmentId === pack.shipmentId).length);
+
+  // A visitor is not the Jewel Labs desk, and onboarding opens the new house.
+  assert.match((await jl.desk.approve(pack.id, 'ok')).error, /signed-in Jewel Labs desk account/);
+  assert.equal((await jl.auth.status()).canApprove, false);
+  const onboarded = await jl.desk.onboard({ name: 'Meridian Stones (SAMPLE)' });
+  assert.equal((await jl.workspaces.current()).id, onboarded.workspace.id);
+  assert.equal(onboarded.screening.status, 'review');
 
   // The demo never takes a key, a mailbox password or an account.
   assert.match((await jl.settings.set({ openaiKey: ['sk', 'test', 'abc123'].join('-') })).error, /never takes an API key/);
   assert.match((await jl.mail.connect({ email: 'a@b.c', appPassword: 'x' })).error, /desktop app/);
   assert.match((await jl.auth.signIn({ email: 'a@b.c', password: 'x' })).error, /desktop app/);
+}));
 
-  // Screening: sample parties are clear; any other name is sent to review, never passed blindly.
-  assert.equal((await jl.sanctions.screen('Rhine Facet BV (SAMPLE)')).status, 'clear');
-  assert.equal((await jl.sanctions.screen('Some Real Company Ltd')).status, 'review');
+test('the demo will not close a question about papers that disagree', () => withFileFetch(async () => {
+  const run = recordedRun();
+  // The recording up to the moment the carat question was still open.
+  const asked = run.steps.find((x) => x.name === 'questions' && x.payload.kind === 'mismatch').t;
+  const jl = createMockApi({ run: { ...run, steps: run.steps.filter((x) => x.t <= asked) }, fetchRun: false, speed: 1000 });
+  await jl.ready();
+  const mismatch = (await jl.questions.list({ status: 'open' })).find((q) => q.kind === 'mismatch');
+  assert.match((await jl.questions.dismiss(mismatch.id)).error, /Answer this question/);
+  assert.equal((await jl.questions.list({ status: 'open' })).some((q) => q.id === mismatch.id), true);
+  const missing = (await jl.questions.list({ status: 'open' })).find((q) => q.kind === 'missing_document');
+  assert.equal((await jl.questions.dismiss(missing.id)).status, 'dismissed');
+}));
 
-  const metrics = await jl.metrics.get();
-  assert.equal(metrics.houses.length, 2);
-  assert.ok(metrics.houses[0].packsSigned >= 3);
-  assert.equal(typeof (await jl.app.info()).version, 'string');
-  assert.equal((await jl.app.info()).ai.mode, 'demo');
-});
-
-test('the demo replays the run live from the start', async () => {
-  const run = await buildScriptedRun(Date.now());
+test('the demo replays the run live from now', () => withFileFetch(async () => {
+  const run = recordedRun();
   const jl = createMockApi({ run, fetchRun: false, speed: 400, autoStart: false });
   await jl.ready();
   assert.equal((await jl.shipments.list()).length, 0);
   const agentEvents = [];
   jl.on('agent', (e) => agentEvents.push(e));
   await jl.demo.load();
-  await until(async () => (await jl.questions.list({ status: 'open', shipmentId: A.id })).length === 1, 5000, 'the run to reach its question');
-  assert.ok(agentEvents.some((e) => e.action === 'field' && e.docId === 'doc-a-inv'));
+  const built = endState(run).papers.length;
+  await until(async () => (await jl.papers.list()).length === built, 5000, 'the run to build its papers');
+  assert.ok(agentEvents.some((e) => e.action === 'field' && e.box));
   assert.ok(agentEvents.some((e) => e.agent === 'sanctions'));
-  assert.equal((await jl.demo.status()).recorded, false);
+  const [first] = await jl.activity.list({ limit: 1 });
+  assert.ok(Math.abs(Date.now() - Date.parse(first.at)) < 5 * 60000, first.at);
   const added = await jl.docs.add([{ name: 'notes.txt', bytes: new TextEncoder().encode('hello') }]);
   assert.equal(added.documentIds.length, 1);
   await until(async () => (await jl.docs.get(added.documentIds[0])).status === 'read', 3000, 'the demo reader');
+}));
+
+test('without a recording the demo is empty and says so', async () => {
+  const jl = createMockApi({ fetchRun: false });
+  await jl.ready();
+  assert.equal((await jl.demo.status()).recorded, false);
+  assert.match((await jl.demo.load()).error, /could not be loaded/);
+  assert.equal((await jl.workspaces.current()).name, 'Sample workspace');
+  assert.deepEqual(await jl.shipments.list(), []);
+});
+
+// ---------- the vendored libraries ----------
+
+test('the vendored libraries are unchanged copies of the installed packages (vendor/README.md)', () => {
+  const same = (from, to) => assert.ok(fs.readFileSync(path.join(ROOT, from)).equals(fs.readFileSync(path.join(ROOT, to))), `${to} is not a copy of ${from}`);
+  same('node_modules/htm/preact/standalone.mjs', 'src/renderer/vendor/preact-htm.mjs');
+  same('node_modules/pdfjs-dist/build/pdf.mjs', 'src/renderer/vendor/pdfjs/pdf.mjs');
+  same('node_modules/pdfjs-dist/build/pdf.worker.mjs', 'src/renderer/vendor/pdfjs/pdf.worker.mjs');
+  for (const dir of ['cmaps', 'standard_fonts']) {
+    for (const name of fs.readdirSync(path.join(ROOT, 'node_modules', 'pdfjs-dist', dir))) same(`node_modules/pdfjs-dist/${dir}/${name}`, `src/renderer/vendor/pdfjs/${dir}/${name}`);
+  }
+  const readme = fs.readFileSync(path.join(RENDERER, 'vendor', 'README.md'), 'utf8');
+  for (const pkg of ['htm', 'pdfjs-dist']) {
+    const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules', pkg, 'package.json'), 'utf8'));
+    assert.ok(readme.includes(`${pkg} ${version}`), `vendor/README.md names ${pkg} ${version}`);
+  }
 });
 
 // ---------- the page contract ----------
 
+test('a question is labelled by its field, or by what kind it is: keys only the rules read never show as they are', () => {
+  assert.equal(questionLabel({ key: 'goods.destinationCountry', kind: 'missing_field' }), 'Destination');
+  assert.equal(questionLabel({ key: 'stone.7391020002.carat', kind: 'mismatch' }), 'Papers disagree');
+  assert.equal(questionLabel({ key: 'stone.7391020002.carat.accepted', kind: 'confirm' }), 'Please confirm');
+  assert.equal(questionLabel({ key: 'sanctions.example-diamonds-bv.99001', check: 'sanctions', kind: 'confirm' }), 'OFAC SDN screen');
+  assert.equal(questionLabel({ key: 'house.eori', kind: 'missing_field' }), 'EORI number');
+  assert.equal(questionLabel({ key: 'doc.checkedBy', kind: 'confirm' }), 'Packing list draft');
+  assert.equal(questionLabel({ key: null, kind: 'missing_document' }), 'Missing paper');
+});
+
+test('the watched folder says which files it could not read; the mail form reads the domains typed in', () => {
+  const problems = [{ file: 'AWB 1.pdf', reason: 'in use by another program' }, { file: 'b.pdf', reason: 'no permission to read it' }];
+  assert.equal(fmt.folderProblem({ watching: true, problems }), '2 files could not be read: AWB 1.pdf (in use by another program), b.pdf (no permission to read it). The agents try again every 5 minutes.');
+  const many = Array.from({ length: 5 }, (_, i) => ({ file: `f${i}.pdf`, reason: 'in use by another program' }));
+  assert.match(fmt.folderProblem({ watching: true, problems: many }), /f2\.pdf \(in use by another program\) and 2 more\./);
+  assert.equal(fmt.folderProblem({ watching: true, problems: [], lastError: 'That folder could not be opened.' }), 'That folder could not be opened.');
+  assert.equal(fmt.folderProblem({ watching: false, problems }), null);
+  assert.deepEqual(fmt.domainList('Broker.example, @lab.example;  courier.example broker.example'), ['broker.example', 'lab.example', 'courier.example']);
+  assert.deepEqual(fmt.domainList(''), []);
+  assert.equal(fmt.offlineNote(1), '1 paper was read by the offline reader; it is read again when the AI is back.');
+  assert.equal(fmt.offlineNote(3), '3 papers were read by the offline reader; they are read again when the AI is back.');
+});
+
 test('index.html has the strict CSP and no inline scripts or styles', () => {
   const html = fs.readFileSync(path.join(RENDERER, 'index.html'), 'utf8');
-  assert.match(html, /content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self' blob:; font-src 'self'; connect-src 'self' data: blob:"/);
+  assert.match(html, /content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self' blob:; font-src 'self'; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'"/);
   assert.match(html, /<script type="module" src="app\.js"><\/script>/);
   assert.doesNotMatch(html.replace(/<script[^>]*src=[^>]*><\/script>/g, ''), /<script/);
   assert.doesNotMatch(html, /style="/);
@@ -439,7 +668,8 @@ test('screenshots of the main screens (JL_UI_SHOTS=1)', { skip: process.env.JL_U
     await page.evaluate(() => { const r = document.querySelector('.reader'); document.querySelector('.page').scrollTop = r.offsetTop - 150; });
     await page.waitForTimeout(600);
     await shot('home');
-    for (const [name, hash, wait] of [['shipment', '#/shipments/shp-b?doc=doc-b-inv&field=invoice.number', 2500], ['stones', '#/stones/614208835', 1800], ['papers', '#/papers/pap-b-exp', 3000], ['desk', '#/desk', 2000], ['metrics', '#/desk/metrics', 1500]]) {
+    // Ids from the recorded run (demo/sample-run.json): shipment KG/26-27/041, its invoice, a stone and its export pack.
+    for (const [name, hash, wait] of [['shipment', '#/shipments/shp_3d40e04e61446f04?doc=doc_0mwitmgts0004bd0809&field=invoice.number', 2500], ['stones', '#/stones/7391020001', 1800], ['papers', '#/papers/pap_0mwitoqud004g0c3262', 3000], ['desk', '#/desk', 2000], ['metrics', '#/desk/metrics', 1500]]) {
       await page.goto(base + hash);
       await page.waitForTimeout(wait);
       await shot(name);

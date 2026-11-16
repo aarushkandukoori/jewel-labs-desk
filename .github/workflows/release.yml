@@ -1,6 +1,10 @@
 # Builds the Mac and Windows installers and attaches them to a GitHub release.
 # Runs when a version tag is pushed (git tag v1.0.0 && git push origin v1.0.0), or by hand from the
 # Actions tab. The tag must match the version in package.json.
+#
+# Only the release and publish jobs can write to the repository. The builds run the project's code with read-only
+# access: they install without install scripts, build with --publish never and hand the installers over as
+# workflow artifacts, and the publish job uploads those to the release. Every action is pinned to a full commit.
 name: Release
 
 on:
@@ -8,17 +12,20 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  # Create the release once, before the two builds upload to it at the same time.
+  # Create the release once, before the builds.
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - id: version
         name: Read the version
         run: |
@@ -31,6 +38,7 @@ jobs:
       - name: Create the GitHub release if it does not exist yet
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           if ! gh release view "$TAG" > /dev/null 2>&1; then
@@ -40,30 +48,64 @@ jobs:
 
   build:
     needs: release
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             args: --mac --arm64 --x64
+            name: mac
           - os: windows-latest
             args: --win --x64
+            name: windows
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
       - name: Install
-        run: npm ci
+        # No install scripts: electron-builder downloads its own Electron for each platform, and no other
+        # package needs one to build (tesseract.js only prints a message, electron-winstaller is not used).
+        run: npm ci --ignore-scripts
         env:
-          # electron-builder downloads its own copy of Electron for each platform; no browser is needed.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-      - name: Build and upload the installers
-        run: npx electron-builder ${{ matrix.args }} --publish always
+      - name: Build the installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installers-${{ matrix.name }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  # Upload the installers to the release made above (also when a build is re-run hours later).
+  publish:
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: installers-*
+          path: installers
+          merge-multiple: true
+      - name: Upload the installers to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Upload to the release made above even when a build is re-run hours later.
-          EP_GH_IGNORE_TIME: 'true'
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          ls -l installers
+          gh release upload "$TAG" installers/* --clobber

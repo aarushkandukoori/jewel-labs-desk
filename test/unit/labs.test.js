@@ -4,8 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   detectLab, reportCheckUrl, cleanReportNumber, parseLabPage, compareLab, normalizeColor, normalizeClarity, shapeKey,
-  normalizeGrowth, LABS,
+  normalizeGrowth, LABS, withoutReportLabel,
 } from '../../src/core/labs/index.js';
+import { natureFromText } from '../../src/core/rules/formats.js';
 
 // GIA style: each label on its own line, a short definition, then the value.
 const GIA_PAGE = `GIA Report Check
@@ -97,6 +98,19 @@ test('reportCheckUrl builds each lab link and cleans the number', () => {
   assert.equal(reportCheckUrl('GIA', ''), LABS.GIA.landingUrl, 'no number: the report-check page');
   assert.equal(reportCheckUrl('XYZ', '123'), null);
   assert.equal(reportCheckUrl(null, '123'), null);
+});
+
+test('withoutReportLabel drops the lab name and "No." but keeps the number as printed', () => {
+  assert.equal(withoutReportLabel('GIA No. 2141 438 171'), '2141 438 171');
+  assert.equal(withoutReportLabel('igi lg-612345678'), 'LG-612345678');
+  assert.equal(withoutReportLabel('Report No: 5512345678'), '5512345678');
+  assert.equal(withoutReportLabel(null), '');
+});
+
+test('growth is read by the same function as in the rules', () => {
+  assert.equal(normalizeGrowth, natureFromText);
+  assert.equal(normalizeGrowth('Natural, not lab-grown'), 'natural');
+  assert.equal(normalizeGrowth('earth-mined'), 'natural');
 });
 
 test('cleanReportNumber keeps letters and digits and drops lab names and "No."', () => {

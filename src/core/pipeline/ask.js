@@ -2,7 +2,7 @@
 // The reply lists the steps that really ran, like "Matching your documents" and "Building the export paper".
 import { PAPER_KIND_LABELS, SHIPMENT_STATUS_LABELS, DOC_TYPE_LABELS } from '../types.js';
 import { byNewest, plural } from './context.js';
-import { defaultKinds, nextVersion, savePaper } from './paperwork.js';
+import { builtFromCheck, defaultKinds, nextVersion, savePaper, withPaperLock } from './paperwork.js';
 import { safeFileName } from './files.js';
 
 const CLOSED = ['signed', 'sent'];
@@ -199,19 +199,22 @@ async function preparePapers(ctx, deps, { route, shipment, steps, by }) {
     steps.push(...wanted.map((k) => BUILD_STEPS[k]));
     if (!papers) papers = (await deps.buildPapers(fresh.id, { kinds: wanted, by })).papers;
   }
+  const draft = papers.some((p) => p.status === 'draft');
   const held = papers.some((p) => p.status === 'held_for_review');
   const list = papers.map((p) => `${PAPER_KIND_LABELS[p.kind]} ${p.ref} v${p.version}`).join(', ');
+  const reply = draft ? `${list}: draft only. Something changed while they were built; ask again in a moment to build them to sign.`
+    : held ? `${list}: held for review. Jewel Labs checks it before you sign.` : `${list}: ready to sign.`;
   return {
-    reply: held ? `${list}: held for review. Jewel Labs checks it before you sign.` : `${list}: ready to sign.`,
+    reply,
     actions: papers.map((p) => ({ kind: 'paper', paperId: p.id, ref: p.ref, status: p.status })),
   };
 }
 
-/** The latest paper of each kind, if every one was built from the shipment as it is now. */
+/** The latest paper of each kind, if every one was built from the shipment as it is now (a draft never is). */
 async function currentPapers(ctx, shipment, kinds) {
   const papers = await ctx.store.list('papers', (p) => p.shipmentId === shipment.id);
   const picked = kinds.map((kind) => papers.filter((p) => p.kind === kind).sort((a, b) => b.version - a.version)[0]);
-  if (picked.some((p) => !p || !p.basis || p.basis !== shipment.checkedBasis)) return null;
+  if (picked.some((p) => !builtFromCheck(p, shipment) || p.status === 'draft')) return null;
   return picked;
 }
 
@@ -271,19 +274,23 @@ async function buildPackingList(ctx, deps, { route, shipment, steps, by }) {
   if (!lines.length) return { reply: `The chat and emails do not list the stones for ${name} yet, so there is nothing to draft.`, actions: [] };
   const papersModule = await ctx.load('papers');
   const house = await store.workspace();
-  const pdf = await papersModule.buildPackingListDraft({ shipment, lines, sources: draft.sources || [], house });
-
-  const doc = await deps.addGeneratedDocument({
-    name: `Packing list draft ${safeFileName(shipment.ref || 'shipment')}.pdf`,
-    bytes: pdf.bytes, shipment, docType: 'packing_list', lines, fields: refFields(shipment),
-    summary: draft.notes || `Drafted by the agents from ${plural(chatLines.length, 'chat line')} and ${plural(emails.length, 'email')}`,
-    sources: draft.sources || [],
-  });
-  const { previous, ref, version } = await nextVersion(ctx, papersModule, shipment, 'packing_list_draft');
-  const paper = await savePaper(ctx, {
-    previous, kind: 'packing_list_draft', shipment, ref, version, status: 'draft',
-    output: { bytes: pdf.bytes, sha256: pdf.sha256, pages: 1, contents: [{ title: 'Packing list (drafted by agents)', docId: doc.id }] },
-    basis: null, actor: by ? ctx.personActor(by) : ctx.agentActor('paperwork'),
+  // Numbered inside the paper lock, so the draft never takes a number another build is taking. The PDF prints its
+  // own ref; the same lines drafted again the same day give the same file, so the shipment keeps one draft.
+  const { doc, paper } = await withPaperLock(ctx, async () => {
+    const { previous, ref, version } = await nextVersion(ctx, papersModule, shipment, 'packing_list_draft');
+    const pdf = await papersModule.buildPackingListDraft({ shipment, lines, sources: draft.sources || [], house, ref });
+    const added = await deps.addGeneratedDocument({
+      name: `Packing list draft ${safeFileName(shipment.ref || 'shipment')}.pdf`,
+      bytes: pdf.bytes, shipment, docType: 'packing_list', lines, fields: refFields(shipment),
+      summary: draft.notes || `Drafted by the agents from ${plural(chatLines.length, 'chat line')} and ${plural(emails.length, 'email')}`,
+      sources: draft.sources || [],
+    });
+    const saved = await savePaper(ctx, {
+      previous, kind: 'packing_list_draft', shipment, ref, version, status: 'draft',
+      output: { bytes: pdf.bytes, sha256: pdf.sha256, pages: 1, contents: [{ title: 'Packing list (drafted by agents)', docId: added.id }] },
+      basis: null, actor: by ? ctx.personActor(by) : ctx.agentActor('paperwork'),
+    });
+    return { doc: added, paper: saved };
   });
 
   steps.push('Matching your documents', 'Checking the documents');

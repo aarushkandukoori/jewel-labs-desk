@@ -7,6 +7,8 @@ import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { PDFDocument, PDFHexString, StandardFonts, degrees } from 'pdf-lib';
 import { detectMime, ingestFile, kindForMime, parseChat, pdfInfo, sha256 } from '../../src/core/ingest/index.js';
+import { htmlToText } from '../../src/core/ingest/email.js';
+import { unpackBudget, unzip } from '../../src/core/ingest/zip.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const XLS_MIME = 'application/vnd.ms-excel';
@@ -171,6 +173,63 @@ test('a damaged zip becomes one item with an error, never a crash', async () => 
   const { items } = await ingestFile({ name: 'broken.zip', bytes: bytesOf('PK', [3, 4], 'this is not really a zip') });
   assert.equal(items.length, 1);
   assert.match(items[0].error, /Could not open this file/);
+});
+
+// Writes `size` as the unpacked size of every file, in the local headers and in the zip's directory.
+function claimSize(zipBytes, size) {
+  const bytes = new Uint8Array(zipBytes);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i + 30 <= bytes.length; i++) {
+    const signature = view.getUint32(i, true);
+    if (signature === 0x04034b50) view.setUint32(i + 22, size, true);
+    if (signature === 0x02014b50) view.setUint32(i + 24, size, true);
+  }
+  return bytes;
+}
+
+test('a zip that lies about its size is stopped while unpacking, before the memory fills', async () => {
+  const zip = new JSZip();
+  zip.file('invoice.pdf', new Uint8Array(20 * 1024 * 1024)); // 20 MB of zeros packs into about 20 KB
+  const bomb = claimSize(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }), 10);
+  assert.ok(bomb.length < 100 * 1024);
+
+  const budget = unpackBudget(4 * 1024 * 1024);
+  await assert.rejects(unzip(bomb, budget), /unpack to more than 4 MB/);
+  assert.equal(budget.left, budget.limit, 'nothing is held from a refused zip');
+
+  const { items } = await ingestFile({ name: 'papers.zip', bytes: bomb, maxUnpackedBytes: 4 * 1024 * 1024 });
+  assert.equal(items.length, 1);
+  assert.match(items[0].error, /Could not open this file: the zips in this file unpack to more than 4 MB/);
+});
+
+test('zips inside zips and emails share one unpacking budget', async () => {
+  const part = async (n) => {
+    const zip = new JSZip();
+    zip.file(`part-${n}.pdf`, new Uint8Array(3 * 1024 * 1024)); // packs small, unpacks to 3 MB
+    return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  };
+  const outer = await makeZip({ 'part-1.zip': await part(1), 'part-2.zip': await part(2), 'part-3.zip': await part(3) });
+  const limit = 8 * 1024 * 1024; // each part fits on its own, all three do not
+  const { items } = await ingestFile({ name: 'papers.zip', bytes: outer, maxUnpackedBytes: limit });
+  assert.deepEqual(items.map((item) => item.name), ['part-1.zip/part-1.pdf', 'part-2.zip/part-2.pdf', 'part-3.zip']);
+  assert.equal(items[0].bytes.length, 3 * 1024 * 1024);
+  assert.match(items[2].error, /unpack to more than 8 MB/);
+
+  const zipped = Buffer.from(await part(1));
+  const eml = [
+    'From: mehul@sample-exports.example', 'To: docs@sample-house.example', 'Subject: SAMPLE parts', 'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="B"', '',
+    '--B', 'Content-Type: text/plain', '', 'Two parts attached.',
+    '--B', 'Content-Type: application/zip; name="a.zip"', 'Content-Disposition: attachment; filename="a.zip"',
+    'Content-Transfer-Encoding: base64', '', base64Lines(zipped),
+    '--B', 'Content-Type: application/zip; name="b.zip"', 'Content-Disposition: attachment; filename="b.zip"',
+    'Content-Transfer-Encoding: base64', '', base64Lines(zipped),
+    '--B--',
+  ].join('\r\n');
+  const fromEmail = (await ingestFile({ name: 'parts.eml', bytes: eml, maxUnpackedBytes: 5 * 1024 * 1024 })).items;
+  assert.deepEqual(fromEmail.map((item) => [item.name, Boolean(item.error)]), [
+    ['parts.eml', false], ['a.zip/part-1.pdf', false], ['b.zip', true],
+  ]);
 });
 
 // --- WhatsApp ------------------------------------------------------------------------------------
@@ -416,6 +475,27 @@ test('an .eml becomes an email item plus its attachments, without signature logo
   assert.equal(csv.source.from, 'anika@sample-diamonds.example');
 });
 
+test('the HTML to text conversion takes time in step with the length, even for hostile HTML', () => {
+  // Each of these took seconds (200 KB) to minutes (1 MB) with plain regular expressions.
+  const size = 1024 * 1024;
+  for (const [what, html] of [
+    ['a <style> with no end', '<style'.repeat(size / 6)],
+    ['a < with no >', '<'.repeat(size)],
+    ['spaces with no line break', `${' '.repeat(size)}x`],
+    ['all three', '<style<script<head <a '.repeat(size / 22)],
+  ]) {
+    const started = performance.now();
+    htmlToText(html);
+    const ms = performance.now() - started;
+    assert.ok(ms < 1000, `${what}: ${Math.round(ms)} ms`);
+  }
+  // The same text as the plain regular expressions give for ordinary HTML.
+  const html = '<html><head><title>x</title><style>p { color: red }</style></head><body><script>run()</script>'
+    + '<p>Invoice  <b>EXP/26-27/28</b>&nbsp;&amp; KP</p>  \n<table><tr><td>1.02</td><td>G</td></tr></table><br/>a &lt; b'
+    + '<style>unclosed and kept';
+  assert.equal(htmlToText(html), 'Invoice  EXP/26-27/28 & KP\n\n1.02\tG\n\na < bunclosed and kept');
+});
+
 test('an email with only an HTML body still gets plain text', async () => {
   const eml = [
     'From: desk@sample-house.example',
@@ -473,6 +553,60 @@ test('an old .xls and a .csv are read, and a csv keeps cells exactly as written'
   const fromCsv = (await ingestFile({ name: 'stones.csv', bytes: csv })).items[0];
   assert.equal(fromCsv.kind, 'sheet');
   assert.deepEqual(fromCsv.sheet.sheets[0].rows[1], ['7000000001', '1,02', '05/11/2026']);
+});
+
+// An xlsx whose first sheet's XML is changed by edit(xml): a forged <dimension>, or cells placed far apart.
+async function forgedXlsx(edit, sheets = 1) {
+  const book = XLSX.utils.book_new();
+  for (let i = 1; i <= sheets; i++) XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([['Report', 'Carat'], ['7000000001', '0.71']]), `S${i}`);
+  const zip = await JSZip.loadAsync(XLSX.write(book, { type: 'array', bookType: 'xlsx' }));
+  for (let i = 1; i <= sheets; i++) {
+    const name = `xl/worksheets/sheet${i}.xml`;
+    zip.file(name, edit(await zip.file(name).async('string')));
+  }
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
+
+async function timedSheet(name, bytes) {
+  const started = performance.now();
+  const [item] = (await ingestFile({ name, bytes })).items;
+  return { item, ms: performance.now() - started };
+}
+
+test('a sheet that claims a huge size is read only where its cells are', async () => {
+  // Any sender can write the size tag. Reading the box it claims took about 5 seconds per thousand rows, so the
+  // A1:XFD1048576 of a real attack froze the whole app for hours. Now only the cells in the file count. (2,000
+  // rows here, so a regression fails this test in half a minute instead of hanging it.)
+  const forged = await forgedXlsx((xml) => xml.replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:XFD2000"/>'), 3);
+  const { item, ms } = await timedSheet('forged.xlsx', forged);
+  assert.ok(ms < 2000, `${Math.round(ms)} ms`);
+  assert.equal(item.error, undefined);
+  assert.deepEqual(item.sheet.sheets.map((sheet) => sheet.rows), Array(3).fill([['Report', 'Carat'], ['7000000001', '0.71']]));
+
+  // Real cells far apart: a cell in the last column (XFD) and one 1,000 rows down. Only the first 200 columns are read.
+  const far = await forgedXlsx((xml) => xml
+    .replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:XFD1000"/>')
+    .replace('</sheetData>', '<row r="1000"><c r="XFD1000" t="inlineStr"><is><t>far</t></is></c></row></sheetData>'));
+  const wide = await timedSheet('far.xlsx', far);
+  assert.ok(wide.ms < 2000, `${Math.round(wide.ms)} ms`);
+  assert.deepEqual(wide.item.sheet.sheets[0].rows, [['Report', 'Carat'], ['7000000001', '0.71']]);
+
+  // A csv with one line of 16,384 cells and many empty lines: also only 200 columns.
+  const csv = `${Array.from({ length: 16384 }, (_, i) => `c${i}`).join(',')}${'\n'.repeat(1500)}last`;
+  const fromCsv = await timedSheet('wide.csv', csv);
+  assert.ok(fromCsv.ms < 2000, `${Math.round(fromCsv.ms)} ms`);
+  assert.equal(fromCsv.item.sheet.sheets[0].rows[0].length, 200);
+  assert.deepEqual(fromCsv.item.sheet.sheets[0].rows[1], ['last']);
+});
+
+test('one file looks at no more than a million cells, however many sheets it has', async () => {
+  // Every sheet holds a cell at A1 and one at GR5000: 200 columns by 5,000 rows, the most one sheet may read.
+  const bytes = await forgedXlsx((xml) => xml
+    .replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:GR5000"/>')
+    .replace('</sheetData>', '<row r="5000"><c r="GR5000" t="inlineStr"><is><t>end</t></is></c></row></sheetData>'), 4);
+  const { item, ms } = await timedSheet('many.xlsx', bytes);
+  assert.ok(ms < 5000, `${Math.round(ms)} ms`);
+  assert.deepEqual(item.sheet.sheets.map((sheet) => sheet.rows.length), [3, 0, 0, 0]);
 });
 
 test('a very long sheet dump is cut at about 40,000 characters', async () => {

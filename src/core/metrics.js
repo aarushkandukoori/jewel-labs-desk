@@ -1,10 +1,14 @@
 // Usage numbers for the Jewel Labs desk: one row per house, plus totals.
 //
-// Input: computeMetrics({ workspaces: [{ workspace, events, papers, members, shipments? }], now })
-//   events:  { type, at, userId, shipmentId?, paperId? }, type is one of sign_in, upload, question_asked,
+// Input: computeMetrics({ workspaces: [{ workspace, events, papers, members, shipments?, documents?, questions? }], now })
+//   events:  { type, at, userId, shipmentId?, paperId?, docId? }, type is one of sign_in, upload, question_asked,
 //            question_answered, desk_edit, house_edit, pack_signed, pack_sent
 //   papers:  Paper records (status, signedAt, sentAt, deskEdits, houseEdits, shipmentId)
 //   members: { userId or id, name, email, role, test }
+//   documents: { id, shipmentId }. A paper is uploaded before it is filed, so its upload event names only the
+//            document; this says which shipment the document was filed under.
+//   questions: { shipmentId, kind, status, closedBy }. A question about papers that disagree (or one to confirm)
+//            that a person closed without answering is a person stepping in on that shipment.
 //
 // Rules:
 // - Members flagged test (our own test logins) are listed, but nothing they did is counted.
@@ -13,13 +17,15 @@
 //   The other counts cover all time.
 // - A pack counts as signed when its paper says so or when a pack_signed event names it (each pack once).
 // - medianMinutesToSigned: per shipment, minutes from its first upload to its first signed pack.
-// - autonomyRate: signed packs that no person edited (no desk or house edit before signing) / all signed
-//   packs. null when nothing is signed yet. Every edit counts here, even a test member's, so the rate is
-//   never better than the truth.
+// - autonomyRate: signed packs that no person edited (no desk or house edit before signing, and no question
+//   about papers that disagree dismissed on the shipment) / all signed packs. null when nothing is signed yet.
+//   Every edit counts here, even a test member's, so the rate is never better than the truth.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_DAYS = 7;
 const EDIT_TYPES = new Set(['desk_edit', 'house_edit']);
+const REVIEW_AGENT = 'Review agent'; // the Review agent closes questions that no longer apply; that is no person
+const MUST_ANSWER = new Set(['mismatch', 'confirm']);
 
 /** @returns {{ houses: object[], totals: object, generatedAt: string }} */
 export function computeMetrics({ workspaces = [], now = new Date() } = {}) {
@@ -34,7 +40,7 @@ export function computeMetrics({ workspaces = [], now = new Date() } = {}) {
 
 // ---------- one house ----------
 
-function measureHouse({ workspace = {}, events = [], papers = [], members = [], shipments }, nowMs) {
+function measureHouse({ workspace = {}, events = [], papers = [], members = [], shipments, documents = [], questions = [] }, nowMs) {
   const testIds = testMemberIds(members);
   const byTestMember = (event) => event && testIds.has(event.userId);
   const realEvents = events.filter((event) => event && !byTestMember(event));
@@ -49,8 +55,12 @@ function measureHouse({ workspace = {}, events = [], papers = [], members = [], 
 
   const signed = signedPacks(realPapers, realEvents);
   const sent = sentPacks(realPapers, realEvents);
-  const durations = minutesToSigned(signed, realEvents);
-  const autonomous = [...signed.values()].filter((pack) => noEditsBeforeSigning(pack, events)).length;
+  const durations = minutesToSigned(signed, realEvents, shipmentOfDocument(documents));
+  // Older data can hold a question about papers that disagree that a person dismissed (now refused): that shipment
+  // had a person step in, so its packs do not count as done by the agents alone.
+  const steppedIn = new Set(questions.filter((q) => q && q.status === 'dismissed' && MUST_ANSWER.has(q.kind)
+    && q.shipmentId && q.closedBy !== REVIEW_AGENT).map((q) => q.shipmentId));
+  const autonomous = [...signed.values()].filter((pack) => !steppedIn.has(pack.shipmentId) && noEditsBeforeSigning(pack, events)).length;
 
   // Sign-ins and active users are about the house's own staff: Jewel Labs desk staff (role 'desk', or anyone
   // making a desk edit) do not count as house users.
@@ -167,13 +177,21 @@ function sentPacks(papers, events) {
   return { size: ids.size + unnamed, shipmentIds };
 }
 
+/** docId -> shipmentId, for the documents filed under a shipment. */
+function shipmentOfDocument(documents) {
+  const map = new Map();
+  for (const doc of documents) if (doc && doc.id && doc.shipmentId) map.set(doc.id, doc.shipmentId);
+  return map;
+}
+
 /** Per shipment: minutes from its first upload to its first signed pack. */
-function minutesToSigned(signed, events) {
+function minutesToSigned(signed, events, shipmentOf) {
   const firstUpload = new Map();
   for (const event of events) {
     const at = toMs(event.at);
-    if (event.type !== 'upload' || !event.shipmentId || at === null) continue;
-    if (!firstUpload.has(event.shipmentId) || at < firstUpload.get(event.shipmentId)) firstUpload.set(event.shipmentId, at);
+    const shipmentId = event.shipmentId || shipmentOf.get(event.docId) || null;
+    if (event.type !== 'upload' || !shipmentId || at === null) continue;
+    if (!firstUpload.has(shipmentId) || at < firstUpload.get(shipmentId)) firstUpload.set(shipmentId, at);
   }
   const firstSigned = new Map();
   for (const pack of signed.values()) {

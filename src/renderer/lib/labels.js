@@ -1,5 +1,7 @@
-// Names the screens show. A copy of the label maps in src/core/types.js, because the website demo
-// ships only this folder. test/unit/renderer.test.js checks that the two stay the same.
+// Names the screens show. Copies of lists in src/core, because the website demo ships only this folder.
+// test/unit/renderer.test.js checks that every copy stays the same as its original: AGENTS and the label maps
+// (src/core/types.js), SOURCE_LABELS and ROLE_LABELS (types.js SOURCE_KINDS and ROLES), and HISTORY_STEPS
+// (src/core/records/history.js HISTORY_STAGES).
 
 export const AGENTS = [
   { id: 'retrieval', name: 'Retrieval', letter: 'R', color: '#93b4ff', does: 'pulls mail, chats and folders' },
@@ -49,7 +51,7 @@ export const FIELD_LABELS = {
   'consignee.name': 'Consignee', 'consignee.address': 'Consignee address', 'consignee.country': 'Consignee country',
   'buyer.name': 'Buyer', 'buyer.address': 'Buyer address', 'buyer.country': 'Buyer country',
   'supplier.name': 'Supplier', 'supplier.address': 'Supplier address', 'supplier.country': 'Supplier country',
-  'carrier.name': 'Carrier', 'broker.name': 'Customs broker', 'insurer.name': 'Insurer',
+  'carrier.name': 'Carrier', 'broker.name': 'Customs broker', 'insurer.name': 'Insurer', 'insured.name': 'Insured',
   'invoice.number': 'Invoice number', 'invoice.date': 'Invoice date', 'po.number': 'Purchase order',
   'payment.terms': 'Payment terms',
   'shippingBill.number': 'Shipping bill number', 'shippingBill.date': 'Shipping bill date',
@@ -65,6 +67,7 @@ export const FIELD_LABELS = {
   'goods.currency': 'Currency', 'goods.countryOfOrigin': 'Country of origin',
   'goods.destinationCountry': 'Destination', 'goods.incoterm': 'Incoterm', 'goods.portOfLoading': 'Port of loading',
   'goods.portOfDischarge': 'Port of discharge', 'goods.grossWeight': 'Gross weight', 'goods.netWeight': 'Net weight',
+  'goods.packages': 'Packages',
   'lab.name': 'Lab', 'lab.reportNumber': 'Report number', 'lab.reportDate': 'Report date', 'lab.shape': 'Shape',
   'lab.carat': 'Carat', 'lab.color': 'Colour', 'lab.clarity': 'Clarity', 'lab.cut': 'Cut', 'lab.polish': 'Polish',
   'lab.symmetry': 'Symmetry', 'lab.fluorescence': 'Fluorescence', 'lab.measurements': 'Measurements',
@@ -106,6 +109,7 @@ export const HISTORY_STEPS = [
   { id: 'cleared', title: 'Cleared', kinds: ['cleared_for_export', 'cleared_for_import'], empty: 'No export clearance on file yet.' },
   { id: 'flown', title: 'Flown', kinds: ['flown'], empty: 'No air waybill on file yet.' },
   { id: 'statement', title: 'Statement', kinds: ['statement_drafted'], empty: 'The statement is not drafted yet.' },
-  { id: 'signed', title: 'Signed', kinds: ['statement_signed'], empty: 'Not signed yet.' },
+  // An importer's statement drafted by an exporter is checked by the house and signed by the importer.
+  { id: 'signed', title: 'Signed or checked', kinds: ['statement_signed'], empty: 'Not signed or checked yet.' },
   { id: 'sent', title: 'Sent', kinds: ['statement_sent'], empty: 'Not sent yet.' },
 ];

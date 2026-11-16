@@ -232,3 +232,39 @@ test('missing fields and odd values do not break the numbers', () => {
   assert.equal(house.lastActivityAt, null);
   assert.equal(house.testEvents, 0, 'an empty slot in the event list is not a test event');
 });
+
+test('an upload counts for the shipment its paper was filed under', () => {
+  // A paper is uploaded before Records files it, so its upload event names only the document.
+  const house = {
+    workspace: { id: 'ws-k', name: 'Sample House K', environment: 'live' },
+    members: [{ userId: 'u1', name: 'Sample Clerk', role: 'preparer' }],
+    events: [
+      event('upload', ago(3 * HOUR), null, { docId: 'd1' }), // from the mailbox
+      event('upload', ago(2 * HOUR), 'u1', { docId: 'd2' }),
+      event('upload', ago(4 * HOUR), 'u1', { docId: 'd9' }), // a paper never filed under a shipment
+      event('pack_signed', ago(1 * HOUR), 'u1', { shipmentId: 's1', paperId: 'p1' }),
+    ],
+    papers: [{ id: 'p1', shipmentId: 's1', kind: 'export_pack', status: 'signed', signedAt: ago(1 * HOUR), deskEdits: 0, houseEdits: 0 }],
+    documents: [{ id: 'd1', shipmentId: 's1' }, { id: 'd2', shipmentId: 's1' }, { id: 'd9', shipmentId: null }],
+  };
+  const { houses, totals } = computeMetrics({ workspaces: [house], now: NOW });
+  assert.equal(houses[0].medianMinutesToSigned, 120, 'from the first upload of s1 to its signed pack');
+  assert.equal(totals.medianMinutesToSigned, 120);
+  const { documents, ...withoutDocuments } = house;
+  assert.equal(computeMetrics({ workspaces: [withoutDocuments], now: NOW }).houses[0].medianMinutesToSigned, null);
+});
+
+test('a person who dismissed a question about papers that disagree stepped in: those packs are not autonomous', () => {
+  const papers = [
+    { id: 'p1', shipmentId: 's1', status: 'signed', signedAt: ago(2 * HOUR) },
+    { id: 'p2', shipmentId: 's2', status: 'signed', signedAt: ago(2 * HOUR) },
+  ];
+  const questions = [
+    { shipmentId: 's1', kind: 'mismatch', status: 'dismissed', closedBy: 'Asha (SAMPLE clerk)' }, // older data: now refused
+    { shipmentId: 's2', kind: 'mismatch', status: 'dismissed', closedBy: 'Review agent' }, // the agents closed it: no longer needed
+    { shipmentId: 's2', kind: 'missing_document', status: 'dismissed', closedBy: 'Asha (SAMPLE clerk)' }, // "not needed" is no step-in
+  ];
+  const [house] = computeMetrics({ workspaces: [{ workspace: { id: 'ws', name: 'Sample' }, members: [], events: [], papers, questions }], now: NOW }).houses;
+  assert.equal(house.packsSigned, 2);
+  assert.equal(house.autonomyRate, 0.5);
+});

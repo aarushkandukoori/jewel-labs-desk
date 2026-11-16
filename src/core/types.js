@@ -52,7 +52,7 @@ export const FIELD_KEYS = [
   'consignee.name', 'consignee.address', 'consignee.country',
   'buyer.name', 'buyer.address', 'buyer.country',
   'supplier.name', 'supplier.address', 'supplier.country',
-  'carrier.name', 'broker.name', 'insurer.name',
+  'carrier.name', 'broker.name', 'insurer.name', 'insured.name',
   'invoice.number', 'invoice.date', 'po.number', 'payment.terms',
   'shippingBill.number', 'shippingBill.date', 'leo.date', 'leo.number',
   'billOfEntry.number', 'billOfEntry.date',
@@ -61,7 +61,7 @@ export const FIELD_KEYS = [
   'kp.issueDate', 'kp.expiryDate', 'kp.carats', 'kp.value',
   'goods.description', 'goods.nature', 'goods.form', 'goods.hsCode', 'goods.totalPieces', 'goods.totalCarats',
   'goods.totalValue', 'goods.currency', 'goods.countryOfOrigin', 'goods.destinationCountry', 'goods.incoterm',
-  'goods.portOfLoading', 'goods.portOfDischarge', 'goods.grossWeight', 'goods.netWeight',
+  'goods.portOfLoading', 'goods.portOfDischarge', 'goods.grossWeight', 'goods.netWeight', 'goods.packages',
   'lab.name', 'lab.reportNumber', 'lab.reportDate', 'lab.shape', 'lab.carat', 'lab.color', 'lab.clarity',
   'lab.cut', 'lab.polish', 'lab.symmetry', 'lab.fluorescence', 'lab.measurements', 'lab.growthMethod',
   'lab.inscription',
@@ -77,7 +77,7 @@ export const FIELD_LABELS = {
   'consignee.name': 'Consignee', 'consignee.address': 'Consignee address', 'consignee.country': 'Consignee country',
   'buyer.name': 'Buyer', 'buyer.address': 'Buyer address', 'buyer.country': 'Buyer country',
   'supplier.name': 'Supplier', 'supplier.address': 'Supplier address', 'supplier.country': 'Supplier country',
-  'carrier.name': 'Carrier', 'broker.name': 'Customs broker', 'insurer.name': 'Insurer',
+  'carrier.name': 'Carrier', 'broker.name': 'Customs broker', 'insurer.name': 'Insurer', 'insured.name': 'Insured',
   'invoice.number': 'Invoice number', 'invoice.date': 'Invoice date', 'po.number': 'Purchase order',
   'payment.terms': 'Payment terms',
   'shippingBill.number': 'Shipping bill number', 'shippingBill.date': 'Shipping bill date',
@@ -93,6 +93,7 @@ export const FIELD_LABELS = {
   'goods.currency': 'Currency', 'goods.countryOfOrigin': 'Country of origin',
   'goods.destinationCountry': 'Destination', 'goods.incoterm': 'Incoterm', 'goods.portOfLoading': 'Port of loading',
   'goods.portOfDischarge': 'Port of discharge', 'goods.grossWeight': 'Gross weight', 'goods.netWeight': 'Net weight',
+  'goods.packages': 'Packages',
   'lab.name': 'Lab', 'lab.reportNumber': 'Report number', 'lab.reportDate': 'Report date', 'lab.shape': 'Shape',
   'lab.carat': 'Carat', 'lab.color': 'Colour', 'lab.clarity': 'Clarity', 'lab.cut': 'Cut', 'lab.polish': 'Polish',
   'lab.symmetry': 'Symmetry', 'lab.fluorescence': 'Fluorescence', 'lab.measurements': 'Measurements',
@@ -154,9 +155,11 @@ export const EU_MEMBER_STATES = {
  *   growth:string|null, quote:string|null }} Line
  * @typedef {{ kind:string, ref?:string, receivedAt:string, from?:string, chatAuthor?:string, chatAt?:string }} Source
  * @typedef {{ id:string, workspaceId:string, fileName:string, mime:string, size:number, sha256:string, fileKey:string,
- *   source:Source, parentId?:string|null, pages:number, hasTextLayer:boolean, docType:string, classifyConfidence:number,
- *   summary?:string, fields:Field[], lines:Line[], declarations:string[], shipmentId:string|null,
- *   status:'new'|'reading'|'read'|'error', error?:string, readBy?:string, readAt?:string, createdAt:string, updatedAt:string }} DocumentRecord
+ *   source:Source, parentId?:string|null, kind:string, pages:number, hasTextLayer:boolean, docType:string,
+ *   classifyConfidence:number, classifyReason?:string|null, summary?:string, fields:Field[], lines:Line[],
+ *   declarations:string[], warnings?:string[], shipmentId:string|null, status:'new'|'reading'|'read'|'error',
+ *   error?:string, readBy?:string, readAt?:string, aiError?:string|null, needsAiRead?:boolean, aiRereads?:number,
+ *   createdAt:string, updatedAt:string }} DocumentRecord
  * @typedef {{ name:string|null, address?:string|null, country?:string|null }} Party
  * @typedef {{ id:string, workspaceId:string, ref:string, direction:'export'|'import'|'unknown',
  *   exporter:Party, consignee:Party, buyer?:Party, supplier?:Party,

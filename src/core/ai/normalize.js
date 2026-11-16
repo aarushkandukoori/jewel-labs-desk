@@ -2,6 +2,8 @@
 // offline reader. The model is good at reading; code makes sure keys, dates, numbers and quotes are trustworthy.
 
 import { FIELD_KEYS, DOC_TYPES, PAPER_KINDS } from '../types.js';
+import { withoutReportLabel } from '../labs/index.js';
+import { natureFromText } from '../rules/formats.js';
 import { parseDate, parseNumber, toCaratString, toAmountString, squash, oneLine, plainCopy, containsLoose, findCountry } from './text.js';
 import { ROUTE_INTENTS } from './schemas.js';
 import { findShipmentByRef } from './conversation.js';
@@ -23,7 +25,7 @@ const LABELED_DATE_KEYS = ['invoice.date', 'shippingBill.date', 'leo.date', 'awb
 const LABELED_CONFIDENCE = 0.6; // what the offline reader gives a value printed right after its label
 // Company and person names. A value made of numbers (a PO or invoice number) is never a company.
 const PARTY_NAME_KEYS = new Set(['exporter.name', 'consignee.name', 'buyer.name', 'supplier.name', 'carrier.name',
-  'broker.name', 'insurer.name']);
+  'broker.name', 'insurer.name', 'insured.name']);
 // Each paper's own number and date have a general key (doc.number, doc.date) and a specific one. The model fills
 // one or the other; the app reads both, so each fills the other when it is missing.
 const OWN_KEYS = {
@@ -47,14 +49,6 @@ function textOrNull(v) {
   // Values use plain hyphens ("E-G", "BOM-DXB"): the app never shows an em dash.
   const s = oneLine(String(v)).replace(/[\u2010-\u2015\u2212]/g, '-');
   return s || null;
-}
-
-/** 'natural', 'lab-grown' or null. CVD, HPHT and "synthetic" all mean lab-grown. */
-export function normalizeGrowth(value) {
-  const s = String(value ?? '').toLowerCase();
-  if (/lab|cvd|hpht|synthetic|lgd|grown/.test(s)) return 'lab-grown';
-  if (/natural/.test(s)) return 'natural';
-  return null;
 }
 
 export function normalizeForm(value) {
@@ -86,10 +80,10 @@ export function normalizeField(field) {
   }
   if (CARAT_KEYS.has(key)) value = toCaratString(value) ?? value;
   if (MONEY_KEYS.has(key)) value = toAmountString(value) ?? value;
-  if (key === 'goods.nature') value = normalizeGrowth(value);
+  if (key === 'goods.nature') value = natureFromText(value);
   if (key === 'goods.form') value = normalizeForm(value);
   if (key === 'goods.hsCode') value = value.replace(/\D/g, '') || null;
-  if (key === 'lab.reportNumber') value = cleanReportNumber(value);
+  if (key === 'lab.reportNumber') value = reportNumberOf(value);
   if (key === 'goods.currency') value = currencyCode(value);
   if (key.endsWith('.taxId')) value = withoutLabel(value);
   if (key.endsWith('.address')) value = withoutContacts(value);
@@ -111,7 +105,7 @@ export function normalizeLine(line, index = 0) {
   return {
     lineNo: int(line?.lineNo) ?? index + 1,
     description: textOrNull(line?.description),
-    reportNumber: cleanReportNumber(line?.reportNumber),
+    reportNumber: reportNumberOf(line?.reportNumber),
     lab: textOrNull(line?.lab)?.toUpperCase() || null,
     shape: textOrNull(line?.shape),
     carat: num(line?.carat),
@@ -120,7 +114,7 @@ export function normalizeLine(line, index = 0) {
     pieces: int(line?.pieces),
     rate: num(line?.rate),
     amount: num(line?.amount),
-    growth: normalizeGrowth(line?.growth),
+    growth: natureFromText(line?.growth),
     quote: textOrNull(line?.quote),
   };
 }
@@ -148,13 +142,15 @@ export function normalizeExtraction(raw, docType) {
 }
 
 /**
- * "7391020005", "GIA 2141 438 172" -> the number without spaces. "No report", "N/A" or "-" -> null:
- * a report number has at least 5 digits.
+ * The report number without the lab name, the "No." in front and the spaces: "GIA 2141 438 172" ->
+ * "2141438172", "IGI LG-612345678" -> "LG-612345678". Other marks stay, so the number is still found in the
+ * paper's text (the rules drop them when they check its format). "No report", "N/A" or "-" -> null: a report
+ * number has at least 5 digits.
  */
-export function cleanReportNumber(value) {
+function reportNumberOf(value) {
   const text = textOrNull(value);
   if (!text) return null;
-  const compact = text.replace(/\s/g, '').toUpperCase();
+  const compact = withoutReportLabel(text).replace(/\s/g, '');
   return (compact.match(/\d/g) || []).length >= 5 ? compact : null;
 }
 

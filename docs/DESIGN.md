@@ -26,8 +26,8 @@ Glass button: 1px `--glass-line` border, `--glass` fill, `backdrop-filter: blur(
 
 ## The app screens (match the walkthrough video)
 
-**Desk dashboard** (Jewel Labs staff). Left sidebar 240px: logo + "Jewel Labs", house switcher ("Switch company you file
-for"), numbered nav (`01 Dashboard`, `02 Data 50`, `03 Filings 1`, `04 Counterparties 1`, `05 Audit trail 10`) with counts
+**Desk dashboard** (Jewel Labs staff). Left sidebar 240px: logo + "Jewel Labs", house switcher ("Switch house"),
+numbered nav (`01 Dashboard`, `02 Data 50`, `03 Papers 1`, `04 Counterparties 1`, `05 Audit trail 10`) with counts
 right-aligned in mono, "More tools +", bottom: "Signed in" block + Sign out, "Environment" segmented Sandbox | Live with a
 one-line explanation, and a mono stack of engine versions. Top bar: house name, small live ticker, a long "LIVE" status
 field, buttons Review (count), Generate, Connect (white = primary), Autopilot (A). Page header: small label

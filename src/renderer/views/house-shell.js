@@ -62,10 +62,10 @@ function TopBar() {
         title="Autopilot: the agents read new papers and build packs on their own (A)">
         <${Dot} tone=${state.autopilot ? 'ok' : undefined} pulse=${state.autopilot} />Autopilot ${state.autopilot ? 'on' : 'off'}<span class="kbd">A</span>
       </button>
-      <button type="button" class="btn btn-sm btn-ghost" onClick=${() => dispatch({ type: 'palette', open: true })} title="Search (${isMac ? '⌘' : 'Ctrl'}+K)" aria-label="Search">
+      <button type="button" class="btn btn-sm btn-ghost topbar-search" onClick=${() => dispatch({ type: 'palette', open: true })} title="Search (${isMac ? '⌘' : 'Ctrl'}+K)" aria-label="Search">
         ${Icon.search()}<span class="kbd">${isMac ? '⌘' : 'Ctrl'} K</span>
       </button>
-      ${auth.deskAllowed !== false ? html`<button type="button" class="btn btn-sm btn-ghost" onClick=${() => go('desk')} title="The Jewel Labs desk: every house, approvals and metrics">Desk</button>` : null}
+      ${auth.deskAllowed !== false ? html`<button type="button" class="btn btn-sm btn-ghost topbar-desk" onClick=${() => go('desk')} title="The Jewel Labs desk: every house, approvals and metrics">Desk</button>` : null}
       <button type="button" class="btn btn-sm btn-ghost btn-icon" onClick=${() => nav.settings()} title="Settings" aria-label="Settings">${Icon.gear()}</button>
       ${auth.signedIn
         ? html`<span class="signed-in">Signed in as <b>${auth.user?.name || auth.user?.email}</b></span>
@@ -97,7 +97,7 @@ function WorkspaceMenu() {
   }
   return html`<div class="no-drag" style=${{ position: 'relative' }} ref=${box}>
     <button type="button" class="topbar-workspace" onClick=${() => setOpen(!open)} aria-haspopup="menu" aria-expanded=${open ? 'true' : 'false'} title="Switch workspace">
-      <span class="ellipsis" style=${{ maxWidth: '240px' }}>${current?.name || 'Workspace'}</span>
+      <span class="ellipsis topbar-workspace-name">${current?.name || 'Workspace'}</span>
       ${current?.sample && !/sample/i.test(current?.name || '') ? html`<span class="chip chip-warn chip-sm">Sample</span>` : null}
       ${Icon.chevronDown({ class: 'muted' })}
     </button>

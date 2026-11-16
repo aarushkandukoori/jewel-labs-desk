@@ -5,7 +5,10 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 function toDate(value) {
   if (!value) return null;
-  const d = value instanceof Date ? value : new Date(value);
+  // A plain day ("2026-11-12", a paper's date) is a calendar day, not midnight UTC, so it never shows as the
+  // day before west of UTC. Full timestamps show in local time.
+  const dayOnly = typeof value === 'string' && /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  const d = value instanceof Date ? value : dayOnly ? new Date(+dayOnly[1], dayOnly[2] - 1, +dayOnly[3]) : new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -148,6 +151,16 @@ export function screeningStatus(status) {
   return { text, tone: SCREEN_TONES[status] || 'muted' };
 }
 
+/**
+ * The closest SDN name, only when the screening found one worth a look (review or match). For a clear party it
+ * is null: its nearest name is noise, and next to a buyer it reads like an accusation.
+ */
+export function closestSdnName(screening) {
+  const best = screening?.best;
+  if (!best || !['review', 'match'].includes(screening.status)) return null;
+  return `${best.sdnName} (${Math.round((best.score || 0) * 100)}%)`;
+}
+
 export function severityTone(severity) {
   return SEVERITY_TONES[severity] || 'muted';
 }
@@ -157,14 +170,36 @@ export function docStatus(status) {
   return { text, tone: DOC_TONES[status] || 'muted' };
 }
 
-/** Lab check on a stone: "Matches GIA", "Differs", "Not checked". */
+/**
+ * Lab check on a stone: "Matches lab", "Differs", "Not found" (the lab says there is no such report),
+ * "Could not check" (no online check, the window was closed, a timeout), "Not checked".
+ */
 export function labCheckStatus(check) {
   const status = check?.status;
   if (status === 'match') return { text: 'Matches lab', tone: 'ok' };
   if (status === 'mismatch') return { text: 'Differs', tone: 'fail' };
   if (status === 'not_found') return { text: 'Not found', tone: 'warn' };
+  if (status === 'unavailable' || status === 'incomplete') return { text: 'Could not check', tone: 'muted' };
   if (status === 'open_in_browser') return { text: 'Opened', tone: 'info' };
   return { text: 'Not checked', tone: 'muted' };
+}
+
+/** The notice after a lab check: what came back, why it could not run, in the matching tone. */
+export function labCheckToast(result) {
+  const s = labCheckStatus(result);
+  const tone = { ok: 'ok', fail: 'error', warn: 'warn' }[s.tone] || 'info';
+  return { text: result?.reason && s.tone !== 'ok' ? `${s.text}: ${result.reason}` : s.text, tone };
+}
+
+// The labs with an online report check (LABS in src/core/labs/index.js; test/unit/renderer.test.js keeps the two
+// the same). A stone with no lab on its papers is checked by its number's shape, so it may have one too.
+export const LABS_WITH_ONLINE_CHECK = ['GIA', 'IGI', 'HRD', 'GCAL'];
+
+/** True when the app can open the lab's own report check for this stone. */
+export function canCheckOnline(stone) {
+  if (!stone?.reportNumber) return false;
+  const lab = String(stone.lab || '').trim().toUpperCase();
+  return !lab || LABS_WITH_ONLINE_CHECK.includes(lab);
 }
 
 /** "Lab-grown" / "Natural". */
@@ -194,4 +229,31 @@ export function shortLab(lab) {
   if (name.length <= 6) return name;
   const words = name.split(/\s+/).filter((w) => /^\p{Lu}/u.test(w));
   return words.length >= 2 ? words.map((w) => w[0]).join('').toUpperCase() : name;
+}
+
+/**
+ * What went wrong with the watched folder, in one line: files that could not be read in the last look
+ * ("2 files could not be read: AWB 1.pdf (in use by another program)."), or the last error. null when all is well.
+ */
+export function folderProblem(folder) {
+  if (!folder?.watching) return null;
+  const problems = folder.problems || [];
+  if (problems.length) {
+    const list = problems.slice(0, 3).map((p) => `${p.file} (${p.reason})`).join(', ');
+    const more = problems.length > 3 ? ` and ${problems.length - 3} more` : '';
+    return `${plural(problems.length, 'file')} could not be read: ${list}${more}. The agents try again every 5 minutes.`;
+  }
+  return folder.lastError || null;
+}
+
+/** "broker.example, @lab.example" -> ['broker.example', 'lab.example'], as typed (main checks them). */
+export function domainList(text) {
+  return [...new Set(String(text || '').split(/[\s,;]+/).map((d) => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean))];
+}
+
+/** "2 papers were read by the offline reader; they are read again when the AI is back." */
+export function offlineNote(count) {
+  return count === 1
+    ? '1 paper was read by the offline reader; it is read again when the AI is back.'
+    : `${count} papers were read by the offline reader; they are read again when the AI is back.`;
 }

@@ -1,11 +1,11 @@
-// Desk pages: 02 Data (every document), 03 Filings (every paper), 04 Counterparties (OFAC screening),
+// Desk pages: 02 Data (every document), 03 Papers (every pack and statement), 04 Counterparties (OFAC screening),
 // 05 Audit trail, 06 Metrics (per house: shipments, staff, packs, minutes to signature, autonomy).
 import { html, useEffect, useMemo, useState } from '../vendor/preact-htm.mjs';
 import { useApp } from '../lib/context.js';
 import { Section, Chip, StatusChip, Empty, Skeleton } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
 import { ActivityList } from './activity.js';
-import { docTypeLabel, sourceLabel, docStatus, confidence, ago, paperStatus, paperKindLabel, screeningStatus, number, percent, country, plural } from '../lib/format.js';
+import { docTypeLabel, sourceLabel, docStatus, confidence, ago, paperStatus, paperKindLabel, screeningStatus, closestSdnName, number, percent, country, plural } from '../lib/format.js';
 
 function Head({ eyebrow, title, sub, right }) {
   return html`<div class="desk-head"><div><div class="label">${eyebrow}</div><h1>${title}</h1>${sub ? html`<div class="soft small mt-4">${sub}</div>` : null}</div>
@@ -45,7 +45,7 @@ export function FilingsPage() {
   const papers = state.data.papers.slice().sort((a, b) => String(b.updatedAt || b.builtAt || '').localeCompare(String(a.updatedAt || a.builtAt || '')));
   const held = papers.filter((p) => p.status === 'held_for_review').length;
   return html`<div>
-    <${Head} eyebrow="03 Filings" title="Packs and statements" sub="Jewel Labs prepares them; the house signs, and the house or its broker lodges them."
+    <${Head} eyebrow="03 Papers" title="Packs and statements" sub="Jewel Labs prepares them; the house signs, and the house or its broker lodges them."
       right=${held ? html`<${Chip} tone="warn">${plural(held, 'pack')} held for review<//>` : null} />
     ${!papers.length ? html`<${Section}><${Empty} icon=${Icon.doc} title="No papers yet">They appear when the agents finish a shipment.<//><//>`
       : html`<div class="panel"><div class="table-wrap"><table class="table">
@@ -107,7 +107,7 @@ export function CounterpartiesPage() {
           return html`<tr key=${r.name + i}>
             <td class="strong">${r.name}</td><td>${country(r.country) || '–'}</td><td class="small">${[...(r.roles || [])].join(', ')}</td>
             <td><${Chip} tone=${s.tone} small>${s.text}<//></td><td class="num">${r.screening?.compared ?? ''}</td>
-            <td class="small">${r.screening?.best ? `${r.screening.best.sdnName} (${Math.round((r.screening.best.score || 0) * 100)}%)` : html`<span class="muted">None close</span>`}</td>
+            <td class="small">${closestSdnName(r.screening) || html`<span class="muted">None close</span>`}</td>
             <td class="muted">${r.screening?.listDate || listDate || ''}</td>
           </tr>`;
         })}</tbody></table></div></div>`}
@@ -128,13 +128,14 @@ export function MetricsPage() {
   const houses = metrics?.houses || [];
   const t = metrics?.totals || {};
   const sum = (k) => houses.filter((h) => h.inTotals !== false).reduce((n, h) => n + (Number(h[k]) || 0), 0);
+  // The tiles are the totals only: a sandbox house never stands in for them, so with no live house they show '–'.
   const tiles = [
     ['Live shipments', t.liveShipments ?? sum('liveShipments'), 'not yet sent'],
     ['Staff signing in', t.activeUsers7d ?? sum('activeUsers7d'), 'house staff, last 7 days'],
     ['Packs signed', t.packsSigned ?? sum('packsSigned'), 'all time'],
     ['Packs sent', t.packsSent ?? sum('packsSent'), 'from the house’s mailbox'],
-    ['Minutes to sign', t.medianMinutesToSigned ?? houses[0]?.medianMinutesToSigned, 'median, first upload to signed'],
-    ['Autonomy rate', t.autonomyRate ?? houses[0]?.autonomyRate, 'signed with no person editing'],
+    ['Minutes to sign', t.medianMinutesToSigned, 'median, first upload to signed'],
+    ['Autonomy rate', t.autonomyRate, 'signed with no person editing'],
   ];
   return html`<div>
     <${Head} eyebrow="06 Metrics" title="How the houses use Jewel Labs" sub="Sandbox houses get a row but stay out of the totals. Test logins are listed, never counted." />

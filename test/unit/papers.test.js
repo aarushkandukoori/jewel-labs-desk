@@ -7,11 +7,14 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFString, StandardFonts } from 'pdf-lib';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { buildPack, buildStatement, buildPackingListDraft, signPdf, nextRef, TEMPLATES } from '../../src/core/papers/index.js';
 import { jpegOrientation, sniffType } from '../../src/core/papers/originals.js';
 import { customsOrder } from '../../src/core/papers/pack.js';
+import { cbpSentences } from '../../src/core/papers/statements.js';
+import { miningCountries, stoneFacts } from '../../src/core/papers/format.js';
+import { classifyGoods } from '../../src/core/rules/compliance.js';
 
 const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.tmp', 'papers');
 const PRINTED = new Date(2026, 10, 15, 10, 30); // 15 Nov 2026, local time
@@ -320,7 +323,7 @@ test('import pack: house letterhead, import order, spreadsheet lines shown as a 
   assert.ok(read.text.includes('HELD FOR REVIEW'));
   assert.ok(read.text.includes('ORIGINAL DOCUMENT · SPREADSHEET'));
   assert.ok(read.text.includes('SMP9100001'));
-  assert.ok(read.text.includes('Signed by Example Diamonds BV (SAMPLE).'));
+  assert.ok(read.text.includes('To be signed by Example Diamonds BV (SAMPLE).'), 'nothing is signed until a person signs the pack');
   assert.ok(!read.text.includes('for signature by the importer'), 'the house is the importer and signs itself');
   assert.ok(read.text.includes('The importer and its customs broker lodge the declaration'));
   assert.ok(!/\bfiled\b/i.test(read.text));
@@ -334,9 +337,13 @@ test('EU statement on its own: official wording, facts, draft for the importer',
   const read = await readPdf(paper.bytes);
   assert.equal(read.numPages, 1, 'the statement fits on one page like the official template');
   for (const paragraph of TEMPLATES.eu_dds.paragraphs) assert.ok(read.text.includes(paragraph));
-  for (const label of ['Importing company name', 'EORI number BE0000000000', 'VAT number', 'HAWB number 999-00000001', 'Shipment reference / Invoice number SAMPLE-EXP-041 / SGE/26-27/041', 'Date of declaration 10/11/2026']) {
+  for (const label of ['Importing company name', 'EORI number BE0000000000', 'VAT number', 'HAWB number 999-00000001', 'Shipment reference / Invoice number SAMPLE-EXP-041 / SGE/26-27/041']) {
     assert.ok(read.text.includes(label), `statement has ${label}`);
   }
+  // The date of declaration is the importer's to write: never the invoice date, never a date before it is signed.
+  assert.ok(read.text.includes('Date of declaration Customs office'), 'the date of declaration is a blank line');
+  assert.ok(!read.text.includes('10/11/2026'), 'no back-dating to the invoice date');
+  assert.ok(!read.text.includes('VAT number Not on file'), 'a missing VAT number is a line to write on');
   // 40 stones, one has no carat. Only stones of 0.50 ct and up count, and the one with no carat is called out.
   assert.ok(/Natural stones of 0\.50 ct and up \d+ stones, \d+\.\d\d ct\. 1 more with no carat on file/.test(read.text));
   assert.ok(read.text.includes('(Company stamp if applicable)'));
@@ -471,9 +478,13 @@ test('an empty shipment still builds a clean pack', async () => {
   assert.ok(read.text.includes('No papers on file yet.'));
   assert.ok(read.text.includes('No stones on file yet'));
   assert.ok(read.text.includes('Commercial invoice, Packing list, Shipping bill, Air waybill'));
-  assert.ok(read.text.includes('None needed for this shipment.'));
+  // No paper names the destination, so nobody can say yet which origin statement the importer needs.
+  assert.ok(read.text.includes('Not decided yet: no paper names the destination.'));
+  assert.ok(!read.text.includes('None needed for this shipment.'));
   assert.ok(read.text.includes('DRAFT'));
   assert.ok(!/\bfiled\b/i.test(read.text));
+  const toDubai = await readPdf((await buildPack({ kind: 'export_pack', shipment: { destinationCountry: 'AE' }, documents: [], stones: [], checks: [], required: [], house: {}, getFile: () => null, printedAt: PRINTED })).bytes);
+  assert.ok(toDubai.text.includes('None needed for this shipment.'), 'a known destination that needs no statement');
   await assert.rejects(() => buildPack({ kind: 'eu_dds' }), /Unknown pack kind/);
   await assert.rejects(() => buildStatement({ kind: 'export_pack' }), /Unknown statement kind/);
 });
@@ -502,4 +513,198 @@ test('writes sample papers for a visual check (test/.tmp/papers)', async () => {
   const result = spawnSync('pdftoppm', ['-r', '80', '-png', '-f', '1', '-l', '2', pdfPath, path.join(OUT_DIR, 'export-pack')]);
   assert.equal(result.status, 0);
   assert.ok(fs.readdirSync(OUT_DIR).some((name) => /^export-pack-0?1\.png$/.test(name)));
+});
+
+// ---------- fixes ----------
+
+/** The text items on one page that sit on the same line as the label (same baseline, within 2 points). */
+function onSameLine(page, label) {
+  const at = page.items.find((item) => item.str === label);
+  if (!at) return [];
+  return page.items.filter((item) => item !== at && item.str.trim() && Math.abs(item.transform[5] - at.transform[5]) < 2).map((item) => item.str);
+}
+
+test('an import EU statement the house signs carries the signing day as its date of declaration', async () => {
+  const fixture = importFixture({});
+  const paper = await buildStatement({ kind: 'eu_dds', shipment: fixture.shipment, stones: fixture.stones, house: fixture.house, status: 'ready_to_sign', ref: 'JL-DDS-1116-01', printedAt: new Date(2026, 10, 16, 9, 0) });
+  const before = await readPdf(paper.bytes);
+  assert.deepEqual(onSameLine(before.pages[0], 'Date of declaration'), [], 'blank until it is signed');
+  const signed = await signPdf(paper.bytes, { name: 'Asha Clerk', title: 'Partner', signedAt: new Date(2026, 10, 18, 14, 5) });
+  const read = await readPdf(signed.bytes);
+  assert.deepEqual(onSameLine(read.pages[0], 'Date of declaration'), ['18/11/2026']);
+  assert.ok(read.text.includes('18 Nov 2026, 14:05'), 'the signature box has the same day');
+  assert.ok(!read.text.includes('11/11/2026'), 'never the invoice date');
+
+  // On an export draft the importer signs by hand: the house's sign-off leaves the importer's date blank.
+  const exportStatement = await buildStatement({ kind: 'eu_dds', shipment: (await exportFixture()).shipment, stones: [], house: exportHouse(), status: 'ready_to_sign', printedAt: PRINTED });
+  const exportSigned = await readPdf((await signPdf(exportStatement.bytes, { name: 'Asha Clerk', signedAt: new Date(2026, 10, 18, 14, 5) })).bytes);
+  assert.deepEqual(onSameLine(exportSigned.pages[0], 'Date of declaration'), []);
+});
+
+test('lot lines count each stone: a 119-piece lot is 119 stones, and its average decides its scope', async () => {
+  const lots = [
+    { id: 'l1', reportNumber: null, carat: 5.0, pieces: 50, growth: 'natural', sizeRange: { min: null, max: null, melee: true } },
+    { id: 'l2', reportNumber: null, carat: 94.88, pieces: 119, growth: 'natural' },
+    { id: 'l3', reportNumber: '2141438199', lab: 'GIA', carat: 1.02, pieces: 1, growth: 'natural' },
+  ];
+  const goods = classifyGoods({ stones: lots });
+  assert.equal(goods.stoneCount, 170);
+  assert.equal(goods.stonesAtOrAboveHalf, 120);
+  const facts = stoneFacts(lots);
+  assert.equal(facts.count, 170);
+  assert.equal(facts.inScopeCount, 120);
+
+  const input = await exportFixture();
+  const dds = await readPdf((await buildStatement({ kind: 'eu_dds', shipment: input.shipment, stones: lots, house: input.house, documents: input.documents, printedAt: PRINTED })).bytes);
+  assert.ok(dds.text.includes('Natural stones of 0.50 ct and up 120 stones, 95.90 ct'), dds.text);
+  const us = { ...input.shipment, destinationCountry: 'US' };
+  const cbp = await readPdf((await buildStatement({ kind: 'us_cbp_certificate', shipment: us, stones: lots, house: input.house, printedAt: PRINTED })).bytes);
+  assert.ok(cbp.text.includes('Stones 170 stones, 100.90 ct'));
+  assert.ok(cbp.text.includes('Stones of 0.50 ct and up 120 stones, 95.90 ct'));
+
+  // A lot whose average is under 0.50 ct, with no size range, may hold bigger stones: the paper says so.
+  const unsized = lots.map((stone) => (stone.id === 'l1' ? { ...stone, sizeRange: null } : stone));
+  const maybe = await readPdf((await buildStatement({ kind: 'eu_dds', shipment: input.shipment, stones: unsized, house: input.house, printedAt: PRINTED })).bytes);
+  assert.ok(maybe.text.includes('120 stones, 95.90 ct. 50 more in lots that may reach 0.50 ct'));
+  // No stone sizes at all: the row says so instead of claiming none are in scope.
+  const none = await readPdf((await buildStatement({ kind: 'eu_dds', shipment: input.shipment, stones: [], house: input.house, printedAt: PRINTED })).bytes);
+  assert.ok(none.text.includes('Natural stones of 0.50 ct and up Not on file'));
+});
+
+test('countries of mining print once each, by name, from the stones and the KP certificate', () => {
+  const kp = { docType: 'kp_certificate', fields: [field('kp.countriesOfMining', 'Guinea, Ghana, Sierra Leone')] };
+  assert.deepEqual(miningCountries([{ kp: { countries: ['GN', 'GH', 'SL'] } }], [kp]), ['Guinea', 'Ghana', 'Sierra Leone']);
+  assert.deepEqual(miningCountries([{ kp: { countries: ['BW', 'NA'] } }], []), ['Botswana', 'Namibia']);
+  const odd = { docType: 'kp_certificate', fields: [field('kp.countriesOfMining', 'Congo, Democratic Republic of the')] };
+  assert.deepEqual(miningCountries([], [odd]), ['Democratic Republic of the Congo']);
+  const typo = { docType: 'kp_certificate', fields: [field('kp.countriesOfMining', 'Botswana, Sierra Leon')] };
+  assert.deepEqual(miningCountries([], [typo]), ['Botswana', 'Sierra Leon'], 'a name we do not know is kept as printed');
+});
+
+test('CBP sentences: loose stones, jewellery, both, and never jewellery the shipment does not have', () => {
+  const t = TEMPLATES.us_cbp_certificate;
+  assert.deepEqual(cbpSentences({ goods: { form: 'polished', hsCodes: ['71023910'] } }), [t.diamonds]);
+  assert.deepEqual(cbpSentences({ goods: { form: 'jewelry', hsCodes: ['71131910'], loose: [] } }), [t.jewelry]);
+  assert.deepEqual(cbpSentences({ goods: { form: 'jewelry', hsCodes: ['71131910', '71023910'], loose: ['polished'] } }), [t.diamonds, t.jewelry]);
+  assert.deepEqual(cbpSentences({ goods: { form: 'mixed', hsCodes: ['71023100', '71023910'] } }), [t.diamonds], 'rough and polished are loose diamonds');
+  assert.deepEqual(cbpSentences({ goods: { form: 'rough', hsCodes: ['71021000'] } }), [t.diamonds, t.jewelry], 'unsorted diamonds');
+});
+
+test('G7 / GF note for natural rough: Diamond Office verification, KP certificate and countries of mining', async () => {
+  const input = await exportFixture();
+  const shipment = { ...input.shipment, destinationCountry: 'DE', consignee: { name: 'Beispiel Diamanten GmbH (SAMPLE)', address: 'Beispielstrasse 1, Idar-Oberstein', country: 'DE' }, goods: { nature: 'natural', form: 'rough', hsCodes: ['71023100'] } };
+  const stones = [{ id: 'r1', reportNumber: null, carat: 152.4, pieces: 210, growth: 'natural', kp: { certificateNumber: 'KP-SAMPLE-0001', countries: ['BW'] } }];
+  const paper = await buildStatement({ kind: 'g7_gf_declaration', shipment, stones, house: input.house, documents: input.documents, printedAt: PRINTED });
+  save('g7-note-rough.pdf', paper.bytes);
+  const read = await readPdf(paper.bytes);
+  assert.equal(read.numPages, 1);
+  assert.ok(read.text.includes('EU · NATURAL ROUGH DIAMONDS'));
+  assert.ok(read.text.includes('Diamond Office in Antwerp (FPS Economy, Hoveniersstraat 22, 2018 Antwerpen)'));
+  assert.ok(read.text.includes('KP certificate KP-SAMPLE-0001'));
+  assert.ok(read.text.includes('Countries of mining (KP) Botswana, Canada'));
+  assert.ok(read.text.includes('Verified at Diamond Office, Antwerp'), 'a rough parcel for Germany is verified in Antwerp');
+  assert.ok(!read.text.includes('Lab-grown goods use the Diamond Office'), 'not the lab-grown note');
+  assert.ok(!read.text.includes('do not show lab-grown'));
+  assert.ok(read.text.includes('1 March 2024 (1.0 ct and up)'), 'grandfathering follows EC FAQ Question 17');
+  assertNoOverflow(read);
+
+  const labGrown = await readPdf((await buildStatement({ kind: 'g7_gf_declaration', shipment: { ...input.shipment, goods: { nature: 'lab-grown', form: 'polished', hsCodes: ['71049100'] } }, stones: [], house: input.house, documents: [{ docType: 'commercial_invoice', fields: [field('goods.countryOfOrigin', 'India')] }], printedAt: PRINTED })).bytes);
+  assert.ok(labGrown.text.includes('Country of manufacture India'));
+});
+
+test('one EU statement for several invoices names every invoice and the number of parcels', async () => {
+  const input = await exportFixture();
+  const second = { id: 'doc-inv2', docType: 'commercial_invoice', fileName: 'invoice-042.pdf', fields: [field('invoice.number', 'SGE/26-27/042')], lines: [] };
+  const read = await readPdf((await buildStatement({ kind: 'eu_dds', shipment: input.shipment, stones: input.stones, house: input.house, documents: [...input.documents, second], printedAt: PRINTED })).bytes);
+  assert.ok(read.text.includes('SAMPLE-EXP-041 / SGE/26-27/041, SGE/26-27/042 (2 parcels)'));
+  assert.equal(read.numPages, 1);
+});
+
+test('the pack never reads as screened when OFAC screening was off, and states each regime\'s threshold', async () => {
+  const input = await exportFixture();
+  const off = await readPdf((await buildPack({ ...input, house: { ...input.house, permissions: { ofacScreen: false } } })).bytes);
+  assert.ok(off.text.includes('OFAC screening was off for this house: the parties were not screened against this list.'));
+  assert.ok(!off.text.includes('Every party in the shipment is screened against this list.'));
+  assert.ok(off.text.includes('EU: diamonds of 0.50 ct and up a stone, natural and lab-grown.'));
+  assert.ok(!off.text.includes('US: non-industrial diamonds'), 'an EU pack states the EU threshold');
+  const us = await readPdf((await buildPack({ ...input, required: [{ kind: 'us_cbp_certificate', reason: 'US import.', signer: 'us_importer', regime: 'US' }] })).bytes);
+  assert.ok(us.text.includes('US: non-industrial diamonds of 0.50 ct and up; diamond jewellery and unsorted diamonds at any weight.'));
+  assert.ok(us.text.includes('Every party in the shipment is screened against this list.'));
+});
+
+test('original PDFs go into the pack unchanged on the page, but with nothing that can run or open', async () => {
+  const input = await exportFixture();
+  const src = await PDFDocument.create();
+  const page = src.addPage([595.28, 841.89]);
+  page.drawText('SAMPLE supplier invoice with scripts', { x: 56, y: 760, size: 14, font: await src.embedFont(StandardFonts.Helvetica) });
+  const c = src.context;
+  const js = c.obj({ S: 'JavaScript', JS: PDFString.of('app.alert("SAMPLE")') });
+  page.node.set(PDFName.of('AA'), c.obj({ O: js }));
+  const link = c.register(c.obj({ Type: 'Annot', Subtype: 'Link', Rect: [10, 10, 100, 30], A: c.obj({ S: 'Launch', F: PDFString.of('sample.exe') }) }));
+  const attachment = c.register(c.obj({ Type: 'Annot', Subtype: 'FileAttachment', Rect: [10, 40, 30, 60], FS: c.obj({ Type: 'Filespec', F: PDFString.of('sample.exe') }) }));
+  page.node.set(PDFName.of('Annots'), c.obj([link, attachment]));
+  const files = { 'docs/doc-inv/invoice-041.pdf': await src.save() };
+  const pack = await buildPack({ ...input, getFile: (key) => files[key] || input.getFile(key) });
+  const invoicePage = pack.contents.find((item) => item.docId === 'doc-inv').page;
+  const out = await PDFDocument.load(pack.bytes);
+  const copied = out.getPages()[invoicePage - 1];
+  assert.equal(copied.node.get(PDFName.of('AA')), undefined, 'no page actions');
+  const annots = copied.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
+  const kinds = [];
+  for (let i = 0; i < annots.size(); i++) {
+    const annot = out.context.lookup(annots.get(i), PDFDict);
+    kinds.push(annot.get(PDFName.of('Subtype')).decodeText());
+    assert.equal(annot.get(PDFName.of('A')), undefined, 'no annotation actions');
+  }
+  assert.deepEqual(kinds, ['Link'], 'the file attachment is left out');
+  assert.ok((await readPdf(pack.bytes)).pages[invoicePage - 1].text.includes('SAMPLE supplier invoice with scripts'), 'what is printed stays');
+});
+
+test('the agents\' packing list draft stays out of the envelope until a person checked it', async () => {
+  const input = await exportFixture();
+  const lines = input.stones.slice(0, 3).map((s, i) => ({ lineNo: i + 1, description: 'Natural polished diamond', reportNumber: s.reportNumber, lab: s.lab, shape: s.shape, carat: s.carat, color: s.color, clarity: s.clarity, pieces: 1, rate: null, amount: null, growth: 'natural', quote: null }));
+  const draft = { id: 'doc-draft', fileName: 'Packing list draft SAMPLE-EXP-041.pdf', mime: 'application/pdf', fileKey: 'docs/doc-draft/draft.pdf', sha256: '99'.repeat(32), docType: 'packing_list', source: { kind: 'generated', receivedAt: '2026-11-14T10:00:00.000Z' }, fields: [field('invoice.number', 'SGE/26-27/041')], lines };
+  const documents = [...input.documents.filter((d) => d.id !== 'doc-pkl'), draft];
+  const files = { 'docs/doc-draft/draft.pdf': await makePdf('SAMPLE DRAFT packing list. Check every line before use.', 1) };
+  const getFile = (key) => files[key] || input.getFile(key);
+
+  const unchecked = await buildPack({ ...input, documents, getFile });
+  assert.ok(!unchecked.contents.some((item) => item.docId === 'doc-draft'), 'not in the envelope');
+  const read = await readPdf(unchecked.bytes);
+  assert.ok(read.text.includes('Not on file Packing list'));
+  assert.ok(read.text.includes('Kept on record'));
+
+  const checkedDraft = { ...draft, fields: [...draft.fields, { key: 'doc.checkedBy', value: 'Yes, use it as our packing list', by: 'Asha Clerk', page: null }] };
+  const checked = await buildPack({ ...input, documents: [...input.documents.filter((d) => d.id !== 'doc-pkl'), checkedDraft], getFile });
+  const item = checked.contents.find((c) => c.docId === 'doc-draft');
+  assert.ok(item && item.attached, 'in the envelope once checked');
+  const checkedRead = await readPdf(checked.bytes);
+  assert.ok(checkedRead.pages[item.page - 1].text.includes('checked line by line by Asha Clerk at the house'));
+  assert.ok(!checkedRead.text.includes('Check every line before use'), 'the DRAFT copy is not the one in the envelope');
+  assert.ok(checkedRead.text.includes('Not on file Nothing required is missing.'));
+  assertNoOverflow(checkedRead);
+});
+
+test('labs print by a short name with a key, so a long lab name never breaks mid-word', async () => {
+  const input = await exportFixture();
+  const stones = input.stones.slice(0, 5).map((s) => ({ ...s, lab: 'Northbridge Gem Laboratory (SAMPLE)' }));
+  const read = await readPdf((await buildPack({ ...input, stones })).bytes);
+  const stoneList = read.pages.find((p) => p.text.includes('Stones in this shipment'));
+  assert.ok(stoneList.text.includes(' NGL '));
+  assert.ok(stoneList.text.includes('Labs: NGL is Northbridge Gem Laboratory (SAMPLE).'));
+  assert.ok(!/Northbrid(?!ge)/.test(stoneList.text), 'no word cut in two');
+  const lines = stones.map((s, i) => ({ lineNo: i + 1, description: 'Natural polished diamond', reportNumber: s.reportNumber, lab: s.lab, shape: s.shape, carat: s.carat, color: s.color, clarity: s.clarity, pieces: 1, growth: 'natural' }));
+  const draft = await readPdf((await buildPackingListDraft({ shipment: input.shipment, lines, sources: [], house: input.house, printedAt: PRINTED })).bytes);
+  assert.ok(draft.text.includes('Labs: NGL is Northbridge Gem Laboratory (SAMPLE).'));
+  assertNoOverflow(read);
+});
+
+test('a difference a person accepted prints as accepted; the cover takes the package count from the air waybill', async () => {
+  const input = await exportFixture();
+  input.checks.push({ id: 'ck-acc', shipmentId: 'sh-exp', code: 'stone_details', severity: 'info', accepted: true, title: 'Stones agree across papers', detail: 'Accepted by the house: Report SMP9100001: the house answered 0.49 ct, but the lab report says 0.50 ct.', evidence: [], rule: 'compliance.js#stone_details' });
+  delete input.shipment.packages;
+  input.documents = input.documents.map((d) => (d.id === 'doc-awb' ? { ...d, fields: [...d.fields, field('goods.packages', '2')] } : d));
+  const read = await readPdf((await buildPack(input)).bytes);
+  assert.ok(read.pages[1].text.includes('Accepted Stones agree across papers'));
+  assert.ok(read.pages[0].text.includes('Number of pieces (packages) 2'));
 });

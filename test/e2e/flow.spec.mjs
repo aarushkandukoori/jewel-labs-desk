@@ -167,8 +167,12 @@ async function flowA() {
     await step(F, 'questions: packing list missing, carat mismatch', async () => {
       const needs = page.locator('.needs');
       await waitFor(() => needs.getByText(/Packing list for KG\/26-27\/041 is not on file/).isVisible(), 30000, 'the missing packing list');
-      await waitFor(() => page.locator('.q-row', { hasText: /0\.70 ct/ }).isVisible(), 30000, 'the carat question');
-      await page.locator('.q-row', { hasText: /0\.70 ct/ }).scrollIntoViewIfNeeded();
+      const carat = page.locator('.q-row', { hasText: /Report 7391020002 weighs/ });
+      await waitFor(() => carat.isVisible(), 30000, 'the carat question');
+      // The weights the papers print are the answers to pick from.
+      await waitFor(() => carat.getByRole('button', { name: '0.70 ct', exact: true }).isVisible(), 10000, 'the 0.70 ct option');
+      assert.ok(await carat.getByRole('button', { name: '0.71 ct', exact: true }).isVisible(), 'the 0.71 ct option');
+      await carat.scrollIntoViewIfNeeded();
       return shot(page, 'questions');
     });
 
@@ -186,12 +190,29 @@ async function flowA() {
       return `${text.trim()} ${await shot(page, 'packing-list-drafted')}`;
     });
 
-    await step(F, 'answer the carat question', async () => {
-      const row = page.locator('.q-row', { hasText: /0\.70 ct/ });
+    await step(F, 'check the drafted packing list', async () => {
+      // The draft counts as the packing list only once a person checked it against the parcel.
+      const row = page.locator('.q-row', { hasText: /drafted the packing list for KG\/26-27\/041/ });
+      await waitFor(() => row.isVisible(), 30000, 'the question to check the draft');
       await row.scrollIntoViewIfNeeded();
-      await row.locator('input.ans').fill('0.70 ct, as on the lab report');
-      await row.getByRole('button', { name: 'Answer' }).click();
-      await waitFor(async () => (await page.locator('.q-row', { hasText: /0\.70 ct/ }).count()) === 0, 30000, 'the question to close');
+      await row.getByRole('button', { name: 'Yes, use it as our packing list' }).click();
+      await waitFor(async () => (await row.count()) === 0, 30000, 'the draft question to close');
+      await agentsIdle(app);
+      return 'the clerk checked the draft';
+    });
+
+    await step(F, 'answer the carat question', async () => {
+      const row = page.locator('.q-row', { hasText: /Report 7391020002 weighs/ });
+      await row.scrollIntoViewIfNeeded();
+      await row.getByRole('button', { name: '0.70 ct', exact: true }).click();
+      await waitFor(async () => (await row.count()) === 0, 30000, 'the question to close');
+      await agentsIdle(app);
+      // The invoice and the packing list still print 0.71 ct: ship with that difference (or add corrected copies).
+      const accept = page.locator('.q-row', { hasText: /Upload corrected copies, or ship with this difference/ });
+      await waitFor(() => accept.isVisible(), 30000, 'the question to accept the difference');
+      await accept.scrollIntoViewIfNeeded();
+      await accept.getByRole('button', { name: 'Ship with this difference' }).click();
+      await waitFor(async () => (await accept.count()) === 0, 30000, 'the difference to be accepted');
       await agentsIdle(app);
       // The real AI sometimes reads a party differently on one paper; the Review agent then asks to confirm.
       // Answer such questions about this shipment with their first option, as a clerk would, and say so.
@@ -282,17 +303,18 @@ async function flowA() {
     });
 
     await step(F, 'print: every page drawn for the printer', async () => {
-      // What papers.print does before the system print dialog opens (the dialog itself needs a person).
+      // What papers.print does before the system print dialog opens (the dialog itself needs a person): the hidden
+      // page at app://pages/rasterize.html (src/main/print.js) draws every page.
       const data = fs.readFileSync(savedPdf.file).toString('base64');
       const pages = await app.evaluate(async ({ BrowserWindow }, args) => {
         const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
         try {
-          await win.loadFile(args.html);
+          await win.loadURL(args.url);
           return await win.webContents.executeJavaScript(`window.raster.showAll(${JSON.stringify(args.data)}, null, 'print test')`);
         } finally {
           win.destroy();
         }
-      }, { html: path.join(ROOT, 'src', 'main', 'rasterize.html'), data });
+      }, { url: 'app://pages/rasterize.html', data });
       assert.equal(pages, savedPdf.pages);
       return `${pages} pages ready to print`;
     });
@@ -421,8 +443,11 @@ async function flowB() {
   let house = null;
   let code = null;
 
+  // No developer key in flow B, even when JL_DEV_OPENAI_KEY_FILE is set for the run: a signed-in house without
+  // its own key must read through the Jewel Labs AI service.
+  const noKey = { JL_DEV_OPENAI_KEY_FILE: '' };
   try {
-    one = await launchApp({ userData: dirs[0], env: { JL_E2E_OPEN_FILES: sampleDoc }, viewport: { width: 1440, height: 900 } });
+    one = await launchApp({ userData: dirs[0], env: { ...noKey, JL_E2E_OPEN_FILES: sampleDoc }, viewport: { width: 1440, height: 900 } });
     watchPage(one.page, 'B1', problems);
 
     await step(F, 'account 1 creates a house', async () => {
@@ -444,7 +469,7 @@ async function flowB() {
       return `code of ${code.length} characters; ${await shot(one.page, 'b1-invite')}`;
     });
 
-    two = await launchApp({ userData: dirs[1], viewport: { width: 1440, height: 900 } });
+    two = await launchApp({ userData: dirs[1], env: noKey, viewport: { width: 1440, height: 900 } });
     watchPage(two.page, 'B2', problems);
 
     await step(F, 'account 2 joins with the invite code', async () => {

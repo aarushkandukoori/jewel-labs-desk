@@ -5,6 +5,7 @@ import { jl, call, isDemo, setErrorHandler } from './api.js';
 import { AppContext, useApp } from './lib/context.js';
 import { reducer, initialState, COLLECTIONS } from './lib/store.js';
 import { parseHash, go, href } from './lib/router.js';
+import { plural } from './lib/format.js';
 import { Boundary, Skeleton } from './components/ui.js';
 import { StatusBar } from './components/status-bar.js';
 import { Toasts } from './components/toasts.js';
@@ -143,6 +144,7 @@ function App() {
       }
       if (autoplay) {
         markStarted();
+        dispatch({ type: 'boot', patch: { scrollToReader: true } }); // Home shows the agents reading once they start
         await call(jl.demo.load());
       }
       await loadWorkspace();
@@ -177,6 +179,7 @@ function App() {
       }),
       jl.on('notify', (n) => {
         if (!n) return;
+        if (n.kind === 'questions') return questionsNotice(n);
         const title = typeof n === 'string' ? 'Jewel Labs' : n.title || 'Jewel Labs';
         const text = typeof n === 'string' ? n : n.body || n.message || n.text || '';
         toast(title, text, n.kind === 'error' ? 'error' : 'ok', undefined, n.shipmentId ? `shipment:${n.shipmentId}` : undefined);
@@ -209,6 +212,31 @@ function App() {
       window.removeEventListener('drop', stopDrop);
     };
   }, []);
+
+  // The agents send one notice per shipment that has questions. They become one notice ("5 questions on 3
+  // shipments"), so a stack of them never covers the screen.
+  function questionsNotice(notice) {
+    clearTimeout(reloadTimers.current.questionsNotice);
+    reloadTimers.current.questionsNotice = setTimeout(() => {
+      const { questions, shipments } = stateRef.current.data;
+      const open = questions.filter((q) => q.status === 'open' && q.shipmentId);
+      const ids = [...new Set(open.map((q) => q.shipmentId))];
+      if (!ids.length) {
+        toast(notice.title || 'Questions from the agents', notice.body || '', 'info', { label: 'Show', run: showNeeds }, 'questions');
+        return;
+      }
+      const refs = ids.map((id) => shipments.find((s) => s.id === id)?.ref).filter(Boolean);
+      const where = ids.length === 1 ? refs[0] || 'a shipment' : plural(ids.length, 'shipment');
+      const show = ids.length === 1 ? () => go('shipments', ids[0], { tab: 'questions' }) : showNeeds;
+      toast(`${plural(open.length, 'question')} on ${where}`, refs.join(', '), 'info', { label: 'Show', run: show }, 'questions');
+    }, 400);
+  }
+
+  // Home, scrolled to what the shipments still need.
+  function showNeeds() {
+    go('home');
+    setTimeout(() => document.querySelector('.needs')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 350);
+  }
 
   // ---------- navigation that knows which shell it is in ----------
 
@@ -267,13 +295,17 @@ function App() {
     markStarted();
     const result = await call(jl.demo.load());
     if (result === null) return false;
+    dispatch({ type: 'boot', patch: { scrollToReader: true } }); // Home shows the agents reading once they start
     go('home');
     toast('Sample shipment loaded', 'A fictional SAMPLE parcel. Watch the agents read it.', 'ok');
     return true;
   }
 
   async function signOut() {
-    await call(jl.auth.signOut());
+    const result = await call(jl.auth.signOut());
+    if (result?.keptUnsent) {
+      toast('Some changes are still on this computer', 'They were made offline and have not reached your house yet. They go out when you sign in again here.', 'warn');
+    }
     markStarted(false);
     await refreshInfo();
     go('welcome');
@@ -357,9 +389,14 @@ function App() {
 /** The slim line on top of the website demo: says what it is, and lets people replay it. */
 function DemoBanner() {
   const { state, startSample } = useApp();
-  const recorded = state.demoInfo?.recorded;
+  if (state.demoInfo && !state.demoInfo.recorded) {
+    return html`<div class="demo-banner drag" role="alert">
+      <span><b>Demo:</b> the recorded run of the agents could not be loaded, so there is nothing to show.</span>
+      <button class="link" type="button" onClick=${() => location.reload()}>Reload</button>
+    </div>`;
+  }
   return html`<div class="demo-banner drag" role="note">
-    <span><b>Demo:</b> ${recorded ? 'a recorded run of the agents on a fictional sample shipment.' : 'a scripted run of the agents on a fictional sample shipment.'}</span>
+    <span><b>Demo:</b> a recorded run of the agents on a fictional sample shipment.</span>
     <button class="link" type="button" onClick=${() => { jl.demo.reset().then(() => startSample()); }}>Replay</button>
   </div>`;
 }

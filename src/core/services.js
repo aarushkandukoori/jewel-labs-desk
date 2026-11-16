@@ -12,21 +12,23 @@ import { answerQuestion, dismissQuestion } from './pipeline/answers.js';
 import { createDesk } from './pipeline/desk.js';
 import { ask } from './pipeline/ask.js';
 import { loadSample, resetSample } from './pipeline/sample.js';
-import { createFolderState } from './pipeline/folder-state.js';
+import { createFolderState, createMailboxState } from './pipeline/folder-state.js';
+import { cleanDomains } from './mail/domains.js';
 
 /**
  * store, ai, sanctionsLoader, ocr, labsVerify?, rasterize?, notify?, paths, deviceId, clock?, lease? as in ARCHITECTURE.md.
  * Extra, optional: pace (ms between live field events, 0 in tests), modules (fake core modules for tests),
  * pollMinutes (worker interval), getMembers (the house's logins, for metrics), parallel (how many papers are read at
- * once; the demo recording reads one at a time so the replay follows them in order).
+ * once; the demo recording reads one at a time so the replay follows them in order), pageDrawTimeoutMs (how long
+ * drawing one page of a scan may take, 60 s; shorter in tests).
  */
 export function createServices({
   store, ai, sanctionsLoader, ocr, labsVerify, rasterize, notify, paths = {}, deviceId = 'this-computer', clock, lease,
-  pace = 120, modules = {}, pollMinutes = MAILBOX_POLL_MINUTES, getMembers, parallel,
+  pace = 120, modules = {}, pollMinutes = MAILBOX_POLL_MINUTES, getMembers, parallel, pageDrawTimeoutMs,
 }) {
   if (!store) throw new Error('createServices needs a store.');
   const load = createModuleLoader(modules);
-  const ctx = createContext({ store, ai, ocr, rasterize, notify, paths, deviceId, clock, pace, load, sanctionsLoader, labsVerify });
+  const ctx = createContext({ store, ai, ocr, rasterize, notify, paths, deviceId, clock, pace, load, sanctionsLoader, labsVerify, pageDrawTimeoutMs });
   let mailConfig = null; // the mailbox login, kept in memory only (main stores the app password with safeStorage)
 
   const isAutopilot = async () => (await store.workspace()).autopilot !== false;
@@ -41,16 +43,23 @@ export function createServices({
     return result;
   }
 
-  // The watched folder is kept per computer (see pipeline/folder-state.js), next to the app's cache.
+  // The watched folder and the mailbox are kept per computer (see pipeline/folder-state.js), next to the app's cache.
   let folderState = null;
   async function getFolderState() {
-    if (!folderState) folderState = createFolderState(paths.cacheDir || paths.cache || null, (await store.workspace()).id);
+    if (!folderState) folderState = createFolderState(paths.cacheDir || null, (await store.workspace()).id);
     await folderState.load();
     return folderState;
   }
+  let mailboxState = null;
+  async function getMailboxState() {
+    if (!mailboxState) mailboxState = createMailboxState(paths.cacheDir || null, (await store.workspace()).id);
+    await mailboxState.load();
+    return mailboxState;
+  }
 
   const worker = createWorker(ctx, {
-    addFiles: addAndRun, run, needsRun: runner.needsRun, isAutopilot, getMailConfig: () => mailConfig, getFolderState, intervalMinutes: pollMinutes,
+    addFiles: addAndRun, run, needsRun: runner.needsRun, isAutopilot, getMailConfig: () => mailConfig,
+    getMailboxState, getFolderState, intervalMinutes: pollMinutes,
   });
   const desk = createDesk(ctx, { run, buildPapers: build });
   if (typeof store.on === 'function') store.on('change', (change) => ctx.events.emit('change', change));
@@ -97,35 +106,42 @@ export function createServices({
       events: await store.list('events'),
       papers: await store.list('papers'),
       shipments: await store.list('shipments'),
+      // Which shipment each paper was filed under: an upload event only knows its document.
+      documents: (await store.list('documents')).map((d) => ({ id: d.id, shipmentId: d.shipmentId || null })),
+      questions: (await store.list('questions', (q) => q.status === 'dismissed'))
+        .map((q) => ({ shipmentId: q.shipmentId || null, kind: q.kind, status: q.status, closedBy: q.closedBy || null })),
       members: typeof getMembers === 'function' ? (await getMembers()) || [] : [],
     };
-    const metricsModule = await load('metrics').catch(() => null);
-    if (metricsModule && typeof metricsModule.computeMetrics === 'function') {
-      return metricsModule.computeMetrics({ workspaces: [house], now: ctx.now() });
-    }
-    return simpleMetrics(house);
+    return (await load('metrics')).computeMetrics({ workspaces: [house], now: ctx.now() });
   }
 
   // ---- mailbox ----
 
   async function mailStatus() {
-    const saved = (await store.workspace()).mailbox || null;
+    const saved = (await getMailboxState()).get();
     const w = await worker.status();
+    // Connected by an older copy of the app with no domains: it brings in nothing until it is connected again.
+    const needsDomains = Boolean(saved.email && saved.connected && !mailConfig && !(saved.domains || []).length);
     return {
       connected: Boolean(mailConfig),
-      provider: mailConfig?.provider || saved?.provider || null,
-      email: mailConfig?.email || saved?.email || null,
-      lastPollAt: w.mail.lastPollAt || saved?.lastPollAt || null,
+      provider: mailConfig?.provider || saved.provider || null,
+      email: mailConfig?.email || saved.email || null,
+      domains: mailConfig?.domains || saved.domains || [],
+      lastPollAt: w.mail.lastPollAt || saved.lastPollAt || null,
+      lastSeenAt: saved.lastSeenAt || null,
       nextPollAt: mailConfig ? w.nextPollAt : null,
-      lastError: w.mail.error,
+      lastError: w.mail.error || (needsDomains ? NO_DOMAINS : null),
       pulled: w.mail.pulled,
       // Connected on this computer before, but the app restarted without the app password: sign in again.
-      needsPassword: Boolean(saved?.email && saved.connected !== false && !mailConfig && (!saved.connectedOn || saved.connectedOn === deviceId)),
+      needsPassword: Boolean(saved.email && saved.connected && !mailConfig),
+      needsDomains,
     };
   }
 
+  // The mailbox, its domains and how far the agents got in it belong to this computer: nothing about it goes into
+  // the shared workspace, so a colleague's mailbox never mixes with this one, and nobody else can widen its domains.
   const mail = {
-    /** options: { provider, email, appPassword, host?, port?, smtpHost?, smtpPort?, since?, domains?, test?, by? } */
+    /** options: { provider, email, appPassword, domains, host?, port?, smtpHost?, smtpPort?, since?, test?, by? } */
     async connect(options = {}) {
       const config = mailSettings(options);
       if (options.test !== false) {
@@ -133,18 +149,15 @@ export function createServices({
         try { await mailbox.test(); } finally { await mailbox.close().catch(() => {}); }
       }
       mailConfig = config;
-      const workspace = await store.workspace();
-      const old = workspace.mailbox?.email === config.email ? workspace.mailbox : {};
-      const patch = {
-        mailbox: {
-          ...old, provider: config.provider, email: config.email, host: config.host || null, since: options.since || old.since || null,
-          connected: true, connectedAt: ctx.nowIso(), connectedOn: deviceId,
-        },
-      };
-      if (options.domains) patch.emailDomains = Array.isArray(options.domains) ? options.domains : String(options.domains).split(/[,\s]+/).filter(Boolean);
-      await store.updateWorkspace(patch);
-      if (!(old.connected === true && old.email === config.email)) {
-        await ctx.log(ctx.personActor(options.by), 'connected', `Connected the mailbox ${config.email}. The agents check it every ${pollMinutes} minutes.`);
+      const box = await getMailboxState();
+      const old = box.get().email === config.email ? box.get() : {}; // another mailbox starts from the beginning
+      box.replace({
+        ...old, email: config.email, provider: config.provider, host: config.host || null, domains: config.domains,
+        since: options.since || old.since || null, connected: true, connectedAt: ctx.nowIso(),
+      });
+      await box.save();
+      if (!old.connected) {
+        await ctx.log(ctx.personActor(options.by), 'connected', `Connected the mailbox ${config.email}. The agents check it every ${pollMinutes} minutes for mail from ${config.domains.join(', ')}.`);
       }
       if (options.pollNow !== false) ctx.background(worker.pollNow());
       return mailStatus();
@@ -152,9 +165,11 @@ export function createServices({
     status: mailStatus,
     async disconnect(by) {
       mailConfig = null;
-      const old = (await store.workspace()).mailbox || {};
-      await store.updateWorkspace({ mailbox: { ...old, connected: false, disconnectedAt: ctx.nowIso() } });
-      await ctx.log(ctx.personActor(by), 'disconnected', `Disconnected the mailbox ${old.email || ''}`.trim());
+      const box = await getMailboxState();
+      const email = box.get().email || '';
+      box.set({ connected: false, disconnectedAt: ctx.nowIso() });
+      await box.save();
+      await ctx.log(ctx.personActor(by), 'disconnected', `Disconnected the mailbox ${email}`.trim());
       return mailStatus();
     },
     async pollNow() {
@@ -172,6 +187,7 @@ export function createServices({
     return {
       path: state.path, watching: Boolean(state.path), lastScanAt: w.folder.lastScanAt || state.lastScanAt || null,
       files: Object.keys(state.seen || {}).length, lastError: w.folder.error,
+      problems: w.folder.problems, // [{ file, reason }]: files that could not be read in the last scan
     };
   }
 
@@ -188,7 +204,7 @@ export function createServices({
       }
       await checkFolder(folderPath);
       if (before !== folderPath) {
-        state.set({ path: folderPath, seen: {}, lastScanAt: null });
+        state.set({ path: folderPath, seen: {}, inFlight: {}, lastScanAt: null });
         await state.save();
         await ctx.log(ctx.personActor(by), 'folder', `Watching ${folderPath}. New files there go to the agents.`);
       }
@@ -218,7 +234,9 @@ export function createServices({
     answerQuestion: (id, answer, by) => answerQuestion(ctx, { run }, id, answer, by),
     dismissQuestion: (id, by) => dismissQuestion(ctx, { run }, id, by),
     buildPapers: (shipmentId, options = {}) => build(shipmentId, options),
-    signPaper: (paperId, signature, by) => signPaper(ctx, paperId, signature, by),
+    signPaper: (paperId, signature, by) => signPaper(ctx, paperId, signature, by, {
+      recheck: (shipmentId) => ctx.background(run({ shipmentId, reason: 'checked again before signing' })),
+    }),
     sendPaper: (paperId, message, by) => sendPaper(ctx, paperId, message, by, { mailConfig }),
     desk,
     history,
@@ -228,7 +246,7 @@ export function createServices({
     folder,
     worker: { start: worker.start, stop: worker.stop, status: worker.status, tick: worker.tick },
     // loadSample() adds the SAMPLE papers except the late ones; loadSample({ later: true }) delivers those.
-    loadSample: (options = {}) => loadSample(ctx, { addFiles: addAndRun, samplesDir: paths.samples || SAMPLES_DIR, later: Boolean(options?.later) }),
+    loadSample: (options = {}) => loadSample(ctx, { addFiles: addAndRun, samplesDir: paths.samplesDir || SAMPLES_DIR, later: Boolean(options?.later) }),
     resetSample: () => resetSample(ctx),
     async shutdown() {
       worker.stop();
@@ -241,34 +259,27 @@ function labCheckDetail(stone, check) {
   const name = `${check.lab || 'Lab'} report ${stone.reportNumber}`;
   if (check.status === 'match') return `${name} matches our record`;
   if (check.status === 'mismatch') return `${name} differs from our record: ${check.diffs.map((d) => d.field).join(', ')}`;
+  if (check.status === 'unavailable') return `${name} could not be checked: ${check.reason || 'the lab has no online report check'}`;
+  if (check.status === 'incomplete') return `${name} was not checked: ${check.reason || 'the check did not finish'}`;
   return `${name} was not found on the lab's site${check.reason ? `: ${check.reason}` : ''}`;
 }
 
-/** The login the mail module needs. Spaces are taken out of the app password (Google shows it in groups of four). */
+const NO_DOMAINS = 'Add the email domains of your brokers, labs and shippers first. The agents bring in mail from those domains only.';
+
+/**
+ * The login the mail module needs. Spaces are taken out of the app password (Google shows it in groups of four).
+ * Mail is brought in only from the domains given here (brokers, labs, shippers), never from the house's own domain.
+ */
 function mailSettings(options) {
   const email = String(options.email || '').trim();
   const appPassword = String(options.appPassword || '').replace(/\s+/g, '');
   if (!email || !appPassword) throw new Error('Add the email address and its app password first.');
+  const own = email.toLowerCase().split('@')[1] || '';
+  const domains = cleanDomains(options.domains).filter((d) => d !== own);
+  if (!domains.length) throw Object.assign(new Error(NO_DOMAINS), { code: 'no_domains' });
   return {
-    provider: options.provider || 'gmail', email, appPassword,
+    provider: options.provider || 'gmail', email, appPassword, domains,
     host: options.host || undefined, port: options.port || undefined,
     smtpHost: options.smtpHost || undefined, smtpPort: options.smtpPort || undefined,
   };
-}
-
-/** Used only when src/core/metrics.js is missing: plain counts for one house. */
-function simpleMetrics(house) {
-  const count = (type) => house.events.filter((e) => e.type === type).length;
-  const packs = house.papers.filter((p) => p.kind === 'export_pack' || p.kind === 'import_pack');
-  const totals = {
-    shipments: house.shipments.length,
-    packs: packs.length,
-    uploads: count('upload'),
-    signed: count('pack_signed'),
-    sent: count('pack_sent'),
-    questionsAnswered: count('question_answered'),
-    houseEdits: count('house_edit'),
-    deskEdits: count('desk_edit'),
-  };
-  return { houses: [{ id: house.workspace.id, name: house.workspace.name || null, ...totals }], totals };
 }

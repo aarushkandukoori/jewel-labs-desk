@@ -5,7 +5,7 @@ import {
   getField, getFieldValues, docLines, parseNumber, parseDate, parseCurrency, formatDate, formatCarat, formatMoney, round,
   namesMatch,
 } from './fields.js';
-import { countryListHasRussia, findRussiaWord } from './formats.js';
+import { airportCountry, countryListHasRussia, findRussiaWord } from './formats.js';
 import { DOC_TYPE_LABELS, FIELD_LABELS } from '../types.js';
 
 // How each paper is named inside a sentence.
@@ -27,6 +27,16 @@ const COUNTRY_KEYS = ['kp.countriesOfMining', 'goods.countryOfOrigin', 'kp.expor
   'consignee.country', 'buyer.country', 'supplier.country'];
 const TEXT_KEYS = ['exporter.name', 'exporter.address', 'consignee.name', 'consignee.address', 'buyer.name', 'buyer.address',
   'supplier.name', 'supplier.address', 'goods.description'];
+// Where the parcel was loaded, unloaded and flown through: goods that left or transited Russia are banned too
+// (EC FAQ on diamonds, Question 2).
+const PLACE_KEYS = ['goods.portOfLoading', 'goods.portOfDischarge', 'awb.route'];
+
+/** True when a port or a route ("BOM - SVO - BRU", "Moscow (SVO)", "Mumbai via Moscow") passes through Russia. */
+export function placeHasRussia(value) {
+  const text = String(value || '').toUpperCase();
+  if (text.split(/[^A-Z]+/).some((code) => airportCountry(code) === 'RU')) return true;
+  return text.split(/-|>|\bVIA\b|\bTO\b/).some((part) => countryListHasRussia(part));
+}
 
 /**
  * Every place a paper or a stone points to Russia: [{ docId, key, value }].
@@ -42,6 +52,9 @@ export function findRussia(docs, stones = []) {
     if (doc.docType === 'insurance_certificate') continue;
     for (const key of TEXT_KEYS) {
       for (const value of getFieldValues(doc, key)) if (findRussiaWord(value)) hits.push({ docId: doc.id, key, value });
+    }
+    for (const key of PLACE_KEYS) {
+      for (const value of getFieldValues(doc, key)) if (placeHasRussia(value)) hits.push({ docId: doc.id, key, value });
     }
     for (const line of docLines(doc)) {
       if (findRussiaWord(line.description)) hits.push({ docId: doc.id, key: 'line', value: line.description, lineNo: line.lineNo });
@@ -167,14 +180,20 @@ function withLineFallback(doc) {
 // ---------- party names ----------
 
 const PARTY_DOC_TYPES = ['commercial_invoice', 'packing_list', 'shipping_bill', 'air_waybill', 'insurance_certificate'];
+// An insurance certificate names the insured (often the exporter), not the consignee, so consignee names are
+// compared only on the papers that name who receives the parcel.
+const CONSIGNEE_DOC_TYPES = ['commercial_invoice', 'packing_list', 'shipping_bill', 'air_waybill'];
 
-/** Exporter and consignee names on the invoice, shipping bill, air waybill and insurance should be the same company. */
+/**
+ * Exporter names on the invoice, packing list, shipping bill, air waybill and insurance, and consignee names on all
+ * of them but the insurance, should be the same company.
+ */
 export function partiesProblems(docs, ref) {
   const problems = [];
   const papers = docs.filter((doc) => PARTY_DOC_TYPES.includes(doc.docType))
     .sort((a, b) => PARTY_DOC_TYPES.indexOf(a.docType) - PARTY_DOC_TYPES.indexOf(b.docType));
   for (const [role, word] of [['exporter', 'Exporter'], ['consignee', 'Consignee']]) {
-    const named = papers.filter((doc) => getField(doc, `${role}.name`));
+    const named = papers.filter((doc) => getField(doc, `${role}.name`) && (role !== 'consignee' || CONSIGNEE_DOC_TYPES.includes(doc.docType)));
     if (named.length < 2) continue;
     const reference = named[0];
     const name = getField(reference, `${role}.name`);

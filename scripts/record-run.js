@@ -7,8 +7,9 @@
 //
 // The run: the SAMPLE papers arrive the way the house sends them (loadSample: the WhatsApp export, the buyer's email,
 // the dropped files), the agents read, file, trace, screen and check them, the house asks "What is still missing?",
-// the late packing list arrives, the house answers the one question (the 0.71 / 0.70 ct weight) and the agents
-// build the papers. Every store change and live event is recorded with its time. Long waits are cut short so the
+// the late packing list arrives, the house answers the weight question (0.70 ct, as on the lab report; the invoice
+// says 0.71 ct), accepts shipping with that difference (the invoice and the packing list still print 0.71 ct), and the
+// agents build the papers. Every store change and live event is recorded with its time. Long waits are cut short so the
 // replay lasts about 75 seconds, each paper's fields show one by one about 150 ms apart, top to bottom, and the papers
 // come in the order they arrived. The result goes to src/renderer/demo/sample-run.json in the format of
 // src/renderer/demo/README.md, with the files it points to in src/renderer/demo/files/.
@@ -78,13 +79,18 @@ async function record({ cache }) {
     await h.services.loadSample({ later: true });
     await idle('The late packing list');
     mark('later');
-    // 4. The house answers the weight question; the agents build the papers.
+    // 4. The house answers the weight question, then accepts shipping with the difference the papers still print;
+    // the agents build the papers.
     const shipments = await h.store.list('shipments');
     const a = shipments.find((s) => s.ref === answers.shipments.A.ref);
     const question = (await h.store.list('questions', (q) => q.shipmentId === a?.id && q.status === 'open' && q.kind === 'mismatch'))[0];
     if (!question) throw new Error('The weight question on shipment A was not asked: nothing to answer.');
-    await h.services.answerQuestion(question.id, '0.70 ct, as on the lab report', EVAL_PERSON);
+    await h.services.answerQuestion(question.id, '0.70 ct', EVAL_PERSON);
     await idle('The answer');
+    const accept = (await h.store.list('questions', (q) => q.shipmentId === a.id && q.status === 'open' && q.key === 'stone.7391020002.carat.accepted'))[0];
+    if (!accept) throw new Error('The agents did not ask to accept the weight the invoice still prints.');
+    await h.services.answerQuestion(accept.id, 'Ship with this difference', EVAL_PERSON);
+    await idle('Accepting the difference');
     mark('answered');
     await h.services.ask('Prepare the papers for my latest shipment', { by: EVAL_PERSON });
     await idle('Preparing the papers');

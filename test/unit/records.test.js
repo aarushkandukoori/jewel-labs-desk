@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { groupShipments, documentRefs } from '../../src/core/records/shipments.js';
-import { matchStones, findStoneIssues } from '../../src/core/records/stones.js';
+import { matchStones, findStoneIssues, isAgentDraft, isUncheckedDraft, shipmentDocuments } from '../../src/core/records/stones.js';
 import { buildHistory, sortEvents } from '../../src/core/records/history.js';
 
 // ---------- fixture helpers ----------
@@ -350,8 +350,16 @@ test('history runs from the mine to the signed statement in stage order', () => 
   assert.equal(byKind.cleared_for_export.at, '2026-11-07');
   assert.equal(byKind.cleared_for_export.detail, 'Shipping bill 7955006, Let Export Order 07 Nov 2026.');
   assert.equal(byKind.flown.detail, 'Air waybill HAWB SMP-4784325, MAWB 176-1234 5675, flight EK 500, BOM-DXB-BRU.');
-  assert.equal(byKind.statement_signed.title, 'EU Due Diligence Statement signed');
+  // On an export the importer signs the EU statement: the house prepared and checked it, and sent it to the importer.
+  assert.equal(byKind.statement_signed.title, 'EU Due Diligence Statement checked by the house');
+  assert.equal(byKind.statement_signed.detail, 'JL-EXP-1115-01 prepared and checked by Sample Signer.');
+  assert.equal(byKind.statement_sent.title, 'EU Due Diligence Statement sent to the importer');
   assert.equal(byKind.statement_sent.detail, 'JL-EXP-1115-01 sent to buyer@example.com.');
+  // On an import the house is the importer and signs it itself.
+  const imported = buildHistory({ stone, shipment: { ...shipment, direction: 'import' }, documents, papers });
+  assert.equal(imported.find((e) => e.kind === 'statement_signed').title, 'EU Due Diligence Statement signed');
+  assert.equal(imported.find((e) => e.kind === 'statement_signed').detail, 'JL-EXP-1115-01 signed by Sample Signer.');
+  assert.equal(imported.find((e) => e.kind === 'statement_sent').title, 'EU Due Diligence Statement sent');
   assert.equal(events.filter((e) => e.kind === 'statement_drafted').length, 1, "another shipment's paper is left out");
 });
 
@@ -454,4 +462,112 @@ test('a factory record that lists only rough lots still ties the stones to their
   assert.deepEqual(first.kp, { certificateNumber: 'AE 0457123', countries: ['BW'] });
   const kinds = first.sources.map((s) => s.kind);
   assert.ok(kinds.includes('factory_record') && kinds.includes('supplier_invoice'));
+});
+
+// ---------- fixes ----------
+
+test('history: only a Let Export Order clears an export; a bill of entry is an import declaration', () => {
+  const { documents, shipment } = groupedEu();
+  const { stones } = matchStones({ shipment, documents });
+  const stone = stones.find((s) => s.reportNumber === '2141438171');
+  const noLeo = documents.map((d) => (d.id === 'sb1' ? { ...d, fields: d.fields.filter((f) => f.key !== 'leo.date') } : d));
+  const waiting = buildHistory({ stone, shipment, documents: noLeo, papers: [] }).find((e) => e.kind === 'cleared_for_export');
+  assert.equal(waiting.title, 'Shipping bill on file (no Let Export Order yet)');
+  assert.equal(waiting.detail, 'Shipping bill 7955006, no Let Export Order yet.');
+  const cleared = buildHistory({ stone, shipment, documents, papers: [] }).find((e) => e.kind === 'cleared_for_export');
+  assert.equal(cleared.title, 'Cleared for export');
+
+  const boe = doc('boe9', 'bill_of_entry', { 'billOfEntry.number': '4410023', 'billOfEntry.date': '14/11/2026' });
+  const imported = buildHistory({ stone, shipment: { ...shipment, documentIds: [...shipment.documentIds, 'boe9'] }, documents: [...documents, boe], papers: [] });
+  assert.equal(imported.find((e) => e.kind === 'cleared_for_import').title, 'Declared for import');
+});
+
+test('a lot keeps its printed size range, and melee is small by name', () => {
+  const shipment = { id: 'shp_rng', ref: 'KG/26-27/101', documentIds: ['rng-pl'] };
+  const documents = [doc('rng-pl', 'packing_list', {}, [
+    { description: 'Natural polished, sizes 0.30-0.70 ct', carat: 4.6, pieces: 10 },
+    { description: 'Melee lot', carat: 12.5, pieces: 250 },
+    { reportNumber: '2141438199', lab: 'GIA', shape: 'RD', carat: 1.0, color: 'G', clarity: 'VS1' },
+  ])];
+  const { stones } = matchStones({ shipment, documents });
+  assert.deepEqual(stones[0].sizeRange, { min: 0.3, max: 0.7 });
+  assert.equal(stones[1].sizeRange.melee, true);
+  assert.equal(stones[2].sizeRange, null, 'a single stone has no range');
+});
+
+test('the value a person chose for a stone wins, and the issue then names the papers that still disagree', () => {
+  const { documents, shipment } = groupedEu();
+  const answered = { ...shipment, answers: { 'stone.2141438176.carat': '1.01 ct' } };
+  const { stones, issues } = matchStones({ shipment: answered, documents });
+  assert.equal(stones.find((s) => s.reportNumber === '2141438176').carat, 1.01);
+  const issue = issues.find((i) => i.code === 'carat_mismatch');
+  assert.equal(issue.chosen, 1.01);
+  assert.equal(issue.accepted, false);
+  assert.deepEqual(issue.offDocIds, ['lr6']);
+  assert.equal(issue.detail, 'Report 2141438176: the house answered 1.01 ct, but the lab report says 1.04 ct.');
+  assert.equal(issue.label, 'Report 2141438176');
+
+  // A grade answer must name one of the grades on the papers; anything else is not a choice.
+  const t = { id: 'shp_g', ref: 'KG/26-27/102', documentIds: ['g-pl', 'g-inv'] };
+  const graded = [
+    doc('g-pl', 'packing_list', {}, [{ reportNumber: '2141430001', shape: 'RD', carat: 0.9, color: 'G', clarity: 'VS1' }]),
+    doc('g-inv', 'commercial_invoice', {}, [{ reportNumber: '2141430001', shape: 'RD', carat: 0.9, color: 'H', clarity: 'VS1' }]),
+  ];
+  const picked = matchStones({ shipment: { ...t, answers: { 'stone.2141430001.color': 'H' } }, documents: graded });
+  assert.equal(picked.stones[0].color, 'H');
+  const unclear = matchStones({ shipment: { ...t, answers: { 'stone.2141430001.color': 'whatever the lab says' } }, documents: graded });
+  assert.equal(unclear.stones[0].color, 'G', 'the most trusted paper still decides');
+  assert.equal(unclear.issues.find((i) => i.code === 'grade_mismatch').unclear, 'whatever the lab says');
+});
+
+test('agents\' packing list drafts: unchecked ones are only drafts', () => {
+  const draft = { id: 'd1', docType: 'packing_list', source: { kind: 'generated' }, fields: [] };
+  assert.ok(isAgentDraft(draft) && isUncheckedDraft(draft));
+  const checked = { ...draft, fields: [{ key: 'doc.checkedBy', value: 'Yes, use it as our packing list' }] };
+  assert.ok(isAgentDraft(checked) && !isUncheckedDraft(checked));
+  assert.ok(!isAgentDraft({ id: 'p', docType: 'packing_list', source: { kind: 'upload' } }));
+});
+
+test('a shipment takes its package count from the air waybill and keeps loose stones shipped with jewellery', () => {
+  const invoice = doc('pk-inv', 'commercial_invoice', { 'invoice.number': 'KG/26-27/130', 'exporter.name': 'Kestrel Gems Pvt Ltd', 'goods.hsCode': '71131910', 'goods.packages': '3' });
+  const loose = doc('pk-inv2', 'proforma_invoice', { 'invoice.number': 'KG/26-27/130', 'goods.hsCode': '71023910' });
+  const awb = doc('pk-awb', 'air_waybill', { 'awb.hawb': 'SMP 9100001', 'invoice.number': 'KG/26-27/130', 'goods.packages': '1 box' });
+  const { shipments } = groupShipments({ documents: [invoice, loose, awb], shipments: [], house: HOUSE });
+  assert.equal(shipments[0].packages, 1, 'the carrier\'s count comes first');
+  assert.equal(shipments[0].goods.form, 'jewelry');
+  assert.deepEqual(shipments[0].goods.loose, ['polished']);
+});
+
+test('a grading report no list names: "No" leaves it out, "Yes" settles it, any other answer asks again', () => {
+  const shipment = { id: 'shp_u', ref: 'KG/26-27/098', workspaceId: 'ws_sample', documentIds: ['u-pl', 'u-lr1', 'u-lr9'] };
+  const documents = [
+    doc('u-pl', 'packing_list', { 'goods.description': 'Natural polished diamonds' }, [
+      { reportNumber: '2141430001', shape: 'RD', carat: 0.9, color: 'G', clarity: 'VS1' },
+    ]),
+    labReport('u-lr1', 'GIA', '2141430001', 'Round Brilliant', 0.9, 'G', 'VS1'),
+    labReport('u-lr9', 'GIA', '2141430009', 'Round Brilliant', 1.5, 'D', 'IF'),
+  ];
+  const withAnswer = (answer) => {
+    const answered = { ...shipment, answers: answer === undefined ? {} : { 'stone.2141430009.onShipment': answer } };
+    const { stones, issues } = matchStones({ shipment: answered, documents });
+    return { answered, stones, issue: issues.find((i) => i.code === 'report_not_on_list') };
+  };
+
+  let r = withAnswer(undefined);
+  assert.equal(r.issue.ref, '2141430009');
+  assert.ok(!r.issue.accepted && !r.issue.unclear);
+  assert.equal(r.stones.length, 2);
+
+  r = withAnswer('No');
+  assert.equal(r.issue, undefined, 'not asked again');
+  assert.deepEqual(r.stones.map((s) => s.reportNumber), ['2141430001'], 'the stone is left out');
+  assert.ok(!shipmentDocuments(r.answered, documents).some((d) => d.id === 'u-lr9'), 'and its report is not one of the papers');
+
+  r = withAnswer('Yes.');
+  assert.equal(r.issue.accepted, true);
+  assert.equal(r.stones.length, 2);
+
+  r = withAnswer('not sure');
+  assert.equal(r.issue.unclear, 'not sure');
+  assert.ok(!r.issue.accepted);
 });

@@ -1,6 +1,6 @@
 // House home, the customer portal: 1. Connect, 2. Documents (with the agents reading live),
 // 3. Tell the agents, 4. Back from Jewel Labs. Laid out like the walkthrough video.
-import { html, useEffect, useMemo, useState } from '../vendor/preact-htm.mjs';
+import { html, useEffect, useMemo, useRef, useState } from '../vendor/preact-htm.mjs';
 import { useApp } from '../lib/context.js';
 import { Section, Button, Chip, Dot, Field, Check, StatusChip } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
@@ -8,15 +8,17 @@ import { AgentsReading } from '../components/reader.js';
 import { TellTheAgents } from '../components/chat.js';
 import { QuestionRow } from '../components/questions.js';
 import { useUpload, DropZone } from '../components/upload.js';
-import { usePaperActions, PaperButtons, paperNote } from '../components/paper-actions.js';
+import { usePaperActions, PaperButtons } from '../components/paper-actions.js';
+import { paperNoteFor } from '../lib/papers.js';
 import { agentStripCounts, stillNeeded, busyAgents } from '../lib/store.js';
 import { activityChip, actorName } from '../lib/reading.js';
-import { plural, clock, ago, paperStatus, shipmentStatus } from '../lib/format.js';
+import { plural, clock, ago, paperStatus, shipmentStatus, folderProblem, domainList } from '../lib/format.js';
 
 export function HomeView() {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const upload = useUpload();
   const name = state.workspace?.name || 'Your house';
+  useReaderScroll(state, dispatch);
   return html`<div class="page-inner">
     ${upload.input}
     <header class="portal-head">
@@ -29,6 +31,29 @@ export function HomeView() {
     <${BackFromJewelLabs} />
     <p class="footnote">What you upload stays in your workspace and is filed under your house only.</p>
   </div>`;
+}
+
+// After "Try the sample shipment", the website's autoplay, or a first upload, the page scrolls once to the
+// agents reading, as soon as they start, unless the person has scrolled already. site/js/demo.js does the same
+// from outside the website's frame: whichever comes first wins, and the other finds the page scrolled.
+// It waits a moment first: a screen that just opened scrolls itself to the top (house-shell.js).
+function useReaderScroll(state, dispatch) {
+  const latest = state.agentEvents[0];
+  const waiting = useRef(false);
+  useEffect(() => {
+    if (!state.scrollToReader || waiting.current || !latest?.docId || !['start', 'read', 'field'].includes(latest.action)) return;
+    waiting.current = true;
+    setTimeout(() => {
+      waiting.current = false;
+      dispatch({ type: 'boot', patch: { scrollToReader: false } });
+      const reader = document.querySelector('.reader');
+      const page = reader?.closest('.page');
+      if (!reader || !page || page.scrollTop > 0) return;
+      const top = reader.getBoundingClientRect().top - page.getBoundingClientRect().top - 12;
+      const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      page.scrollTo({ top, behavior: still ? 'instant' : 'smooth' });
+    }, 400);
+  }, [latest?.seq, state.scrollToReader]);
 }
 
 // ───────── 1. Connect ─────────
@@ -88,7 +113,9 @@ function ConnectSection({ upload }) {
             <div class="row-title">Email</div>
             <div class="row-sub">${connected
               ? html`Connected to <b class="strong">${mail.email}</b>. The agents check it every 5 minutes${mail.lastPollAt ? `, last ${ago(mail.lastPollAt)}` : ''}.`
-              : mail?.needsPassword
+              : mail?.needsDomains
+                ? html`${mail.email}: connect it again and list the email domains to bring mail in from.`
+                : mail?.needsPassword
                 ? html`${mail.email}: enter the app password again to keep checking it.`
                 : 'Gmail, Google Workspace, iCloud, Yahoo or Zoho. The agents read your shipment mail and file it.'}</div>
           </div>
@@ -107,7 +134,8 @@ function ConnectSection({ upload }) {
         <div class="row-main"><div class="row-title">Watched folder</div>
           <div class="row-sub">${folder?.watching
             ? html`Watching <span class="mono small strong">${folder.path}</span>${folder.lastScanAt ? `, looked ${ago(folder.lastScanAt)}` : ''}.`
-            : 'Pick a folder on this computer. Anything saved there goes to the agents on its own.'}</div></div>
+            : 'Pick a folder on this computer. Anything saved there goes to the agents on its own.'}
+            ${folderProblem(folder) ? html`<div class="note-fail small mt-4">${folderProblem(folder)}</div>` : null}</div></div>
         <div class="row-actions"><button class="btn btn-sm" type="button" onClick=${chooseFolder}>${folder?.watching ? 'Change folder' : 'Choose a folder'}</button></div>
       </div>
       <div class="row">
@@ -121,17 +149,22 @@ function ConnectSection({ upload }) {
 }
 
 export function EmailForm({ onDone }) {
-  const { jl, call, toast } = useApp();
+  const { jl, call, toast, state } = useApp();
   const [provider, setProvider] = useState('gmail');
   const [email, setEmail] = useState('');
   const [appPassword, setAppPassword] = useState('');
   const [since, setSince] = useState('');
   const [keep, setKeep] = useState(true);
   const [host, setHost] = useState('');
+  // Mail comes in only from these domains (brokers, labs, shippers), never from the house's own.
+  const [domains, setDomains] = useState(() => (state.workspace?.emailDomains || []).join(', '));
   const help = PROVIDERS.find((p) => p.value === provider)?.help;
+  const domainsList = domainList(domains);
 
   async function connect() {
-    const result = await call(jl.mail.connect({ provider, email: email.trim(), appPassword, since: since || undefined, keepConnected: keep, host: host || undefined }));
+    const result = await call(jl.mail.connect({
+      provider, email: email.trim(), appPassword, domains: domainsList, since: since || undefined, keepConnected: keep, host: host || undefined,
+    }));
     if (!result) return;
     toast('Mailbox connected', result.warning || `The agents check ${email.trim()} every 5 minutes and file new consignment mail.`, result.warning ? 'warn' : 'ok');
     setAppPassword('');
@@ -146,10 +179,12 @@ export function EmailForm({ onDone }) {
       <${Field} label="App password"><input class="input" type="password" value=${appPassword} onInput=${(e) => setAppPassword(e.currentTarget.value)} autocomplete="off" /><//>
       <${Field} label="Emails since"><input class="input" type="date" value=${since} onInput=${(e) => setSince(e.currentTarget.value)} /><//>
       ${provider === 'custom' ? html`<${Field} label="IMAP server" class="span-2"><input class="input" value=${host} onInput=${(e) => setHost(e.currentTarget.value)} placeholder="imap.yourhouse.com" /><//>` : null}
+      <${Field} label="Bring in mail from these domains" class="span-all" hint="Your brokers, labs and shippers, separated by commas. Mail from anyone else stays in the mailbox.">
+        <input class="input" value=${domains} onInput=${(e) => setDomains(e.currentTarget.value)} placeholder="broker.example, lab.example, courier.example" required aria-required="true" autocomplete="off" /><//>
     </div>
     <div class="mt-12"><${Check} checked=${keep} onChange=${setKeep}>Keep connected: the agents check it every 5 minutes and file new consignment mail on their own<//></div>
     <div class="form-actions">
-      <${Button} kind="primary" size="sm" onClick=${connect} disabled=${!email.trim() || !appPassword}>Connect and bring in<//>
+      <${Button} kind="primary" size="sm" onClick=${connect} disabled=${!email.trim() || !appPassword || !domainsList.length}>Connect and bring in<//>
       <button class="btn btn-sm" type="button" onClick=${() => onDone(null)}>Cancel</button>
     </div>
     <div class="form-help">Use an app password, not your normal one (${help}). With Keep connected it is stored encrypted on this computer until you disconnect.</div>
@@ -187,7 +222,7 @@ function DocumentsSection({ upload }) {
         : html`<div class="needs-head"><span class="t">${needs.length || questions.length ? 'Your documents are filed. A few things are still needed.' : 'Your documents are filed. Now tell the agents what you need.'}</span>
             <button class="btn btn-sm" type="button" onClick=${() => document.getElementById('tell')?.scrollIntoView({ behavior: 'smooth' })}>Tell the agents</button></div>`}
       ${complete.map((s) => html`<div class="needs-row" key=${s.id}>
-        <div class="what"><button class="link-btn strong" type="button" onClick=${() => nav.shipment(s.id)}>${s.ref}</button><span>${s.status === 'held_for_review' ? 'every document is on file. Jewel Labs is reviewing the pack.' : 'every document is on file.'}</span></div>
+        <div class="what"><button class="link-btn strong" type="button" onClick=${() => nav.shipment(s.id)}>${s.ref}</button><span>${s.status !== 'held_for_review' ? 'every document is on file.' : state.auth?.signedIn ? 'every document is on file. Jewel Labs is reviewing the pack.' : 'every document is on file, but a check failed. Fix it, or sign in so Jewel Labs can review the pack.'}</span></div>
         <${StatusChip} status=${shipmentStatus(s.status)} small />
       </div>`)}
       ${needs.map(({ shipment, missing }) => html`<div class="needs-group" key=${shipment.id}>
@@ -242,7 +277,7 @@ function BackFromJewelLabs() {
             <div class="main">
               <div class="line1"><span class="ref">${p.ref}</span>${shipment ? html`<span class="muted">·</span><span class="strong">${shipment.ref}</span>` : null}
                 <${StatusChip} status=${paperStatus(p.status)} small /></div>
-              <div class="note">${paperNote(p)}</div>
+              <div class="note">${paperNoteFor(p, state)}</div>
             </div>
             <${PaperButtons} paper=${p} actions=${actions} />
           </div>`;

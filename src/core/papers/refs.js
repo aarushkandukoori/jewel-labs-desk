@@ -1,5 +1,5 @@
 // Paper references: JL-EXP-1115-01 = Jewel Labs, export pack, 15 November, first of the day.
-import { parseDate } from './format.js';
+import { parseIsoDay } from './format.js';
 
 export const REF_PREFIX = {
   export_pack: 'EXP',
@@ -21,7 +21,7 @@ function pad2(n) {
 export function nextRef(kind, date = new Date(), existingRefs = []) {
   const prefix = REF_PREFIX[kind];
   if (!prefix) throw new Error(`Unknown paper kind: ${kind}`);
-  const day = parseDate(date) || new Date();
+  const day = parseIsoDay(date) || new Date();
   const stem = `JL-${prefix}-${pad2(day.getMonth() + 1)}${pad2(day.getDate())}-`;
   let highest = 0;
   for (const item of existingRefs || []) {

@@ -10,6 +10,7 @@ const SDN_MEMO_MS = 60 * 60 * 1000; // re-read the sanctions list at most once a
 
 export function createContext({
   store, ai, ocr, rasterize, notify, paths = {}, deviceId = 'this-computer', clock, pace = 0, load, sanctionsLoader, labsVerify,
+  pageDrawTimeoutMs,
 }) {
   const events = new EventEmitter();
   events.setMaxListeners(50);
@@ -18,7 +19,7 @@ export function createContext({
   let waitingToShow = 0;
   let sdn = { index: null, at: 0 };
 
-  const ctx = { store, ai, ocr, rasterize, paths, deviceId, events, load, labsVerify, pace };
+  const ctx = { store, ai, ocr, rasterize, paths, deviceId, events, load, labsVerify, pace, pageDrawTimeoutMs };
 
   ctx.now = () => (clock ? new Date(clock()) : new Date());
   ctx.nowIso = () => ctx.now().toISOString();
@@ -108,9 +109,9 @@ export function createContext({
   ctx.getOCR = async () => ctx.ocr || (ctx.ocr = await load('ocr'));
 
   ctx.getSdnIndex = async () => {
-    if (sdn.index && Date.now() - sdn.at < SDN_MEMO_MS) return sdn.index;
+    if (sdn.index && ctx.now().getTime() - sdn.at < SDN_MEMO_MS) return sdn.index;
     try {
-      sdn = { index: await loadSdnIndex(), at: Date.now() };
+      sdn = { index: await loadSdnIndex(), at: ctx.now().getTime() };
     } catch (err) {
       ctx.agentEvent('sanctions', 'error', `Could not load the OFAC SDN list: ${err.message}`);
     }
@@ -121,7 +122,7 @@ export function createContext({
     if (typeof sanctionsLoader === 'function') return sanctionsLoader();
     if (sanctionsLoader && typeof sanctionsLoader.load === 'function') return sanctionsLoader.load();
     const sanctions = await load('sanctions');
-    return sanctions.loadSdn({ cacheDir: paths.cache || paths.cacheDir || paths.userData });
+    return sanctions.loadSdn({ cacheDir: paths.cacheDir || paths.userData });
   }
 
   // A house setting can sit at the top of the workspace, under settings, or under profile.

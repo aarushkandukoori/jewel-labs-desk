@@ -8,8 +8,9 @@ import { Icon } from '../components/icons.js';
 import { DocumentViewer, DocItem } from '../components/doc-viewer.js';
 import { QuestionRow } from '../components/questions.js';
 import { useUpload } from '../components/upload.js';
-import { usePaperActions, PaperButtons, paperNote } from '../components/paper-actions.js';
-import { shipmentStatus, paperStatus, paperKindLabel, route, money, number, carat, growthLabel, labCheckStatus, severityTone, dayTime, plural, shortLab } from '../lib/format.js';
+import { usePaperActions, PaperButtons } from '../components/paper-actions.js';
+import { paperNoteFor } from '../lib/papers.js';
+import { shipmentStatus, paperStatus, paperKindLabel, route, money, number, carat, growthLabel, labCheckStatus, labCheckToast, canCheckOnline, severityTone, dayTime, plural, shortLab } from '../lib/format.js';
 import { activityChip, actorName } from '../lib/reading.js';
 import { FIELD_LABELS } from '../lib/labels.js';
 
@@ -151,8 +152,8 @@ export function StonesTable({ stones }) {
       await call(jl.app.openExternal(result.url));
       toast(`Opened the ${result.lab} report check`, 'Compare the grades on the lab’s own page.', 'info');
     } else {
-      const s = labCheckStatus(result);
-      toast(`${stone.lab || 'Lab'} report ${stone.reportNumber}`, s.text, s.tone === 'fail' ? 'error' : 'ok');
+      const t = labCheckToast(result);
+      toast(`${stone.lab || 'Lab'} report ${stone.reportNumber}`, t.text, t.tone);
     }
   }
   if (!stones.length) return html`<${Section} title="Stones"><${Empty} icon=${Icon.gem} title="No stones traced yet">The Records agent lists each stone once the invoice or packing list is read.<//><//>`;
@@ -167,19 +168,21 @@ export function StonesTable({ stones }) {
         <td>${s.growth ? html`<${Chip} small tone=${/lab/i.test(s.growth) ? 'info' : 'plain'}>${growthLabel(s.growth)}<//>` : ''}</td>
         <td class="num">${(s.sources || []).length}</td>
         <td><${Chip} small tone=${check.tone}>${check.text}<//></td>
-        <td class="right"><button class="btn btn-sm" type="button" onClick=${() => verify(s)} disabled=${!s.reportNumber} title=${`Open ${s.lab || 'the lab'}'s own report check`}>Verify on ${shortLab(s.lab) || 'the lab site'}</button></td>
+        <td class="right"><button class="btn btn-sm" type="button" onClick=${() => verify(s)} disabled=${!canCheckOnline(s)}
+          title=${canCheckOnline(s) ? `Open ${s.lab || 'the lab'}'s own report check` : `${s.lab || 'This lab'} has no online report check`}>Verify on ${shortLab(s.lab) || 'the lab site'}</button></td>
       </tr>`;
     })}</tbody>
   </table></div></div>`;
 }
 
 function ShipmentPapers({ papers, shipment, onBuild }) {
+  const { state } = useApp();
   const actions = usePaperActions();
   return html`<${Section} title="Papers" right=${['ready_to_sign', 'held_for_review'].includes(shipment.status) ? html`<${Button} size="sm" onClick=${onBuild}>Build again<//>` : ''}>
     ${!papers.length ? html`<${Empty} icon=${Icon.doc} title="No papers yet">When every check passes, the Paperwork agent builds the origin pack here.<//>`
       : html`<div class="rows">${papers.map((p) => html`<div class="paper-row" key=${p.id}>
           <div class="main"><div class="line1"><span class="ref">${p.ref} v${p.version || 1}</span><span class="soft">${paperKindLabel(p.kind)}</span><${StatusChip} status=${paperStatus(p.status)} small /></div>
-            <div class="note">${paperNote(p)}</div></div>
+            <div class="note">${paperNoteFor(p, state)}</div></div>
           <${PaperButtons} paper=${p} actions=${actions} />
         </div>`)}</div>`}
     ${actions.modals}

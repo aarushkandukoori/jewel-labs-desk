@@ -26,6 +26,8 @@ Rules
    - HS codes as digits only ("71023910").
    - goods.nature is "natural" or "lab-grown", only with evidence on the paper: CVD, HPHT, "lab grown",
      "laboratory grown", LGD, an LG report number or HS 7104 mean lab-grown; HS 7102 or "natural diamonds" mean natural.
+     HPHT-treated or HPHT-processed natural stones are natural; "not lab-grown", "non-synthetic" and "no CVD/HPHT"
+     mean natural.
    - goods.form is "rough", "polished" or "jewelry", only with evidence (HS 7102.10, 7102.21, 7102.31, 7104.21 rough;
      7102.39, 7104.91 polished; 7113 jewelry; or the goods description).
 3. quote is the exact characters printed for the value: same case, spacing and punctuation, without the label.
@@ -50,7 +52,8 @@ const KEYS = {
     'buyer.address', 'buyer.country', 'supplier.name', 'supplier.address', 'supplier.country', 'goods.description',
     'goods.nature', 'goods.form', 'goods.hsCode', 'goods.totalPieces', 'goods.totalCarats', 'goods.totalValue',
     'goods.currency', 'goods.countryOfOrigin', 'goods.destinationCountry', 'goods.incoterm', 'goods.portOfLoading',
-    'goods.portOfDischarge', 'awb.hawb', 'awb.mawb', 'kp.certificateNumber', 'kp.countriesOfMining', 'declaration.text',
+    'goods.portOfDischarge', 'goods.packages', 'awb.hawb', 'awb.mawb', 'kp.certificateNumber', 'kp.countriesOfMining',
+    'declaration.text',
   ],
   packing_list: [
     'doc.number', 'doc.date', 'invoice.number', 'invoice.date', 'exporter.name', 'exporter.address', 'exporter.country',
@@ -74,16 +77,16 @@ const KEYS = {
     'consignee.country', 'broker.name', 'invoice.number', 'invoice.date', 'goods.description', 'goods.nature',
     'goods.form', 'goods.hsCode', 'goods.totalPieces', 'goods.totalCarats', 'goods.totalValue', 'goods.currency',
     'goods.countryOfOrigin', 'goods.destinationCountry', 'goods.portOfLoading', 'goods.portOfDischarge',
-    'goods.grossWeight', 'goods.netWeight', 'goods.incoterm', 'payment.terms', 'awb.hawb', 'awb.mawb',
+    'goods.grossWeight', 'goods.netWeight', 'goods.packages', 'goods.incoterm', 'payment.terms', 'awb.hawb', 'awb.mawb',
   ],
   air_waybill: [
     'awb.hawb', 'awb.mawb', 'awb.flight', 'awb.date', 'awb.route', 'carrier.name', 'exporter.name', 'exporter.address',
     'exporter.country', 'consignee.name', 'consignee.address', 'consignee.country', 'goods.description',
-    'goods.grossWeight', 'goods.totalValue', 'goods.currency', 'goods.portOfLoading', 'goods.portOfDischarge',
-    'invoice.number',
+    'goods.grossWeight', 'goods.packages', 'goods.totalValue', 'goods.currency', 'goods.portOfLoading',
+    'goods.portOfDischarge', 'invoice.number',
   ],
   insurance: [
-    'doc.number', 'doc.date', 'insurance.policyNumber', 'insurance.insuredValue', 'insurer.name', 'carrier.name',
+    'doc.number', 'doc.date', 'insurance.policyNumber', 'insurance.insuredValue', 'insurer.name', 'insured.name', 'carrier.name',
     'exporter.name', 'consignee.name', 'consignee.address', 'consignee.country', 'awb.hawb', 'awb.mawb', 'awb.flight',
     'awb.route', 'goods.description', 'goods.nature', 'goods.form', 'goods.totalCarats', 'goods.currency',
     'invoice.number',
@@ -119,14 +122,17 @@ declaration). The SB No line often reads "7812345 / 03/11/2026": number, then da
 date. exporter.taxId is the IEC code, without the word IEC. The CHA (customs house agent) is broker.name; drop any code
 printed before its name. Read the exporter and
 consignee blocks, the invoice number and date, the invoice or FOB value with its currency, the ports, the country of
-destination and the weights. Lines: one per item row of the invoice details, if printed.`,
+destination and the weights. goods.packages is the number of pieces or packages as printed (No. of pieces), never the
+stone count. Lines: one per item row of the invoice details, if printed.`,
   air_waybill: `An air waybill (house or master). awb.hawb is the house number; awb.mawb is the master number (airline
 prefix and 8 digits, written 176-12345678). awb.route is the airports from and to, as printed. The shipper is
-exporter.*; carrier.name is the issuing carrier or the secure courier. No lines.`,
+exporter.*; carrier.name is the issuing carrier or the secure courier. goods.packages is the number of pieces or
+packages as printed (No. of pieces), never the stone count. No lines.`,
   insurance: `An insurance certificate. The certificate number (doc.number), the policy number, insured value (currency
-in goods.currency), the insurer, the consignee, the shipper as exporter.name, the invoice number and air waybill numbers
-and flight if printed, and the goods description and carats from the insured interest. carrier.name only when a company
-is named, never the way the parcel travels ("air freight"). No lines.`,
+in goods.currency), the insurer, the shipper as exporter.name, the invoice number and air waybill numbers and flight if
+printed, and the goods description and carats from the insured interest. The insured (the party the cover is for, "for
+account of") goes in insured.name, never in consignee.name; consignee.* only when a separate consignee is printed.
+carrier.name only when a company is named, never the way the parcel travels ("air freight"). No lines.`,
   declaration: `A supplier declaration, System of Warranties, or G7 / grandfathered declaration. Copy each declaration
 sentence into declarations and the main one into declaration.text. Read the parties, the invoice it covers and any mining
 countries. Lines only if stones are listed.`,

@@ -16,6 +16,9 @@ files:
   - assets/**
   - samples/sample-shipment/**
   - package.json
+  # The app's own license and the index of the third-party notices (their full texts ship with src/ and node_modules/).
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
   - "!**/*.test.js"
   - "!**/__tests__/**"
   - "!test/**"
@@ -42,6 +45,20 @@ asarUnpack:
 # Everything here is plain JavaScript and WebAssembly: there are no native modules to rebuild.
 npmRebuild: false
 
+# Electron fuses, flipped in the app binary itself. Without them, starting the installed app with
+# ELECTRON_RUN_AS_NODE=1, NODE_OPTIONS or --inspect would run any code under the app's identity, which the
+# Keychain item (the OpenAI key, mailbox app passwords, the sign-in) and the Documents/Desktop grants trust.
+# The app code must come from app.asar, checked against its hash in Info.plist (or the Windows exe resource).
+# Our pages load from app:// (src/main/window.js), never from file://, so file:// pages get no extra privileges.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  enableCookieEncryption: true
+  grantFileProtocolExtraPrivileges: false
+
 mac:
   target:
     - target: dmg
@@ -51,7 +68,10 @@ mac:
   category: public.app-category.business
   artifactName: "Jewel-Labs-mac-${arch}.${ext}"
   icon: build/icon.png
-  hardenedRuntime: false
+  # The hardened runtime stops other programs from injecting code (DYLD_INSERT_LIBRARIES) or attaching a
+  # debugger. electron-builder signs with its usual Electron entitlements (JIT for V8 and WebAssembly, and
+  # library validation off, which an ad hoc signature needs to load the Electron framework).
+  hardenedRuntime: true
   gatekeeperAssess: false
   # We have no Apple Developer ID. "-" signs the app ad hoc: without any signature, macOS calls a
   # downloaded Apple silicon app "damaged" and offers no way to open it. With the ad hoc signature

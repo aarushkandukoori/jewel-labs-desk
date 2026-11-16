@@ -2,15 +2,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PROVIDERS, MAX_MESSAGES_PER_POLL, serverFor, connectMailbox, sendMail, matchesDomains, listOf, friendlyMailError,
+  PROVIDERS, MAX_MESSAGES_PER_POLL, MAX_MESSAGE_BYTES, serverFor, connectMailbox, sendMail, matchesDomains, cleanDomains, listOf, friendlyMailError,
 } from '../../src/core/mail/index.js';
 
 // Built at runtime so nothing in the repo looks like a real password.
 const PASS = ['test', 'only', 'app', 'pass'].join('-');
 
-/** A stand-in for imapflow's ImapFlow class. It remembers every call so the tests can check them. */
-function fakeImap({ messages = [], failConnect = null } = {}) {
+/**
+ * A stand-in for imapflow's ImapFlow class. It remembers every call so the tests can check them.
+ * box.uidValidity can be changed to act as a server that renumbered its inbox.
+ */
+function fakeImap({ messages = [], failConnect = null, uidValidity = 7n } = {}) {
   const calls = { options: null, searches: [], fetches: [], locks: 0, released: 0, loggedOut: 0 };
+  const box = { uidValidity };
   class FakeImap {
     constructor(options) { calls.options = options; this.usable = false; this.mailbox = null; this.listeners = {}; }
     on(name, fn) { this.listeners[name] = fn; }
@@ -20,11 +24,18 @@ function fakeImap({ messages = [], failConnect = null } = {}) {
     }
     async getMailboxLock(path) {
       calls.locks += 1;
-      this.mailbox = { path, exists: messages.length };
+      const uidNext = Math.max(0, ...messages.map((m) => m.uid)) + 1;
+      this.mailbox = { path, exists: messages.length, uidValidity: box.uidValidity, uidNext };
       return { release: () => { calls.released += 1; } };
     }
     async search(query, options) {
       calls.searches.push({ query, options });
+      if (query.uid) {
+        // Like a real server: "n:*" also gives the last message when nothing is newer than n.
+        const from = Number(String(query.uid).split(':')[0]);
+        const newer = messages.filter((m) => m.uid >= from).map((m) => m.uid);
+        return newer.length ? newer : messages.slice(-1).map((m) => m.uid);
+      }
       return messages.filter((m) => m.internalDate >= query.since).map((m) => m.uid);
     }
     async *fetch(range, query, options) {
@@ -32,6 +43,7 @@ function fakeImap({ messages = [], failConnect = null } = {}) {
       for (const m of messages) {
         if (!range.includes(m.uid)) continue;
         const out = { uid: m.uid, envelope: m.envelope };
+        if (query.size) out.size = m.size ?? Buffer.byteLength(m.raw);
         if (query.internalDate) out.internalDate = m.internalDate;
         if (query.source) out.source = Buffer.from(m.raw);
         yield out;
@@ -39,7 +51,7 @@ function fakeImap({ messages = [], failConnect = null } = {}) {
     }
     async logout() { calls.loggedOut += 1; this.usable = false; }
   }
-  return { FakeImap, calls };
+  return { FakeImap, calls, box };
 }
 
 function message(uid, from, subject, day = 10) {
@@ -87,6 +99,7 @@ test('test() signs in with imapflow settings and releases the inbox lock', async
   assert.equal(calls.options.host, 'imap.gmail.com');
   assert.equal(calls.options.port, 993);
   assert.equal(calls.options.secure, true);
+  assert.equal(calls.options.doSTARTTLS, undefined, 'TLS from the start: no STARTTLS');
   assert.equal(calls.options.logger, false);
   assert.deepEqual(calls.options.auth, { user: 'clerk@house.example', pass: PASS });
   assert.equal(calls.released, calls.locks);
@@ -105,9 +118,13 @@ test('fetchSince searches by date, filters by domain and returns the raw .eml', 
   const box = connectMailbox({ provider: 'zoho', email: 'clerk@house.example', appPassword: PASS }, { ImapClient: FakeImap });
   const since = new Date(Date.UTC(2026, 10, 10));
   const got = await box.fetchSince(since, { domains: ['broker.example', '@cargo.example'] });
-  assert.equal(calls.searches[0].query.since.getTime(), since.getTime());
+  // A day early: the server counts days in its own time zone. Repeats are skipped by the worker.
+  assert.equal(calls.searches[0].query.since.getTime(), since.getTime() - 24 * 3600 * 1000);
   assert.deepEqual(calls.searches[0].options, { uid: true });
   assert.deepEqual(got.map((m) => m.uid), [2, 4]);
+  assert.equal(got.lastUid, 4, 'the next call goes on after the last message looked at');
+  assert.equal(got.uidValidity, '7');
+  assert.equal(got.more, false);
   assert.equal(got[0].from, 'ops@broker.example');
   assert.equal(got[0].subject, 'Invoice EXP/26-27/28');
   assert.equal(got[0].messageId, '<m2@example.test>');
@@ -120,15 +137,55 @@ test('fetchSince searches by date, filters by domain and returns the raw .eml', 
   assert.equal(calls.released, calls.locks);
 });
 
-test('fetchSince with no domains keeps everything and caps one poll at 200 messages', async () => {
-  const msgs = Array.from({ length: 250 }, (_, i) => message(i + 1, `p${i}@x.example`, `Mail ${i + 1}`, 12));
+test('fetchSince with no domains brings in no mail at all', async () => {
+  const msgs = Array.from({ length: 5 }, (_, i) => message(i + 1, `p${i}@x.example`, `Mail ${i + 1}`, 12));
   const { FakeImap, calls } = fakeImap({ messages: msgs });
   const box = connectMailbox({ provider: 'yahoo', email: 'clerk@house.example', appPassword: PASS }, { ImapClient: FakeImap });
   const got = await box.fetchSince('2026-11-01T00:00:00Z');
+  assert.deepEqual(got.map((m) => m.uid), []);
+  assert.equal(calls.fetches.length, 0, 'not even the headers are read');
+  assert.equal((await box.fetchSince('2026-11-01T00:00:00Z', { domains: '  ' })).length, 0);
+});
+
+test('fetchSince goes through a big inbox oldest first, a page at a time, and misses nothing', async () => {
+  // 30 partner emails on the 10th, then 270 other messages: more than one page.
+  const msgs = [
+    ...Array.from({ length: 30 }, (_, i) => message(i + 1, `ops${i}@broker.example`, `Invoice ${i + 1}`, 10)),
+    ...Array.from({ length: 270 }, (_, i) => message(31 + i, `news${i}@shop.example`, `Sale ${i}`, 11)),
+  ];
+  const { FakeImap, calls } = fakeImap({ messages: msgs });
+  const box = connectMailbox({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS }, { ImapClient: FakeImap });
   assert.equal(MAX_MESSAGES_PER_POLL, 200);
-  assert.equal(got.length, 200);
-  assert.equal(got[0].uid, 51); // the newest 200 are kept
-  assert.equal(calls.fetches.length, 1); // no domain filter means a single pass
+  const first = await box.fetchSince(new Date(Date.UTC(2026, 10, 9)), { domains: 'broker.example' });
+  assert.equal(first.length, 30, 'the oldest page holds all the partner mail');
+  assert.deepEqual([first.lastUid, first.more], [200, true]);
+  const second = await box.fetchSince(new Date(Date.UTC(2026, 10, 9)), { domains: 'broker.example', afterUid: first.lastUid, uidValidity: first.uidValidity });
+  assert.deepEqual(calls.searches[1].query, { uid: '201:*' });
+  assert.deepEqual([second.length, second.lastUid, second.more], [0, 300, false]);
+  // Nothing new: "301:*" gives the last message back, which is not counted again.
+  const third = await box.fetchSince(new Date(Date.UTC(2026, 10, 9)), { domains: 'broker.example', afterUid: 300, uidValidity: '7' });
+  assert.deepEqual([third.length, third.lastUid, third.more], [0, 300, false]);
+});
+
+test('fetchSince starts again from the date when the server renumbered the inbox', async () => {
+  const msgs = [message(1, 'ops@broker.example', 'Invoice', 12)];
+  const { FakeImap, calls, box: server } = fakeImap({ messages: msgs });
+  const box = connectMailbox({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS }, { ImapClient: FakeImap });
+  server.uidValidity = 8n;
+  const got = await box.fetchSince(new Date(Date.UTC(2026, 10, 11)), { domains: 'broker.example', afterUid: 500, uidValidity: '7' });
+  assert.ok(calls.searches[0].query.since instanceof Date, 'a date search, not the old numbers');
+  assert.deepEqual(got.map((m) => m.uid), [1]);
+  assert.equal(got.uidValidity, '8');
+});
+
+test('IMAP on another port than 993 must upgrade with STARTTLS', async () => {
+  const { FakeImap, calls } = fakeImap();
+  const box = connectMailbox({ provider: 'custom', host: 'imap.house.example', port: 143, email: 'clerk@house.example', appPassword: PASS }, { ImapClient: FakeImap });
+  await box.test();
+  assert.equal(calls.options.secure, false);
+  assert.equal(calls.options.doSTARTTLS, true);
+  const refused = friendlyMailError(Object.assign(new Error('Server does not support STARTTLS'), { tlsFailed: true }));
+  assert.match(refused.message, /does not offer an encrypted connection/);
 });
 
 test('a refused login becomes one plain sentence', async () => {
@@ -144,7 +201,7 @@ test('matchesDomains looks at the sender and copies, not the house itself', () =
   const env = { from: [{ address: 'ops@broker.example' }], to: [{ address: 'clerk@house.example' }] };
   assert.equal(matchesDomains(env, ['broker.example']), true);
   assert.equal(matchesDomains(env, ['house.example']), false);
-  assert.equal(matchesDomains(env, []), true);
+  assert.equal(matchesDomains(env, []), false, 'no domains: nothing matches');
   assert.equal(matchesDomains({ from: [{ address: 'x@sub.broker.example' }] }, 'broker.example'), true);
   assert.equal(matchesDomains({ cc: [{ address: 'y@broker.example' }] }, ['www.broker.example']), true);
 });
@@ -188,7 +245,25 @@ test('sendMail on port 465 uses TLS from the start, and needs a recipient', asyn
   await assert.rejects(sendMail({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, to: '' }, { createTransport }), /who to send it to/);
 });
 
+test('cleanDomains takes domains typed any way', () => {
+  assert.deepEqual(cleanDomains('Broker.example, @lab.example https://www.air.example/x; broker.example'), ['broker.example', 'lab.example', 'air.example']);
+  assert.deepEqual(cleanDomains(undefined), []);
+});
+
 test('listOf splits address lists', () => {
   assert.deepEqual(listOf('a@x.example; b@y.example, '), ['a@x.example', 'b@y.example']);
   assert.deepEqual(listOf(undefined), []);
+});
+
+test('fetchSince does not download a message over 50 MB: it lists it in tooBig instead', async () => {
+  const big = { ...message(2, 'ops@broker.example', 'All the scans', 12), size: MAX_MESSAGE_BYTES + 1 };
+  const msgs = [message(1, 'ops@broker.example', 'Invoice EXP/26-27/28', 11), big, { ...message(3, 'news@shop.example', 'Huge newsletter', 12), size: MAX_MESSAGE_BYTES * 2 }];
+  const { FakeImap, calls } = fakeImap({ messages: msgs });
+  const box = connectMailbox({ provider: 'zoho', email: 'clerk@house.example', appPassword: PASS }, { ImapClient: FakeImap });
+  const got = await box.fetchSince(new Date(Date.UTC(2026, 10, 10)), { domains: ['broker.example'] });
+  assert.deepEqual(got.map((m) => m.uid), [1]);
+  assert.deepEqual(got.tooBig, [{ uid: 2, from: 'ops@broker.example', subject: 'All the scans', size: MAX_MESSAGE_BYTES + 1 }], 'only mail from the domains is named');
+  assert.equal(calls.fetches[0].query.size, true, 'the size comes with the headers');
+  assert.ok(!calls.fetches.some((f) => f.query.source && f.range.includes(2)), 'the big one is never downloaded');
+  assert.equal(got.lastUid, 3, 'and the cursor goes past it');
 });

@@ -5,7 +5,7 @@ import {
   COLOR, CONTENT_WIDTH, MARGIN, PAGE, RIGHT_EDGE,
   drawCaps, drawChipOn, drawText, embedFonts, fitLine, readLayout, sha256Hex, writeLayout,
 } from './layout.js';
-import { formatDateTime, parseDate } from './format.js';
+import { formatDateTime, formatSlashDate, parseIsoDay } from './format.js';
 
 async function embedSignature(doc, dataUrl) {
   if (!dataUrl) return null;
@@ -25,6 +25,8 @@ function writeSigner(page, fonts, block, signer) {
   writeOnLine(page, fonts, block.name, signer.name);
   writeOnLine(page, fonts, block.title, signer.title);
   writeOnLine(page, fonts, block.date, signer.when);
+  // A statement's own "Date of declaration" line: the day it is signed, in the template's format.
+  writeOnLine(page, fonts, block.day, signer.day, 8.5);
   if (!block.sig) return;
   if (signer.image) {
     // Fit the drawn signature right of the small "Signature" label, keeping its shape.
@@ -77,11 +79,12 @@ export async function signPdf(bytes, { name, title = '', signedAt = new Date(), 
   if (layout?.signed) throw new Error('This paper is already signed. Build a new version to change it.');
 
   const fonts = await embedFonts(doc);
-  const at = parseDate(signedAt) || new Date();
+  const at = parseIsoDay(signedAt) || new Date();
   const signer = {
     name: String(name).trim(),
     title: String(title || '').trim(),
     when: formatDateTime(at),
+    day: formatSlashDate(at),
     image: await embedSignature(doc, signatureDataUrl),
   };
   const pages = doc.getPages();
@@ -89,7 +92,7 @@ export async function signPdf(bytes, { name, title = '', signedAt = new Date(), 
   for (const block of layout?.blocks || []) {
     if (block.role !== 'signer' || !pages[block.p]) continue;
     writeSigner(pages[block.p], fonts, block, signer);
-    written += 1;
+    if (block.sig || block.name) written += 1; // a date line alone is not a place for the signature
   }
   for (const chip of layout?.chips || []) {
     if (pages[chip.p]) restamp(pages[chip.p], fonts, chip);

@@ -7,7 +7,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const METHODS = {
   app: ['info', 'openExternal', 'showItem', 'qr', 'checkUpdate'],
   auth: ['status', 'signIn', 'signUp', 'signOut'],
-  workspaces: ['list', 'create', 'select', 'current', 'update', 'join', 'invite', 'members'],
+  workspaces: ['list', 'create', 'select', 'current', 'update', 'join', 'invite', 'revoke', 'members'],
   docs: ['pick', 'add', 'list', 'get', 'file', 'remove'],
   shipments: ['list', 'get', 'update'],
   stones: ['list', 'history', 'verify'],

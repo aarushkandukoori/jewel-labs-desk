@@ -16,8 +16,9 @@ export async function checkShipment(ctx, shipment, screenings = []) {
 
   const result = (await rules.evaluate({ shipment, documents, stones, house, screenings, now: ctx.now() })) || {};
   const checks = await replaceChecks(ctx, shipment, result.checks || []);
-  const { opened, open } = await syncQuestions(ctx, shipment, result.questions || []);
-  const status = decideStatus(result, checks, open, shipment);
+  const { opened, open, unsettled } = await syncQuestions(ctx, shipment, result.questions || []);
+  const deskReview = ctx.houseSetting(house, 'deskReview') === true;
+  const status = decideStatus(result, checks, open, shipment, { unsettled, deskReview });
 
   const updated = await saveShipment(ctx, {
     ...shipment,
@@ -29,7 +30,7 @@ export async function checkShipment(ctx, shipment, screenings = []) {
     checkedAt: ctx.nowIso(),
     rulesVersion: rules.RULES_VERSION || null,
   });
-  await report(ctx, updated, checks, opened);
+  await report(ctx, updated, checks, opened, unsettled);
   return { shipment: updated, checks, opened, open };
 }
 
@@ -62,12 +63,18 @@ function isWaived(shipment, draft) {
   return Boolean(kind && (shipment.notNeeded || []).includes(kind));
 }
 
+/**
+ * Opens the questions the rules ask, keeps the ones still open, and closes open ones that no longer apply.
+ * Returns { opened, open, unsettled }: unsettled are questions a person closed that the rules still ask, because
+ * the answer did not settle them (see isLeftOpen).
+ */
 async function syncQuestions(ctx, shipment, drafts) {
   const { store } = ctx;
   const existing = await store.list('questions', (q) => q.shipmentId === shipment.id);
   const wanted = drafts.filter((d) => d && d.text && !isWaived(shipment, d));
   const wantedKeys = new Set(wanted.map(questionKey));
   const opened = [];
+  const unsettled = [];
 
   for (const draft of wanted) {
     const key = questionKey(draft);
@@ -75,18 +82,22 @@ async function syncQuestions(ctx, shipment, drafts) {
     // Closed earlier by the Review agent and needed again: open it again instead of asking a new one.
     if (same && same.status === 'dismissed' && same.closedBy === REVIEW_AGENT) {
       const reopened = { ...same, ...draft, id: same.id, status: 'open', closedBy: null, closedAt: null, closedReason: null };
-      await store.put('questions', reopened);
-      opened.push(reopened);
+      if (await putIfUnchanged(ctx, same, reopened)) opened.push(reopened);
       continue;
     }
-    // Still open: keep it, in the newest wording (more papers can name the same problem).
+    // Still open: keep it, in the newest wording (more papers can name the same problem). A question asked before
+    // the rules gave it a key or options gets them too, so its answer is stored where the rules read it.
     if (same && same.status === 'open') {
-      if (same.text !== draft.text || same.docId !== (draft.docId ?? same.docId)) {
-        await store.put('questions', { ...same, text: draft.text, docId: draft.docId ?? same.docId, options: draft.options ?? same.options });
+      const next = { ...same, text: draft.text, docId: draft.docId ?? same.docId, options: draft.options ?? same.options, key: draft.key ?? same.key };
+      if (['text', 'docId', 'key'].some((field) => next[field] !== same[field]) || JSON.stringify(next.options) !== JSON.stringify(same.options)) {
+        await putIfUnchanged(ctx, same, next);
       }
       continue;
     }
-    if (same) continue; // answered or dismissed by a person: never ask twice
+    if (same) { // answered or dismissed by a person: never ask twice
+      if (isLeftOpen(same)) unsettled.push(same);
+      continue;
+    }
     const question = { ...draft, id: newId('qst'), shipmentId: shipment.id, status: 'open', askedAt: ctx.nowIso(), askedBy: REVIEW_AGENT };
     await store.put('questions', question);
     opened.push(question);
@@ -94,32 +105,71 @@ async function syncQuestions(ctx, shipment, drafts) {
 
   for (const q of existing) {
     if (q.status !== 'open' || wantedKeys.has(questionKey(q))) continue;
-    await store.put('questions', { ...q, status: 'dismissed', closedBy: REVIEW_AGENT, closedReason: 'No longer needed', closedAt: ctx.nowIso() });
+    await putIfUnchanged(ctx, q, { ...q, status: 'dismissed', closedBy: REVIEW_AGENT, closedReason: 'No longer needed', closedAt: ctx.nowIso() });
   }
   const open = await store.list('questions', (q) => q.shipmentId === shipment.id && q.status === 'open');
-  return { opened, open };
+  return { opened, open, unsettled };
 }
 
 /**
- * The shipment status after the rules. Open questions come first; a failed check holds the pack for a
- * person; a pack the desk already approved stays approved while its papers have not changed.
+ * The Review agent's change to a question is saved only if nobody changed the question since this check read it.
+ * A person who answers while the check runs keeps the answer: it is never put back to open or dismissed.
  */
-export function decideStatus(result, checks, openQuestions, shipment = {}) {
+async function putIfUnchanged(ctx, before, next) {
+  const latest = await ctx.store.get('questions', before.id);
+  if (!latest || latest.status !== before.status) return false;
+  await ctx.store.put('questions', next);
+  return true;
+}
+
+/**
+ * A question the rules still ask after a person closed it. When it has a key, the rules read the answer from that
+ * key, so asking again means the answer did not settle it ("not sure" to "natural or lab-grown?", or dismissed).
+ * A possible OFAC SDN match is cleared only by the answer "Different": "Same", any other answer or a dismissal
+ * leaves it open. Either way the pack is held for a person at Jewel Labs.
+ */
+function isLeftOpen(question) {
+  if (question.check === 'sanctions') return String(question.answer || '').trim().toLowerCase() !== 'different';
+  return Boolean(question.key);
+}
+
+/** The failed checks as "code: detail" lines. A desk approval covers exactly these. */
+export function failedChecks(checks) {
+  return checks.filter((c) => c.severity === 'fail').map((c) => `${c.code}: ${c.detail || c.title || ''}`).sort();
+}
+
+/**
+ * True when the desk approved the shipment as it is now: the same papers and answers, and the same failed checks.
+ * A check that fails anew (a party newly on the OFAC SDN list, say) holds the pack for the desk again.
+ */
+export function deskApproves(shipment, checks) {
+  const approval = shipment?.deskApproved;
+  if (!approval || approval.basis !== shipment.checkedBasis) return false;
+  return JSON.stringify(approval.failing || []) === JSON.stringify(failedChecks(checks));
+}
+
+/**
+ * The shipment status after the rules. Open questions come first. A failed check, a possible OFAC SDN match nobody
+ * cleared, or a house that has the desk review every pack, holds it for a person at Jewel Labs; what the desk
+ * approved stays approved while nothing changed.
+ * options: { unsettled: questions left open by a person (see syncQuestions), deskReview: the house setting }.
+ */
+export function decideStatus(result, checks, openQuestions, shipment = {}, { unsettled = [], deskReview = false } = {}) {
   if (openQuestions.length) return 'questions';
-  const failed = checks.some((c) => c.severity === 'fail') || result.status === 'held_for_review';
-  if (failed) {
-    const approved = shipment.deskApproved && shipment.deskApproved.basis === shipment.checkedBasis;
-    return approved ? 'ready_to_sign' : 'held_for_review';
-  }
   if (!result.status && !checks.length) return 'collecting'; // the rules found nothing to check yet
+  const failed = checks.some((c) => c.severity === 'fail') || result.status === 'held_for_review' || unsettled.length > 0;
+  if (failed || deskReview) return deskApproves(shipment, checks) ? 'ready_to_sign' : 'held_for_review';
   if (!result.status || result.status === 'questions') return 'ready_to_sign'; // every question is answered or not needed
   return result.status;
 }
 
-async function report(ctx, shipment, checks, opened) {
+async function report(ctx, shipment, checks, opened, unsettled = []) {
   const name = shipment.ref || 'the shipment';
   for (const check of checks.filter((c) => c.severity === 'warn' || c.severity === 'fail')) {
     ctx.agentEvent('origin', 'check', `${check.title}${check.detail ? `: ${check.detail}` : ''}`, { shipmentId: shipment.id });
+  }
+  for (const q of unsettled) {
+    ctx.agentEvent('review', 'check', `Not cleared: ${q.text} The pack waits for a person at Jewel Labs.`, { shipmentId: shipment.id });
   }
   // The same count the papers print ("Consistent 17 of 18 checks"): passes and notes, out of every check.
   const passed = shipment.summary?.total === checks.length

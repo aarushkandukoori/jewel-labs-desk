@@ -11,4 +11,5 @@ test/.tmp/
 coverage/
 site-dist/
 backend/supabase/.env
-backend/supabase/.temp/
+**/supabase/.temp/
+dist-selfcheck/

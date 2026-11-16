@@ -415,9 +415,12 @@ function describeShipment({ id, base, group, house, refsById }) {
     hawb,
     mawb,
     flight: first('awb.flight', awbFirst),
+    // Packages in the consignment, as the air waybill counts them first (the handover cover prints it).
+    packages: parseNumber(first('goods.packages', awbFirst)),
     goods: {
       nature: goods.nature,
       form: goods.form,
+      loose: goods.loose,
       hsCodes: goods.hsCodes,
       description: first('goods.description'),
     },

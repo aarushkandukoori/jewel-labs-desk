@@ -290,7 +290,9 @@ function round(n) {
 
 /**
  * Two-column rows (label | value) with hairlines, like the reference papers.
- * row: { label, value, note?, mono?, chip?, muted? }. A missing value prints "Not on file" in grey.
+ * row: { label, value, note?, mono?, chip?, muted?, writeIn? }. A missing value prints "Not on file" in grey.
+ * writeIn: a missing value is a field to fill in by hand, so a line to write on is drawn instead. With
+ * writeIn: { role }, signPdf writes the signing day (15/11/2026) on that line when it signs for that role.
  */
 export function drawRows(ctx, rows, { labelWidth = 165, size = 8.5, pad = 5 } = {}) {
   const { fonts } = ctx;
@@ -299,10 +301,12 @@ export function drawRows(ctx, rows, { labelWidth = 165, size = 8.5, pad = 5 } = 
   const valueWidth = RIGHT_EDGE - valueX - 4;
   let first = true;
   for (const row of rows) {
-    const missing = row.value === null || row.value === undefined || String(row.value).trim() === '';
+    const blank = row.value === null || row.value === undefined || String(row.value).trim() === '';
+    const writeIn = Boolean(row.writeIn) && blank && !row.chip;
+    const missing = blank && !writeIn;
     const valueFont = row.mono ? fonts.mono : fonts.regular;
     const valueSize = row.mono ? size - 0.5 : size;
-    const valueLines = row.chip ? [''] : capLines(wrap(missing ? 'Not on file' : row.value, valueFont, valueSize, valueWidth), 24, valueFont, valueSize, valueWidth);
+    const valueLines = row.chip || writeIn ? [''] : capLines(wrap(missing ? 'Not on file' : row.value, valueFont, valueSize, valueWidth), 24, valueFont, valueSize, valueWidth);
     const noteLines = row.note ? capLines(wrap(row.note, fonts.regular, size - 1, valueWidth), 8, fonts.regular, size - 1, valueWidth) : [];
     const labelLines = wrap(row.label, fonts.medium, size, labelWidth - 14);
     const height = pad * 2 + Math.max(labelLines.length * lead, valueLines.length * lead + noteLines.length * (lead - 1.5));
@@ -315,6 +319,10 @@ export function drawRows(ctx, rows, { labelWidth = 165, size = 8.5, pad = 5 } = 
     labelLines.forEach((line, i) => drawText(page, line, MARGIN.left + 6, baseline - i * lead, { font: fonts.medium, size }));
     if (row.chip) {
       drawChip(ctx, row.chip, valueX, baseline - 3.5, { register: row.registerChip !== false });
+    } else if (writeIn) {
+      const line = { x: round(valueX), y: round(baseline - 2.5), w: round(Math.min(160, valueWidth)), h: round(size) };
+      page.drawLine({ start: { x: line.x, y: line.y }, end: { x: line.x + line.w, y: line.y }, thickness: 0.5, color: COLOR.soft });
+      if (row.writeIn.role) ctx.marks.blocks.push({ p: ctx.pageIndex, role: row.writeIn.role, name: null, title: null, sig: null, date: null, day: line });
     } else {
       const color = missing || row.muted ? COLOR.muted : COLOR.ink;
       valueLines.forEach((line, i) => drawText(page, line, valueX, baseline - i * lead, { font: valueFont, size: valueSize, color }));

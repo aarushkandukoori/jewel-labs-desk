@@ -3,6 +3,7 @@
 // Every row it returns has the Line shape from types.js (missing values are null).
 
 import { parseNumber, oneLine } from './text.js';
+import { natureFromText } from '../rules/formats.js';
 
 const REPORT_RE = /(?<![\w.,])(LG\s?\d{8,10}|\d{9,10})(?![\w]|[.,]\d)/i;
 const LAB_RE = /\b(GIA|IGI|HRD|GCAL|GSI|AGS|EGL|IIDGR|SGL)\b/;
@@ -17,19 +18,20 @@ const SHAPE_WORDS_RE = new RegExp(
   'i',
 );
 const SHAPE_CODES_RE = /\b(RBC|RND|RD|BR|OV|OVL|PS|PR|PRN|EM|EMD|CU|CUS|CMB|MQ|MAR|HT|HRT|AS|ASH|RAD|RA|BAG|BG|TRI|SQ|SEM)\b/;
-const LAB_GROWN_RE = /\b(CVD|HPHT|LGD|lab[\s-]?grown|laboratory[\s-]grown|man[\s-]?made|synthetic)\b/i;
-const NATURAL_RE = /\bnatural\b/i;
 const UNIT_CARAT_RE = /(?<![\w.,])(\d{1,5}(?:,\d{3})*\.\d{1,3})\s*(?:cts?|carats?|crts?)\b/i;
 const PIECES_RE = /(?<![\w.,])(\d{1,6})\s*(?:pcs|pc|pieces|nos)\b/i;
 const TOTAL_ROW_RE = /^\W*(?:sub[\s-]*)?total\b|\bgrand\s+total\b/i;
 const HS_RE = /(?<![\d.])(71(?:02|04|13)(?:\.\d{2}(?:\.?\d{2})?|\d{4}))(?!\d)/;
 const DESCRIPTION_RE = /((?:[A-Za-z&]+[\s,]+){0,5}diamonds?\b(?:[\s,]+[A-Za-z&]+){0,3})/i;
 
-/** 'natural', 'lab-grown' or null, from words like CVD, HPHT, "lab grown", "natural", or an LG report number. */
+/**
+ * 'natural', 'lab-grown' or null, from words like CVD, HPHT, "lab grown", "natural", or an LG report number. Read the
+ * way the rules read it (natureFromText): "not lab-grown", "no CVD/HPHT" and "HPHT treated natural" are natural.
+ */
 export function growthFrom(text, reportNumber = null) {
-  if (LAB_GROWN_RE.test(String(text || '')) || /^LG/i.test(reportNumber || '')) return 'lab-grown';
-  if (NATURAL_RE.test(String(text || ''))) return 'natural';
-  return null;
+  const nature = natureFromText(text);
+  if (nature === 'lab-grown' || /^LG/i.test(reportNumber || '')) return 'lab-grown';
+  return nature;
 }
 
 /** Clean one token: drop brackets and trailing punctuation. */

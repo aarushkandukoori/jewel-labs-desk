@@ -179,7 +179,7 @@ try {
   await sleep(600);
   await pointAt(page.locator('.needs-row', { hasText: /Packing list for KG\/26-27\/041/ }));
   await sleep(1300);
-  await pointAt(page.locator('.q-row', { hasText: /0\.70 ct/ }));
+  await pointAt(page.locator('.q-row', { hasText: /Report 7391020002 weighs/ }));
   mark('questions');
   await sleep(1800);
 
@@ -192,10 +192,28 @@ try {
   mark('packing list drafted');
   await sleep(2600);
 
-  const question = page.locator('.q-row', { hasText: /0\.70 ct/ });
+  // The draft counts as the packing list once the clerk has checked it against the parcel.
+  const draft = page.locator('.q-row', { hasText: /drafted the packing list for KG\/26-27\/041/ });
+  await scrollTo(draft, 220);
+  await sleep(1000);
+  await click(draft.getByRole('button', { name: 'Yes, use it as our packing list' }), 1200);
+  await recording.pause();
+  await agentsIdle();
+  await recording.resume();
+
+  // Which weight is right: the lab report's 0.70 ct.
+  const question = page.locator('.q-row', { hasText: /Report 7391020002 weighs/ });
   await scrollTo(question, 220);
-  await type(question.locator('input.ans'), '0.70 ct, as on the lab report');
-  await click(question.getByRole('button', { name: 'Answer' }), 1200);
+  await sleep(800);
+  await click(question.getByRole('button', { name: '0.70 ct', exact: true }), 1200);
+  await recording.pause();
+  await agentsIdle();
+  await recording.resume();
+  // The invoice and the packing list still print 0.71 ct: the clerk ships with that difference.
+  const accept = page.locator('.q-row', { hasText: /ship with this difference/ });
+  await scrollTo(accept, 220);
+  await sleep(1000);
+  await click(accept.getByRole('button', { name: 'Ship with this difference' }), 1200);
   await recording.pause();
   await agentsIdle();
   await recording.resume();

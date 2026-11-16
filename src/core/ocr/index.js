@@ -1,6 +1,8 @@
 // OCR for photos and scans: tesseract.js with the English model that ships with the app.
 // Nothing is downloaded: the model is read from node_modules/@tesseract.js-data/eng on this computer.
-// One worker is started on first use and reused for every image; terminateOcr() stops it.
+// One worker is started on first use and reused for the next images; terminateOcr() stops it. Its memory
+// (WebAssembly) grows to fit the biggest page it has read and is never given back, and the app runs all
+// day in the tray, so the worker is also stopped after a minute without work and replaced after 50 images.
 //
 // Word boxes are [x0, y0, x1, y1] from 0 to 1 with the origin at the top left of the image.
 // Scanned PDF pages are turned into images by the Electron side first, then read here.
@@ -17,11 +19,26 @@ const MODEL = '4.0.0_best_int'; // the "best int" English model: accurate and sm
 const START_TIMEOUT_MS = 60_000;
 const READ_TIMEOUT_MS = 180_000;
 const READABLE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp'];
+const DEFAULT_LIMITS = { idleMs: 60_000, imagesPerWorker: 50 };
 // Packages the OCR worker thread loads by itself (it runs tesseract.js/src/worker-script/node/index.js).
 const WORKER_PACKAGES = ['bmp-js', 'is-url', 'regenerator-runtime/runtime', 'wasm-feature-detect', 'tesseract.js-core/package.json'];
 
 let workerPromise = null; // the shared worker, started on first use
 let queue = Promise.resolve(); // images are read one at a time
+let waiting = 0; // images asked for and not read yet
+let imagesRead = 0; // by the current worker
+let idleTimer = null;
+let limits = DEFAULT_LIMITS;
+
+/** For tests: a shorter idle time or fewer images per worker. No argument puts the defaults back. */
+export function setOcrLimits(next = {}) {
+  limits = { ...DEFAULT_LIMITS, ...next };
+}
+
+/** Whether a worker is running, and how many images it has read. */
+export function ocrStatus() {
+  return { running: Boolean(workerPromise), imagesRead };
+}
 
 /** The folder holding eng.traineddata.gz. */
 export function modelDir() {
@@ -50,15 +67,22 @@ export function ocrOptions() {
  */
 export function ocrImage(bytes, options = {}) {
   const page = options?.page ?? 1;
-  const job = queue.then(() => readImage(toBytes(bytes), page));
+  waiting += 1;
+  clearTimeout(idleTimer);
+  const job = queue.then(() => readImage(toBytes(bytes), page)).finally(() => {
+    waiting -= 1;
+    if (waiting === 0) stopWhenIdle();
+  });
   queue = job.catch(() => {});
   return job;
 }
 
-/** Stops the OCR worker (when the app quits). The next ocrImage call starts a new one. */
+/** Stops the OCR worker (when the app quits, or when it is idle). The next ocrImage call starts a new one. */
 export async function terminateOcr() {
+  clearTimeout(idleTimer);
   const current = workerPromise;
   workerPromise = null;
+  imagesRead = 0;
   if (!current) return;
   try {
     const worker = await current;
@@ -79,11 +103,25 @@ async function readImage(data, page) {
       READ_TIMEOUT_MS,
       'it took longer than 3 minutes',
     );
+    imagesRead += 1;
+    if (imagesRead >= limits.imagesPerWorker) await terminateOcr(); // a fresh worker starts small again
     return readTsv(result.data.tsv, result.data.text, page);
   } catch (err) {
     await terminateOcr(); // a stuck or broken worker is replaced on the next call
     return emptyResult(`OCR failed: ${err?.message || err}`);
   }
+}
+
+// After the last image, wait a while; if nothing new came, stop the worker. It goes through the queue, so it
+// never stops a worker in the middle of a read.
+function stopWhenIdle() {
+  clearTimeout(idleTimer);
+  if (!workerPromise) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    queue = queue.then(() => (waiting === 0 ? terminateOcr() : undefined));
+  }, limits.idleMs);
+  idleTimer.unref?.(); // a waiting timer alone should not keep the app running
 }
 
 function getWorker() {

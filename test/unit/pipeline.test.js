@@ -14,6 +14,9 @@ import { questionKey, decideStatus } from '../../src/core/pipeline/origin-stage.
 import { applyAnswers } from '../../src/core/pipeline/answers.js';
 import { findShipment } from '../../src/core/pipeline/ask.js';
 import { saveShipment } from '../../src/core/pipeline/shipment-save.js';
+import { listFiles } from '../../src/core/pipeline/files.js';
+import { STUCK_EMAIL, STUCK_FILE } from '../../src/core/pipeline/worker.js';
+import { collectParties } from '../../src/core/pipeline/sanctions-stage.js';
 
 const enc = (text) => new TextEncoder().encode(text);
 const dec = (bytes) => new TextDecoder().decode(bytes);
@@ -86,8 +89,11 @@ function wordsOf(text, page, scale = 1) {
 
 const fakeIngest = {
   sha256: (bytes) => sha(bytes),
+  detectMime: (name) => (name.endsWith('.eml') ? 'message/rfc822' : name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream'),
+  kindForMime: (mime) => (mime === 'message/rfc822' ? 'email' : mime === 'application/pdf' ? 'pdf' : 'other'),
   async pdfInfo(bytes) {
     const text = dec(bytes);
+    if (text.startsWith('LOCKED')) return { pages: 0, hasTextLayer: false, text: '', pageTexts: [], words: [], pageSizes: [], error: 'This PDF is locked with a password.' };
     if (text.startsWith('SCANNED')) return { pages: 2, hasTextLayer: false, text: '', pageTexts: [], words: [], pageSizes: [] };
     return { pages: 1, hasTextLayer: true, text, pageTexts: [text], words: wordsOf(text, 1), pageSizes: [{ w: 595, h: 842 }] };
   },
@@ -102,6 +108,8 @@ const fakeIngest = {
       return { items: [item(name, bytes, { mime: 'message/rfc822', kind: 'email', email, text })] };
     }
     if (name.endsWith('.png')) return { items: [item(name, bytes, { mime: 'image/png', kind: 'image' })] };
+    if (name.endsWith('.heic')) return { items: [item(name, bytes, { mime: 'image/heic', kind: 'image' })] };
+    if (name.endsWith('.msg')) return { items: [item(name, bytes, { mime: 'application/vnd.ms-outlook', kind: 'other' })] };
     if (name.endsWith('.broken')) return { items: [item(name, bytes, { mime: 'application/zip', kind: 'other', error: 'Could not open this file: bad zip' })] };
     return { items: [item(name, bytes)] };
   },
@@ -240,6 +248,13 @@ const fakeRecords = {
     }));
     return { stones, issues: [] };
   },
+  withoutReplacedDrafts(docs) {
+    const hasOwn = docs.some((d) => d.docType === 'packing_list' && d.source?.kind !== 'generated');
+    return docs.filter((d) => !(hasOwn && d.docType === 'packing_list' && d.source?.kind === 'generated'));
+  },
+  shipmentDocuments(shipment, docs) {
+    return this.withoutReplacedDrafts(docs.filter((d) => (shipment.documentIds || []).includes(d.id) || d.shipmentId === shipment.id));
+  },
   buildHistory({ stone, shipment }) {
     return [
       { at: null, kind: 'graded', title: `Graded by ${stone.lab}`, detail: stone.reportNumber, docId: stone.sources[0].docId, field: 'lab.reportNumber' },
@@ -254,6 +269,11 @@ const fakeRules = {
     const checks = [{ code: 'stones', severity: stones.length ? 'pass' : 'warn', title: 'Stones traced', detail: `${stones.length} stones`, evidence: [], rule: 'test' }];
     if (screenings.some((s) => s.status === 'match')) checks.push({ code: 'sanctions', severity: 'fail', title: 'A party is on the OFAC SDN list', detail: '', evidence: [], rule: 'test' });
     const questions = [];
+    if (documents.some((d) => /ODD/.test(d.text || ''))) questions.push({ kind: 'confirm', check: 'report_format', text: 'Report number ODD-1 does not look like a GIA number. Check it.' });
+    for (const s of screenings.filter((x) => x.status === 'review')) {
+      checks.push({ code: 'sanctions', severity: 'warn', title: 'Possible OFAC SDN match', detail: s.name, evidence: [], rule: 'test' });
+      questions.push({ kind: 'confirm', check: 'sanctions', text: `Possible OFAC SDN match: ${s.name} looks like ${s.best.sdnName}. Confirm they are different before signing.`, options: ['Different', 'Same'] });
+    }
     if (!shipment.destinationCountry) questions.push({ kind: 'missing_field', key: 'goods.destinationCountry', text: 'Which country is the parcel going to?' });
     if (!documents.some((d) => d.docType === 'kp_certificate')) {
       questions.push({ kind: 'missing_document', key: 'kp_certificate', docType: 'kp_certificate', text: 'The KP certificate is not on file. Add it, or say it is not needed.' });
@@ -273,6 +293,7 @@ function fakeSanctions() {
     screen(name) {
       calls.push(name);
       const hit = /BLOCKED/i.test(name);
+      if (/CLOSE/.test(name)) return { name, status: 'review', best: { sdnName: 'CLOSE TRADING', uid: '2', programs: ['SDGT'], score: 0.9 }, compared: 41 };
       return { name, status: hit ? 'match' : 'clear', best: hit ? { sdnName: 'BLOCKED TRADING', uid: '1', programs: ['SDGT'], score: 0.99 } : null, compared: 41 };
     },
   };
@@ -289,7 +310,7 @@ const fakePapers = {
     await getFile(documents[0].fileKey); // the pack reads the originals
     return { bytes: enc(`PACK ${ref} v${version} ${status}`), pages: 3, contents: documents.map((d) => ({ title: d.fileName, docId: d.id })) };
   },
-  async buildStatement({ kind, status }) { return { bytes: enc(`STATEMENT ${kind} ${status}`) }; },
+  async buildStatement({ kind, ref, version, status, documents }) { return { bytes: enc(`STATEMENT ${kind} ${ref} v${version} ${status} docs=${documents.length}`) }; },
   async buildPackingListDraft({ shipment, lines }) { const bytes = enc(`PACKING LIST DRAFT ${shipment.ref} ${lines.length}`); return { bytes, sha256: sha(bytes) }; },
   async signPdf(bytes, { name }) { const out = enc(`${dec(bytes)} SIGNED BY ${name}`); return { bytes: out, sha256: sha(out) }; },
 };
@@ -316,19 +337,19 @@ const fakeMetrics = { lastInput: null, computeMetrics(input) { fakeMetrics.lastI
 
 // ---------- harness ----------
 
-async function makeHarness({ profile = {}, lease, mailMessages = [], samplesDir, cacheDir, store: givenStore } = {}) {
+async function makeHarness({ profile = {}, lease, mailMessages = [], samplesDir, cacheDir, store: givenStore, parallel, rasterize, pageDrawTimeoutMs } = {}) {
   const { store, cleanup } = givenStore ? { store: givenStore, cleanup: async () => {} } : await makeStore({ name: 'SAMPLE Gems Exports', environment: 'sandbox', ...profile });
   const clock = { now: Date.UTC(2026, 10, 15, 9, 0, 0) };
   const h = {
     store, clock, ai: fakeAI(), ocr: fakeOcr(), sanctions: fakeSanctions(), mail: fakeMail(mailMessages),
-    notes: [], agent: [], activity: [], rasterized: [],
+    notes: [], agent: [], activity: [], rasterized: [], listDate: '2026-11-02',
   };
   h.services = createServices({
     store, ai: h.ai, ocr: h.ocr,
-    rasterize: async (bytes, page) => { h.rasterized.push(page); return enc(`PAGE-${page}`); },
-    sanctionsLoader: async () => ({ count: 17589, date: '2026-11-02', source: 'test', entries: [] }),
+    rasterize: rasterize || (async (bytes, page) => { h.rasterized.push(page); return enc(`PAGE-${page}`); }),
+    sanctionsLoader: async () => ({ count: 17589, date: h.listDate, source: 'test', entries: [] }),
     notify: async (note) => { h.notes.push(note); },
-    paths: { samples: samplesDir, cacheDir }, deviceId: 'test-device', clock: () => clock.now, lease, pace: 0,
+    paths: { samplesDir, cacheDir }, deviceId: 'test-device', clock: () => clock.now, lease, pace: 0, parallel, pageDrawTimeoutMs,
     modules: { ingest: fakeIngest, records: fakeRecords, rules: fakeRules, sanctions: h.sanctions, papers: fakePapers, mail: h.mail, metrics: fakeMetrics },
   });
   h.services.events.on('agent', (e) => h.agent.push(e));
@@ -524,9 +545,10 @@ test('answering the questions re-runs the checks and autopilot builds the papers
     await assert.rejects(h.services.answerQuestion(kpQuestion.id, 'again', CLERK), /already closed/);
 
     const second = await h.services.answerQuestion(destQuestion.id, 'BE', CLERK);
+    assert.equal(second.question.status, 'answered', 'saved at once; the check runs in the background');
     await h.services.idle();
-    assert.equal(second.status, 'ready_to_sign');
     const after = await h.store.get('shipments', shipment.id);
+    assert.equal(after.status, 'ready_to_sign');
     assert.equal(after.destinationCountry, 'BE', 'the answer is set on the shipment');
     assert.equal(after.answers['goods.destinationCountry'], 'BE');
     assert.equal(after.houseEdits, 2);
@@ -541,6 +563,9 @@ test('answering the questions re-runs the checks and autopilot builds the papers
     assert.equal(pack.fileKey, `papers/${pack.id}/JL-EXP-1115-01-v1.pdf`);
     assert.equal(dec(await h.store.getFile(pack.fileKey)), 'PACK JL-EXP-1115-01 v1 ready_to_sign');
     assert.equal(pack.sha256, sha(enc('PACK JL-EXP-1115-01 v1 ready_to_sign')));
+    const dds = papers.find((p) => p.kind === 'eu_dds');
+    assert.equal(dec(await h.store.getFile(dds.fileKey)), `STATEMENT eu_dds ${dds.ref} v1 ready_to_sign docs=${pack.contents.length}`,
+      'the statement on its own prints its own ref and lists the same papers as the pack');
     assert.equal(pack.houseEdits, 2);
     assert.equal(pack.builtBy, 'Paperwork');
     assert.ok(h.notes.some((n) => n.kind === 'pack_ready' && n.shipmentId === shipment.id));
@@ -583,7 +608,7 @@ test('a rebuild adds a version; then sign, send without a mailbox, and send from
     assert.equal(unsent.download, true);
     assert.match(unsent.error, /No mailbox is connected/);
 
-    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: `${PASS} x`, pollNow: false, by: CLERK });
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: `${PASS} x`, domains: 'broker.example', pollNow: false, by: CLERK });
     assert.equal(h.mail.connects[0].appPassword, `${PASS}x`, 'spaces are taken out of the app password');
     const sent = await h.services.sendPaper(pack.id, { to: 'broker@broker.example, desk@broker.example', subject: 'Pack', body: 'Signed pack attached.' }, CLERK);
     assert.equal(sent.status, 'sent');
@@ -733,7 +758,7 @@ test('lease: while another computer holds it nothing is read; then this one take
     await h.services.addFiles([{ name: 'invoice.pdf', bytes: enc(INVOICE) }]);
     await h.services.idle();
     const blocked = await h.services.run({ reason: 'try again' });
-    assert.deepEqual(blocked, { skipped: 'lease' });
+    assert.deepEqual(blocked, { skipped: 'lease', reason: 'held' });
     assert.ok((await h.store.list('documents')).every((d) => d.status === 'new'));
     assert.equal(h.activity.filter((a) => a.action === 'waiting').length, 1, 'logged once, not on every try');
     assert.equal(lease.acquired[0].holder, 'test-device');
@@ -837,7 +862,9 @@ test('worker: mailbox poll, watched folder, retries, start and stop', async () =
   const h = await makeHarness({ mailMessages: messages });
   const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'jl-folder-'));
   try {
-    await assert.rejects(h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: WRONG_PASS }), /did not accept/);
+    await assert.rejects(h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS }), /email domains of your brokers/);
+    await assert.rejects(h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'house.example' }), /email domains/, 'the house itself is not a partner');
+    await assert.rejects(h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: WRONG_PASS, domains: 'broker.example' }), /did not accept/);
     assert.equal((await h.services.mail.status()).connected, false);
 
     const status = await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', by: CLERK });
@@ -855,12 +882,11 @@ test('worker: mailbox poll, watched folder, retries, start and stop', async () =
     await h.services.mail.pollNow(); // the same mail again: skipped quietly by its message id
     assert.equal((await h.store.list('documents', (d) => d.kind === 'email')).length, 1);
     assert.equal(h.activity.filter((a) => a.action === 'skipped').length, 0);
-    const saved = (await h.store.workspace()).mailbox;
-    assert.equal(saved.lastSeenAt, '2026-11-15T08:00:00.000Z');
-    assert.deepEqual(saved.seen, ['<m7@broker.example>']);
-    assert.equal(saved.appPassword, undefined, 'the app password is never saved in the workspace');
+    assert.equal((await h.store.workspace()).mailbox, undefined, 'nothing about the mailbox goes into the shared workspace');
     const mailStatus = await h.services.mail.status();
     assert.equal(mailStatus.email, 'clerk@house.example');
+    assert.deepEqual(mailStatus.domains, ['broker.example']);
+    assert.equal(mailStatus.lastSeenAt, '2026-11-15T08:00:00.000Z');
     assert.ok(mailStatus.lastPollAt);
 
     // Watched folder: new files by path, time and size; hidden files and files still copying are skipped.
@@ -926,7 +952,7 @@ test('the mailbox is not searched when the house turned that off', async () => {
   const eml = enc('From: ops@broker.example\nSubject: INV-100 papers\n\nSAMPLE');
   const h = await makeHarness({ profile: { permissions: { searchMailbox: false } }, mailMessages: [{ uid: 1, messageId: '<x@y>', from: 'ops@broker.example', subject: 'INV-100 papers', date: '2026-11-15T08:00:00.000Z', eml }] });
   try {
-    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, pollNow: false });
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
     await h.services.mail.pollNow();
     assert.equal(h.mail.fetches.length, 0);
   } finally {
@@ -1016,7 +1042,15 @@ test('helpers: merging queued runs, question identity, status, answers, finding 
   assert.equal(decideStatus({ status: 'questions' }, pass, [{ id: 'q' }]), 'questions');
   assert.equal(decideStatus({ status: 'questions' }, pass, []), 'ready_to_sign');
   assert.equal(decideStatus({ status: 'ready_to_sign' }, [{ severity: 'fail' }], []), 'held_for_review');
-  assert.equal(decideStatus({ status: 'ready_to_sign' }, [{ severity: 'fail' }], [], { checkedBasis: 'b1', deskApproved: { basis: 'b1' } }), 'ready_to_sign');
+  const failedCheck = { code: 'sanctions', severity: 'fail', detail: 'On the OFAC SDN list: X (X).' };
+  const approvedThis = { checkedBasis: 'b1', deskApproved: { basis: 'b1', failing: ['sanctions: On the OFAC SDN list: X (X).'] } };
+  assert.equal(decideStatus({ status: 'ready_to_sign' }, [failedCheck], [], approvedThis), 'ready_to_sign');
+  const newFailure = { code: 'sanctions', severity: 'fail', detail: 'On the OFAC SDN list: X (X), Y (Y).' };
+  assert.equal(decideStatus({ status: 'ready_to_sign' }, [newFailure], [], approvedThis), 'held_for_review', 'a new failure holds it again');
+  assert.equal(decideStatus({ status: 'ready_to_sign' }, [failedCheck], [], { checkedBasis: 'b1', deskApproved: { basis: 'b1' } }), 'held_for_review', 'an approval that names no checks covers none');
+  assert.equal(decideStatus({ status: 'questions' }, pass, [], {}, { unsettled: [{ id: 'q', check: 'sanctions', answer: 'Same' }] }), 'held_for_review');
+  assert.equal(decideStatus({ status: 'ready_to_sign' }, pass, [], {}, { deskReview: true }), 'held_for_review', 'the desk reviews every pack');
+  assert.equal(decideStatus({ status: 'ready_to_sign' }, pass, [], { checkedBasis: 'b1', deskApproved: { basis: 'b1', failing: [] } }, { deskReview: true }), 'ready_to_sign');
   assert.equal(decideStatus({}, [], []), 'collecting');
 
   const shipment = applyAnswers({ answers: { 'goods.totalCarats': '1.01 ct', 'consignee.country': 'Belgium', 'goods.destinationCountry': 'BE' }, consignee: { name: 'X' } });
@@ -1063,8 +1097,8 @@ test('settings main re-applies on every open are not logged again', async () => 
     await h.services.autopilot.set(true); // already on
     await h.services.folder.set(folder, CLERK);
     await h.services.folder.set(folder, CLERK);
-    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, pollNow: false });
-    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, pollNow: false });
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
     await h.services.idle();
     const actions = (await h.store.list('activity')).map((a) => a.action);
     assert.equal(actions.filter((a) => a === 'autopilot').length, 0);
@@ -1156,5 +1190,772 @@ test('the worker re-checks a shipment that changed while this computer was waiti
     assert.equal(h.ai.calls.extract, runsBefore);
   } finally {
     await h.cleanup();
+  }
+});
+
+// ---------- fixes: nothing uncertain reaches a pack ----------
+
+/** A promise the test opens when it wants: lets a slow step be caught in the middle. */
+function gate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
+
+test('papers built while a question is open are a draft: the shipment keeps its questions and nothing is signed', async () => {
+  const h = await makeHarness();
+  try {
+    const shipment = await withShipment(h);
+    assert.equal(shipment.status, 'questions');
+    const built = await h.services.buildPapers(shipment.id, { by: CLERK });
+    assert.equal(built.status, 'draft');
+    assert.deepEqual(built.papers.map((p) => [p.kind, p.status]), [['eu_dds', 'draft'], ['export_pack', 'draft']]);
+    assert.equal((await h.store.get('shipments', shipment.id)).status, 'questions', 'the shipment keeps its open questions');
+    assert.ok(h.notes.some((n) => n.kind === 'questions' && n.title === 'Draft only: INV-100'));
+    assert.ok(!h.notes.some((n) => n.kind === 'pack_ready'));
+    const pack = built.papers.find((p) => p.kind === 'export_pack');
+    await assert.rejects(h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK), /draft/);
+    await assert.rejects(h.services.desk.approve(pack.id, 'Looks fine.', DESK), /still open/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a paper is signed only as it was built from the shipment as it is now', async () => {
+  const h = await makeHarness({ profile: { autopilot: false } });
+  try {
+    await h.services.addFiles(await baseFiles());
+    await h.services.run({ reason: 'test' });
+    await answerAll(h);
+    const [shipment] = await h.store.list('shipments');
+    assert.equal(shipment.status, 'ready_to_sign');
+    const pack = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers[0];
+    assert.equal(pack.status, 'ready_to_sign');
+    // A new paper arrives after the pack was built: the pack does not have it.
+    await h.services.addFiles([{ name: 'awb-2.pdf', bytes: enc('SAMPLE AIR WAYBILL\nInvoice No: INV-100\nHAWB: 176-99999999') }]);
+    await h.services.run({ reason: 'new paper' });
+    await assert.rejects(h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK), /New papers or answers came in/);
+    await h.services.idle();
+    const again = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers[0];
+    assert.equal(again.version, 2);
+    assert.equal((await h.services.signPaper(again.id, { name: 'Asha Mehta' }, CLERK)).status, 'signed');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a possible OFAC SDN match is cleared only by "Different": "Same" holds the pack, and it cannot be dismissed', async () => {
+  for (const [reply, expected] of [['Same', 'held_for_review'], ['Different', 'ready_to_sign'], [null, 'questions']]) {
+    const h = await makeHarness();
+    try {
+      await h.services.addFiles([{ name: 'invoice.pdf', bytes: enc(INVOICE.replace('SAMPLE Diamant BV', 'CLOSE Trading LLC')) }, { name: 'report.pdf', bytes: enc(REPORT) }]);
+      await h.services.idle();
+      const open = await openQuestions(h);
+      const match = open.find((q) => q.check === 'sanctions');
+      assert.ok(match, 'the clerk is asked to confirm');
+      for (const q of open.filter((x) => x !== match)) await h.services.answerQuestion(q.id, q.kind === 'missing_document' ? 'not needed' : 'BE', CLERK);
+      if (reply) await h.services.answerQuestion(match.id, reply, CLERK);
+      else await assert.rejects(h.services.dismissQuestion(match.id, CLERK), /Answer this question; the agents need to know which is right\./);
+      await h.services.idle();
+      const [shipment] = await h.store.list('shipments');
+      assert.equal(shipment.status, expected, reply || 'a dismissal');
+      if (!reply) {
+        // Refused: the question stays open, the shipment waits for the answer and no pack is ready to sign.
+        assert.equal((await h.store.get('questions', match.id)).status, 'open');
+        assert.ok((await h.store.list('papers')).every((p) => p.status !== 'ready_to_sign'));
+        continue;
+      }
+      const pack = (await h.store.list('papers')).find((p) => p.kind === 'export_pack');
+      assert.equal(pack.status, expected, `the pack after ${reply || 'a dismissal'}`);
+      if (expected === 'held_for_review') {
+        await assert.rejects(h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK), /held for review/);
+        // The papers are built again by hand: still held, never ready to sign.
+        assert.equal((await h.services.buildPapers(shipment.id, { by: CLERK })).status, 'held_for_review');
+      }
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test('a newer OFAC SDN list: the shipment is screened again before anyone signs', async () => {
+  const h = await makeHarness({ profile: { autopilot: false } });
+  try {
+    await h.services.addFiles(await baseFiles());
+    await h.services.run({ reason: 'test' });
+    await answerAll(h);
+    const [shipment] = await h.store.list('shipments');
+    assert.equal(shipment.sdnListDate, '2026-11-02');
+    const pack = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers[0];
+    const screened = h.sanctions.calls.length;
+    h.listDate = '2026-11-15'; // the daily refresh brought a newer list
+    h.clock.now += 2 * 3600 * 1000;
+    await assert.rejects(h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK), /OFAC SDN list was updated \(2026-11-15\)/);
+    await h.services.idle(); // the agents screen it again on their own
+    assert.ok(h.sanctions.calls.length > screened, 'the parties were screened again');
+    assert.equal((await h.store.get('shipments', shipment.id)).sdnListDate, '2026-11-15');
+    assert.equal((await h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK)).status, 'signed');
+
+    // With autopilot on, the 5-minute loop screens open shipments again when the list changes.
+    await h.store.updateWorkspace({ autopilot: true });
+    await h.services.addFiles([{ name: 'invoice-2.pdf', bytes: enc(INVOICE.replace('INV-100', 'INV-300')) }]);
+    await h.services.idle();
+    const second = (await h.store.list('shipments')).find((s) => s.ref === 'INV-300');
+    h.listDate = '2026-11-16';
+    h.clock.now += 2 * 3600 * 1000;
+    await h.services.worker.tick();
+    await h.services.idle();
+    assert.equal((await h.store.get('shipments', second.id)).sdnListDate, '2026-11-16');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('on an export, signing the EU statement is the house checking the draft the importer signs', async () => {
+  const h = await makeHarness();
+  try {
+    const shipment = await withShipment(h);
+    await answerAll(h);
+    const dds = (await h.store.list('papers')).find((p) => p.kind === 'eu_dds');
+    await h.services.signPaper(dds.id, { name: 'Asha Mehta' }, CLERK);
+    assert.ok(h.activity.some((a) => a.action === 'signed' && a.detail === `Checked EU Due Diligence Statement (draft) ${dds.ref} v1. The importer signs it.`));
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await h.services.sendPaper(dds.id, { to: 'importer@buyer.example' }, CLERK);
+    assert.match(h.mail.sent[0].text, /checked by Asha Mehta, for the importer to sign\.$/);
+    assert.equal((await h.store.get('shipments', shipment.id)).status, 'ready_to_sign', 'the statement alone does not sign the shipment');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------- fixes: papers, numbers and signatures under load ----------
+
+test('two builds at the same moment never take the same paper number', async () => {
+  const h = await makeHarness({ profile: { autopilot: false } });
+  try {
+    await h.services.addFiles([
+      { name: 'invoice-a.pdf', bytes: enc(INVOICE.replace('INV-100', 'INV-501')) },
+      { name: 'invoice-b.pdf', bytes: enc(INVOICE.replace('INV-100', 'INV-502')) },
+    ]);
+    await h.services.run({ reason: 'test' });
+    await answerAll(h);
+    const [a, b] = await h.store.list('shipments');
+    const [one, two] = await Promise.all([h.services.buildPapers(a.id, { by: CLERK }), h.services.buildPapers(b.id, { by: CLERK })]);
+    const refs = [...one.papers, ...two.papers].map((p) => p.ref);
+    assert.equal(refs.length, 4);
+    assert.equal(new Set(refs).size, 4, `every paper has its own number: ${refs.join(', ')}`);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a person who signs while the agents rebuild the pack keeps the signature', async () => {
+  const h = await makeHarness();
+  const original = fakePapers.buildPack;
+  try {
+    const shipment = await withShipment(h);
+    await answerAll(h);
+    const pack = (await h.store.list('papers')).find((p) => p.kind === 'export_pack');
+    const release = gate();
+    const started = gate();
+    fakePapers.buildPack = async (input) => { started.open(); await release.promise; return original.call(fakePapers, input); };
+    const rebuild = h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: { type: 'agent', name: 'Paperwork' } });
+    await started.promise;
+    const signed = await h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK);
+    release.open();
+    assert.deepEqual((await rebuild).papers, [], 'the agents leave the signed paper alone');
+    const after = await h.store.get('papers', pack.id);
+    assert.deepEqual([after.status, after.version, after.signedBy, after.fileKey], ['signed', 1, 'Asha Mehta', signed.fileKey]);
+  } finally {
+    fakePapers.buildPack = original;
+    await h.cleanup();
+  }
+});
+
+test('a paper removed while the agents read it stays removed', async () => {
+  const h = await makeHarness();
+  const original = h.ai.extract;
+  try {
+    const release = gate();
+    const reading = gate();
+    h.ai.extract = async (...args) => { reading.open(); await release.promise; return original.apply(h.ai, args); };
+    const { documentIds: [id] } = await h.services.addFiles([{ name: 'invoice.pdf', bytes: enc(INVOICE) }]);
+    await reading.promise;
+    await h.store.remove('documents', id); // what jl.docs.remove does
+    release.open();
+    await h.services.idle();
+    assert.equal(await h.store.get('documents', id), null);
+    assert.equal((await h.store.list('shipments')).length, 0, 'no shipment was started from it');
+  } finally {
+    h.ai.extract = original;
+    await h.cleanup();
+  }
+});
+
+// ---------- fixes: reading files ----------
+
+test('locked PDFs, iPhone photos and Outlook files fail with a plain reason and are not sent to the model', async () => {
+  const h = await makeHarness();
+  try {
+    const classified = h.ai.calls.classify;
+    const added = await h.services.addFiles([
+      { name: 'KP certificate.pdf', bytes: enc('LOCKED') },
+      { name: 'IMG_4512.heic', bytes: enc('HEIC PHOTO') },
+      { name: 'RE Invoice.msg', bytes: enc('OUTLOOK MSG') },
+    ]);
+    await h.services.idle();
+    const docs = await Promise.all(added.documentIds.map((id) => h.store.get('documents', id)));
+    assert.deepEqual(docs.map((d) => d.status), ['error', 'error', 'error']);
+    assert.equal(docs[0].error, 'This PDF is locked with a password. Remove the password and add it again.');
+    assert.match(docs[1].error, /^Pictures saved as HEIC cannot be read yet/);
+    assert.match(docs[2].error, /^Outlook \.msg files cannot be read yet/);
+    assert.ok(docs.every((d) => d.retries === 3), 'reading again would not help');
+    assert.equal(h.ai.calls.classify, classified, 'nothing went to the model');
+    assert.deepEqual(h.rasterized, [], 'no pages drawn for a PDF that does not open');
+    await h.services.worker.tick();
+    await h.services.idle();
+    assert.ok((await h.store.list('documents')).every((d) => d.status === 'error'), 'and they are not tried again');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a chat the model could not read says the offline reader read it', async () => {
+  const h = await makeHarness();
+  const original = h.ai.readChat;
+  try {
+    // What the AI module answers when the model fails: the offline reading, said so, with the error's code.
+    h.ai.readChat = async (chat) => ({ ...(await original.call(h.ai, chat)), readBy: 'offline', warnings: ['Read offline: the model timed out'], aiError: 'timeout' });
+    await h.services.addFiles([{ name: 'WhatsApp Chat - SAMPLE.zip', bytes: await chatZip(), source: { kind: 'whatsapp' } }]);
+    await h.services.idle();
+    const docs = await h.store.list('documents');
+    const chat = docs.find((d) => d.kind === 'chat');
+    assert.equal(chat.readBy, 'Offline reader');
+    assert.deepEqual(chat.warnings, ['Read offline: the model timed out']);
+    assert.equal(chat.aiError, 'timeout');
+    assert.equal(chat.needsAiRead, true, 'read again once the AI is back');
+    assert.ok(chat.content.chat.messages.length > 0 && chat.content.chat.messageCount === undefined, 'the whole chat is kept for that read');
+    assert.equal(docs.find((d) => d.fileName === 'awb.pdf').readBy, 'fake-model');
+    assert.equal(docs.find((d) => d.fileName === 'awb.pdf').needsAiRead, false);
+  } finally {
+    h.ai.readChat = original;
+    await h.cleanup();
+  }
+});
+
+test('a file the store refuses (too big for a shared house) is reported, and the rest of the drop goes on', async () => {
+  const { store, cleanup } = await makeStore({ name: 'SAMPLE Gems Exports', environment: 'sandbox' });
+  const putFile = store.putFile;
+  const refusal = 'huge.pdf is 63 MB, and a house shared online keeps files of up to 50 MB.';
+  store.putFile = async (key, bytes, mime) => { if (key.endsWith('/huge.pdf')) throw new Error(refusal); return putFile(key, bytes, mime); };
+  const h = await makeHarness({ store });
+  try {
+    const result = await h.services.addFiles([{ name: 'huge.pdf', bytes: enc('HUGE') }, { name: 'invoice.pdf', bytes: enc(INVOICE) }]);
+    assert.deepEqual(result.failed, [{ name: 'huge.pdf', error: refusal }]);
+    assert.equal(result.documentIds.length, 1);
+    await h.services.idle();
+    assert.deepEqual((await h.store.list('documents')).map((d) => d.fileName), ['invoice.pdf']);
+    assert.ok(h.activity.some((a) => a.action === 'error' && a.detail === `Could not add huge.pdf: ${refusal}`));
+  } finally {
+    await h.cleanup();
+    await cleanup();
+  }
+});
+
+// ---------- fixes: the watched folder and the mailbox ----------
+
+test('a file the watched folder cannot read does not stop the others, and is tried again', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'jl-folder-'));
+  const locked = path.join(folder, 'doc-12.pdf');
+  const h = await makeHarness({ profile: { autopilot: false } });
+  try {
+    const old = new Date(Date.now() - 60 * 1000);
+    for (let i = 1; i <= 13; i += 1) {
+      const file = path.join(folder, `doc-${String(i).padStart(2, '0')}.pdf`);
+      await fs.writeFile(file, `SAMPLE COMMERCIAL INVOICE\nInvoice No: INV-6${String(i).padStart(2, '0')}`);
+      await fs.utimes(file, old, old);
+    }
+    await fs.chmod(locked, 0o000); // in the second batch of ten
+    await h.services.folder.set(folder, CLERK);
+    await h.services.idle();
+    const picked = () => h.store.list('documents', (d) => d.source.kind === 'folder');
+    assert.equal((await picked()).length, 12, 'the other files came in');
+    const status = await h.services.folder.status();
+    assert.deepEqual(status.problems, [{ file: 'doc-12.pdf', reason: 'no permission to read it' }]);
+    assert.equal(status.files, 12, 'only files the agents have are marked as seen');
+    const logged = () => h.activity.filter((a) => a.action === 'error' && /could not be read/.test(a.detail)).length;
+    assert.equal(logged(), 1);
+    await h.services.worker.tick();
+    assert.equal(logged(), 1, 'logged once, not every round');
+    await fs.chmod(locked, 0o644);
+    await h.services.worker.tick();
+    assert.equal((await picked()).length, 13, 'picked up once it can be read');
+    assert.deepEqual((await h.services.folder.status()).problems, []);
+  } finally {
+    await fs.chmod(locked, 0o644).catch(() => {});
+    await h.cleanup();
+    await fs.rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('the watched folder sees every file however many there are; a whole drive is refused out loud', async () => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'jl-folder-'));
+  try {
+    for (let m = 1; m <= 21; m += 1) {
+      const month = path.join(folder, `2025-${String(m).padStart(2, '0')}`);
+      await fs.mkdir(month);
+      await Promise.all(Array.from({ length: 100 }, (_, i) => fs.writeFile(path.join(month, `paper-${i}.pdf`), 'x')));
+    }
+    await fs.writeFile(path.join(folder, '2025-21', 'Invoice KG-26-27-090.pdf'), 'new');
+    const files = await listFiles(folder);
+    assert.equal(files.length, 2101);
+    assert.ok(files.some((f) => f.rel === '2025-21/Invoice KG-26-27-090.pdf'), 'the newest paper, in the last folder, is seen');
+    await assert.rejects(listFiles(folder, { maxFiles: 500 }), /This folder holds more than 500 files\. Choose the folder where new papers land\./);
+  } finally {
+    await fs.rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('the same file added twice at the same moment is stored once, and mail polls never run two at once', async () => {
+  const eml = enc('From: ops@broker.example\nSubject: INV-100 papers\n\nSAMPLE');
+  const h = await makeHarness({ profile: { autopilot: false }, mailMessages: [{ uid: 1, messageId: '<a@b>', from: 'ops@broker.example', subject: 'INV-100 papers', date: '2026-11-15T08:00:00.000Z', eml }] });
+  try {
+    const [a, b] = await Promise.all([
+      h.services.addFiles([{ name: 'invoice.pdf', bytes: enc(INVOICE) }]),
+      h.services.addFiles([{ name: 'invoice copy.pdf', bytes: enc(INVOICE) }]),
+    ]);
+    assert.equal(a.documentIds.length + b.documentIds.length, 1);
+    assert.equal(a.duplicates.length + b.duplicates.length, 1);
+    assert.equal((await h.store.list('documents')).length, 1);
+
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await Promise.all([h.services.mail.pollNow(), h.services.worker.tick(), h.services.mail.pollNow()]);
+    assert.equal(h.mail.fetches.length, 1, 'one poll, shared by the loop and both buttons');
+    assert.equal((await h.store.list('documents', (d) => d.kind === 'email')).length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the mailbox and how far the agents got in it stay on this computer; another mailbox starts afresh', async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jl-cache-'));
+  const eml = enc('From: ops@broker.example\nSubject: INV-100 papers\n\nSAMPLE');
+  const messages = Object.assign(
+    [{ uid: 7, messageId: '<m7@broker.example>', from: 'ops@broker.example', subject: 'INV-100 papers', date: '2026-11-15T08:00:00.000Z', eml }],
+    { lastUid: 7, uidValidity: '42', more: false },
+  );
+  const h = await makeHarness({ cacheDir, mailMessages: messages, profile: { autopilot: false } });
+  try {
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await h.services.mail.pollNow();
+    await h.services.mail.pollNow();
+    assert.deepEqual(h.mail.fetches[0].options, { domains: ['broker.example'], afterUid: 0, uidValidity: null });
+    assert.deepEqual(h.mail.fetches[1].options, { domains: ['broker.example'], afterUid: 7, uidValidity: '42' }, 'the next poll goes on after the last message');
+    const file = path.join(cacheDir, `mailbox-${(await h.store.workspace()).id}.json`);
+    const text = await fs.readFile(file, 'utf8');
+    assert.equal(JSON.parse(text).lastUid, 7);
+    assert.ok(!text.includes(PASS), 'the app password is never saved here');
+    assert.equal((await h.store.workspace()).mailbox, undefined, 'nor anything in the shared workspace');
+
+    await h.services.mail.connect({ provider: 'gmail', email: 'other@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await h.services.mail.pollNow();
+    assert.equal(h.mail.fetches[2].options.afterUid, 0, 'another mailbox does not use the first one\'s progress');
+    assert.ok(Date.now() - h.mail.fetches[2].date.getTime() > 13 * 24 * 3600 * 1000, 'it looks back a few days the first time');
+    assert.equal((await h.services.mail.status()).email, 'other@house.example');
+  } finally {
+    await h.cleanup();
+    await fs.rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('the 5-minute checks do not wait for the agents to finish a big batch', async () => {
+  const h = await makeHarness();
+  const original = h.ai.extract;
+  const release = gate();
+  try {
+    h.ai.extract = async (...args) => { await release.promise; return original.apply(h.ai, args); };
+    await h.services.addFiles([{ name: 'invoice.pdf', bytes: enc(INVOICE) }]); // the agents start reading it
+    await h.services.addFiles([{ name: 'report.pdf', bytes: enc(REPORT) }]); // a second paper waits for the next run
+    let late;
+    const tooLong = new Promise((resolve, reject) => { late = setTimeout(() => reject(new Error('the round waited for the run')), 3000); });
+    await Promise.race([h.services.worker.tick(), tooLong]);
+    clearTimeout(late);
+    assert.ok((await h.services.worker.status()).lastPollAt, 'the round finished while the agents were still reading');
+  } finally {
+    release.open();
+    h.ai.extract = original;
+    await h.cleanup();
+  }
+});
+
+test('a run stops when its lease ran out, and being offline is not blamed on another computer', async () => {
+  let offline = false;
+  const lease = { async acquire() { if (offline) throw new Error('fetch failed'); return true; }, async release() {} };
+  const h = await makeHarness({ lease, parallel: 1, profile: { autopilot: false } });
+  const original = h.ai.extract;
+  try {
+    await h.services.addFiles([
+      { name: 'a.pdf', bytes: enc(INVOICE) }, { name: 'b.pdf', bytes: enc(REPORT) },
+      { name: 'c.pdf', bytes: enc('SAMPLE AIR WAYBILL\nInvoice No: INV-100') },
+    ]);
+    // The laptop sleeps for 200 seconds while the first paper is read: longer than the 180-second lease.
+    h.ai.extract = async (...args) => { h.clock.now += 200 * 1000; return original.apply(h.ai, args); };
+    const stopped = await h.services.run({ reason: 'test' });
+    assert.equal(stopped.stopped, 'lease');
+    assert.equal((await h.store.list('documents', (d) => d.status === 'read')).length, 1, 'no more papers once the lease ran out');
+    assert.ok(h.activity.some((a) => a.action === 'stopped'));
+    h.ai.extract = original;
+
+    offline = true;
+    assert.deepEqual(await h.services.run({ reason: 'again' }), { skipped: 'lease', reason: 'offline' });
+    assert.match(h.activity.find((a) => a.action === 'waiting').detail, /^The cloud cannot be reached/);
+    offline = false;
+    await h.services.run({ reason: 'back online' });
+    assert.ok((await h.store.list('documents')).every((d) => d.status === 'read'));
+  } finally {
+    h.ai.extract = original;
+    await h.cleanup();
+  }
+});
+
+test('a page of a scan that never finishes drawing fails that paper, and the agents go on', async () => {
+  const h = await makeHarness({ rasterize: () => new Promise(() => {}), pageDrawTimeoutMs: 50 });
+  try {
+    await h.services.addFiles([{ name: 'scan.pdf', bytes: enc('SCANNED') }, { name: 'invoice.pdf', bytes: enc(INVOICE) }]);
+    await h.services.idle();
+    const docs = await h.store.list('documents');
+    const scan = docs.find((d) => d.fileName === 'scan.pdf');
+    assert.equal(scan.status, 'error');
+    assert.equal(scan.error, 'Drawing page 1 of this scan took too long.');
+    assert.equal(scan.retries, 0, 'tried again on a later round');
+    assert.equal(docs.find((d) => d.fileName === 'invoice.pdf').status, 'read');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a draft is never taken for the finished pack once nothing is open', async () => {
+  const h = await makeHarness();
+  try {
+    await h.services.addFiles([{ name: 'invoice.pdf', bytes: enc(`${INVOICE}\nDestination: BE\nODD`) }, { name: 'report.pdf', bytes: enc(REPORT) }]);
+    await h.services.idle();
+    const kp = (await openQuestions(h)).find((q) => q.kind === 'missing_document');
+    await h.services.answerQuestion(kp.id, 'not needed', CLERK);
+    await h.services.idle();
+    const [note] = await openQuestions(h);
+    assert.match(note.text, /Check it\.$/);
+    const [shipment] = await h.store.list('shipments');
+    const draft = (await h.services.buildPapers(shipment.id, { by: CLERK })).papers.find((p) => p.kind === 'export_pack');
+    assert.equal(draft.status, 'draft');
+    await assert.rejects(h.services.dismissQuestion(note.id, CLERK), /Answer this question/); // a question to confirm is answered
+    await h.services.answerQuestion(note.id, 'Checked, it is right', CLERK);
+    await h.services.idle();
+    const pack = await h.store.get('papers', draft.id);
+    assert.deepEqual([pack.status, pack.version], ['ready_to_sign', 2], 'autopilot built the pack to sign');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('an answer the rules cannot use, or a dismissal, of a question they still ask holds the pack', async () => {
+  const h = await makeHarness();
+  try {
+    const shipment = await withShipment(h);
+    const questions = await openQuestions(h);
+    await h.services.answerQuestion(questions.find((q) => q.kind === 'missing_document').id, 'not needed', CLERK);
+    await h.services.dismissQuestion(questions.find((q) => q.key === 'goods.destinationCountry').id, CLERK);
+    await h.services.idle();
+    assert.equal((await h.store.get('shipments', shipment.id)).status, 'held_for_review', 'the destination is still unknown');
+    assert.ok((await h.store.list('papers')).every((p) => p.status === 'held_for_review'));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------- answers the rules read, the rules' own version, and inputs that stopped the app ----------
+
+/** With autopilot off the agents wait for a person: drop the base papers and run them by hand. */
+async function withShipmentByHand(h) {
+  await h.services.addFiles(await baseFiles());
+  await h.services.run({ reason: 'test' });
+  await h.services.idle();
+  const [shipment] = await h.store.list('shipments');
+  return shipment;
+}
+
+test('a rules-only answer stays on the shipment; doc.checkedBy goes on the draft; a valid EORI goes into the house profile', async () => {
+  const h = await makeHarness({ profile: { autopilot: false } });
+  try {
+    const shipment = await withShipmentByHand(h);
+    const invoice = (await h.store.list('documents')).find((d) => d.fileName === 'invoice.pdf');
+    const ask = async (extra) => {
+      const q = { id: `qst_${extra.key.replace(/\W/g, '')}`, shipmentId: shipment.id, kind: 'confirm', text: `Question about ${extra.key}?`, status: 'open', ...extra };
+      await h.store.put('questions', q);
+      return q;
+    };
+    const carat = await ask({ key: 'stone.2141438172.carat', docId: invoice.id, kind: 'mismatch' });
+    await h.services.answerQuestion(carat.id, '1.01 ct', CLERK);
+    const eori = await ask({ key: 'house.eori', kind: 'missing_field' });
+    await h.services.answerQuestion(eori.id, 'be 0123.456.789', CLERK);
+    const draft = await ask({ key: 'doc.checkedBy', docId: invoice.id });
+    await h.services.answerQuestion(draft.id, 'Yes, use it as our packing list', CLERK);
+    await h.services.idle();
+
+    const after = await h.store.get('documents', invoice.id);
+    assert.ok(!after.fields.some((f) => f.key.startsWith('stone.')), 'a stone answer is never written into a paper');
+    assert.equal(after.fields.find((f) => f.key === 'doc.checkedBy').value, 'Yes, use it as our packing list');
+    assert.equal(after.fields.find((f) => f.key === 'doc.checkedBy').by, CLERK.name);
+    const answers = (await h.store.get('shipments', shipment.id)).answers;
+    assert.equal(answers['stone.2141438172.carat'], '1.01 ct');
+    const house = await h.store.workspace();
+    assert.equal(house.eori, 'BE0123456789');
+    assert.equal(house.letterhead.eori, 'BE0123456789');
+
+    const bad = await ask({ key: 'house.eori', kind: 'missing_field', id: 'qst_eori2' });
+    await h.store.updateWorkspace({ eori: '', letterhead: { eori: '' } });
+    await h.services.answerQuestion(bad.id, 'not an eori', CLERK);
+    assert.equal((await h.store.workspace()).eori, '', 'only a valid EORI goes into the profile');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a question asked before the rules gave it a key gets the key, so its answer lands where the rules read it', async () => {
+  const h = await makeHarness({ profile: { autopilot: false } });
+  const evaluate = fakeRules.evaluate;
+  try {
+    const shipment = await withShipmentByHand(h);
+    fakeRules.evaluate = (input) => {
+      const result = evaluate(input);
+      return { ...result, questions: [...result.questions, { kind: 'mismatch', check: 'stone_details', key: 'stone.2141438172.carat', options: ['1.01 ct', '1.02 ct'], text: 'Report 2141438172 weighs 1.01 ct on the lab report but 1.02 ct on the invoice. Which is right?', dedupeKey: 'stone_details|carat_mismatch|2141438172' }] };
+    };
+    // The same question, saved by an older copy of the app: no key, no options.
+    await h.store.put('questions', { id: 'qst_old', shipmentId: shipment.id, kind: 'mismatch', check: 'stone_details', text: 'Report 2141438172 weighs 1.01 ct on the lab report but 1.02 ct on the invoice. Which is right?', dedupeKey: 'stone_details|carat_mismatch|2141438172', status: 'open' });
+    await h.services.run({ shipmentId: shipment.id, force: true, reason: 'test' });
+    const updated = await h.store.get('questions', 'qst_old');
+    assert.equal(updated.status, 'open');
+    assert.equal(updated.key, 'stone.2141438172.carat');
+    assert.deepEqual(updated.options, ['1.01 ct', '1.02 ct']);
+    assert.equal((await openQuestions(h)).filter((q) => q.dedupeKey === 'stone_details|carat_mismatch|2141438172').length, 1, 'not asked twice');
+  } finally {
+    fakeRules.evaluate = evaluate;
+    await h.cleanup();
+  }
+});
+
+test('new rules in a new version of the app: shipments are checked again, and old papers are built again before signing', async () => {
+  const h = await makeHarness({ profile: { autopilot: false } });
+  try {
+    const shipment = await withShipmentByHand(h);
+    await answerAll(h);
+    await h.services.run({ shipmentId: shipment.id, reason: 'test' });
+    await h.services.idle();
+    const pack = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers[0];
+    assert.equal(pack.status, 'ready_to_sign');
+    assert.equal(pack.rulesVersion, 'test-rules-1');
+    fakeRules.RULES_VERSION = 'test-rules-2';
+    await assert.rejects(h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK), /compliance rules were updated/);
+    await h.services.idle(); // the agents check it again on their own
+    assert.equal((await h.store.get('shipments', shipment.id)).rulesVersion, 'test-rules-2');
+    await assert.rejects(h.services.signPaper(pack.id, { name: 'Asha Mehta' }, CLERK), /compliance rules were updated/, 'the old version stays unsigned');
+    const rebuilt = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers[0];
+    assert.deepEqual([rebuilt.version, rebuilt.rulesVersion, rebuilt.status], [2, 'test-rules-2', 'ready_to_sign']);
+    assert.equal((await h.services.signPaper(rebuilt.id, { name: 'Asha Mehta' }, CLERK)).status, 'signed');
+  } finally {
+    fakeRules.RULES_VERSION = 'test-rules-1';
+    await h.cleanup();
+  }
+});
+
+test('with autopilot on, new rules check every open shipment again and rebuild its pack', async () => {
+  const h = await makeHarness();
+  try {
+    const shipment = await withShipment(h);
+    await answerAll(h);
+    const before = (await h.store.list('papers')).find((p) => p.kind === 'export_pack');
+    assert.equal(before.rulesVersion, 'test-rules-1');
+    fakeRules.RULES_VERSION = 'test-rules-2';
+    await h.services.worker.tick();
+    await h.services.idle();
+    const after = await h.store.get('papers', before.id);
+    assert.equal((await h.store.get('shipments', shipment.id)).rulesVersion, 'test-rules-2');
+    assert.deepEqual([after.version, after.rulesVersion], [before.version + 1, 'test-rules-2']);
+  } finally {
+    fakeRules.RULES_VERSION = 'test-rules-1';
+    await h.cleanup();
+  }
+});
+
+test('papers that disagree cannot be dismissed: the question stays open and the shipment waits', async () => {
+  const h = await makeHarness();
+  const evaluate = fakeRules.evaluate;
+  try {
+    fakeRules.evaluate = (input) => {
+      const result = evaluate(input);
+      return { ...result, questions: [...result.questions, { kind: 'mismatch', check: 'stone_details', key: 'stone.2141438172.carat', text: 'Report 2141438172 weighs 1.01 ct on the lab report but 1.02 ct on the invoice. Which is right?', dedupeKey: 'mm|2141438172' }] };
+    };
+    const shipment = await withShipment(h);
+    for (const q of (await openQuestions(h)).filter((x) => x.kind !== 'mismatch')) {
+      await h.services.answerQuestion(q.id, q.kind === 'missing_document' ? 'not needed' : 'BE', CLERK);
+    }
+    await h.services.idle();
+    const mismatch = (await openQuestions(h)).find((q) => q.kind === 'mismatch');
+    assert.equal((await h.store.get('shipments', shipment.id)).status, 'questions');
+    await assert.rejects(h.services.dismissQuestion(mismatch.id, CLERK), /^Error: Answer this question; the agents need to know which is right\.$/);
+    await h.services.idle();
+    assert.equal((await h.store.get('questions', mismatch.id)).status, 'open');
+    assert.equal((await h.store.get('shipments', shipment.id)).status, 'questions');
+  } finally {
+    fakeRules.evaluate = evaluate;
+    await h.cleanup();
+  }
+});
+
+test('an email or a folder file that stopped the app is not added again: it becomes a paper that could not be read', async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jl-stuck-'));
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'jl-stuck-folder-'));
+  const eml = enc('From: ops@broker.example\nSubject: INV-100 papers\n\nThe SAMPLE invoice.');
+  const messages = [
+    { uid: 8, messageId: '<m8@broker.example>', from: 'ops@broker.example', subject: 'INV-100 papers', date: '2026-11-15T08:00:00.000Z', eml },
+    { uid: 9, messageId: '<m9@broker.example>', from: 'ops@broker.example', subject: 'Huge zip', date: '2026-11-15T08:05:00.000Z', eml: enc('From: ops@broker.example\nSubject: Huge zip\n\nzip bomb') },
+  ];
+  const h = await makeHarness({ mailMessages: messages, cacheDir });
+  try {
+    const { id } = await h.store.workspace();
+    // The last start stopped while the second email and one folder file were being added.
+    await fs.writeFile(path.join(cacheDir, `mailbox-${id}.json`), JSON.stringify({ email: 'clerk@house.example', connected: true, seen: [], inFlight: ['<m9@broker.example>'] }));
+    const old = new Date(Date.now() - 60 * 1000);
+    await fs.writeFile(path.join(folder, 'bad.pdf'), 'SAMPLE BROKEN');
+    await fs.writeFile(path.join(folder, 'good.pdf'), INVOICE);
+    for (const name of ['bad.pdf', 'good.pdf']) await fs.utimes(path.join(folder, name), old, old);
+    const stat = await fs.stat(path.join(folder, 'bad.pdf'));
+    await fs.writeFile(path.join(cacheDir, `watched-folder-${id}.json`), JSON.stringify({ path: folder, seen: {}, inFlight: { 'bad.pdf': `${Math.round(stat.mtimeMs)}:${stat.size}` } }));
+
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await h.services.mail.pollNow();
+    await h.services.folder.set(folder, CLERK);
+    await h.services.idle();
+
+    const docs = await h.store.list('documents');
+    const byName = Object.fromEntries(docs.map((d) => [d.fileName, d]));
+    assert.equal(byName['INV-100 papers.eml'].status, 'read', 'the other email is brought in as usual');
+    assert.equal(byName['Huge zip.eml'].status, 'error');
+    assert.equal(byName['Huge zip.eml'].error, STUCK_EMAIL);
+    assert.equal(byName['good.pdf'].status, 'read');
+    assert.equal(byName['bad.pdf'].status, 'error');
+    assert.equal(byName['bad.pdf'].error, STUCK_FILE);
+    const mailState = JSON.parse(await fs.readFile(path.join(cacheDir, `mailbox-${id}.json`), 'utf8'));
+    assert.deepEqual(mailState.inFlight, []);
+    assert.ok(mailState.seen.includes('<m9@broker.example>'));
+    const folderState = JSON.parse(await fs.readFile(path.join(cacheDir, `watched-folder-${id}.json`), 'utf8'));
+    assert.deepEqual(folderState.inFlight, {});
+    await h.services.worker.tick();
+    assert.equal((await h.store.list('documents')).length, docs.length, 'and none of them is pulled in again');
+  } finally {
+    await h.cleanup();
+    await fs.rm(cacheDir, { recursive: true, force: true });
+    await fs.rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('papers read offline are read again with the AI once it answers, at most three times', async () => {
+  const h = await makeHarness();
+  try {
+    const shipment = await withShipment(h);
+    const invoice = (await h.store.list('documents')).find((d) => d.fileName === 'invoice.pdf');
+    await h.store.put('documents', { ...invoice, needsAiRead: true, warnings: ['Read offline: the model timed out'] });
+    h.ai.check = async () => ({ ok: false, message: 'still down' });
+    await h.services.worker.tick();
+    await h.services.idle();
+    assert.equal((await h.store.get('documents', invoice.id)).needsAiRead, true, 'the AI is still down: nothing is read again');
+    h.ai.check = async () => ({ ok: true });
+    const extracts = h.ai.calls.extract;
+    await h.services.worker.tick();
+    await h.services.idle();
+    const reread = await h.store.get('documents', invoice.id);
+    assert.equal(h.ai.calls.extract, extracts + 1);
+    assert.deepEqual([reread.status, reread.needsAiRead, reread.aiRereads], ['read', false, 1]);
+    await h.store.put('documents', { ...reread, needsAiRead: true, aiRereads: 3 });
+    await h.services.worker.tick();
+    await h.services.idle();
+    assert.equal(h.ai.calls.extract, extracts + 1, 'three tries are enough');
+    assert.ok(shipment);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('an email too big to download is named once, for the house to add its papers by hand', async () => {
+  const messages = Object.assign([], { tooBig: [{ uid: 5, from: 'ops@broker.example', subject: 'All scans', size: 80 * 1024 * 1024 }] });
+  const h = await makeHarness({ mailMessages: messages });
+  try {
+    await h.services.mail.connect({ provider: 'gmail', email: 'clerk@house.example', appPassword: PASS, domains: 'broker.example', pollNow: false });
+    await h.services.mail.pollNow();
+    assert.ok(h.activity.some((a) => a.action === 'error' && /ops@broker\.example \("All scans"\) is 80 MB, too big to bring in/.test(a.detail)));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a lab check that could not run, or did not finish, never reads as "not found"', async () => {
+  const h = await makeHarness();
+  try {
+    await withShipment(h);
+    const [stone] = await h.store.list('stones');
+    for (const [result, line] of [
+      [{ status: 'unavailable', reason: 'NGL has no online report check' }, /could not be checked: NGL has no online report check$/],
+      [{ status: 'incomplete' }, /was not checked: the check did not finish$/],
+    ]) {
+      const withLabs = createServices({ store: h.store, ai: h.ai, labsVerify: async () => ({ diffs: [], ...result }), pace: 0, modules: { ingest: fakeIngest, records: fakeRecords, rules: fakeRules, sanctions: h.sanctions, papers: fakePapers, mail: h.mail } });
+      const seen = [];
+      withLabs.events.on('activity', (a) => seen.push(a));
+      await withLabs.verifyStone(stone.id, CLERK);
+      await withLabs.idle();
+      const detail = seen.find((a) => a.action === 'lab check').detail;
+      assert.match(detail, line);
+      assert.doesNotMatch(detail, /not found/);
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the insured on an insurance certificate is screened like the other parties', () => {
+  const parties = collectParties({ exporter: { name: 'SAMPLE Gems Exports' } }, [
+    { fields: [{ key: 'insured.name', value: 'SAMPLE Diamant BV' }, { key: 'insurer.name', value: 'SAMPLE Cargo Insurance Ltd' }] },
+  ]);
+  assert.deepEqual(parties.map((p) => [p.name, p.roles]), [
+    ['SAMPLE Gems Exports', ['exporter']], ['SAMPLE Diamant BV', ['insured']], ['SAMPLE Cargo Insurance Ltd', ['insurer']],
+  ]);
+});
+
+test('a shared house takes a first paper\'s number from the server, and a first build waits while it is offline', async () => {
+  const { store, cleanup } = await makeStore({ name: 'SAMPLE Gems Exports', environment: 'sandbox', autopilot: false });
+  const handedOut = new Map();
+  let online = true;
+  store.reserveRef = async (stem, floor) => {
+    if (!online) throw new Error('Could not get a paper number from Jewel Labs.');
+    const next = Math.max(handedOut.get(stem) || 0, floor) + 4; // another computer took a few numbers meanwhile
+    handedOut.set(stem, next);
+    return next;
+  };
+  const h = await makeHarness({ store });
+  try {
+    const shipment = await withShipmentByHand(h);
+    await answerAll(h);
+    await h.services.run({ shipmentId: shipment.id, reason: 'test' });
+    await h.services.idle();
+    online = false;
+    await assert.rejects(h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK }), /cannot be reached now/);
+    assert.equal((await h.store.list('papers')).length, 0, 'no paper with a number another computer may take');
+    online = true;
+    const [pack] = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers;
+    assert.equal(pack.ref, 'JL-EXP-1115-04');
+    online = false; // a new version keeps its ref: no number is needed
+    const [again] = (await h.services.buildPapers(shipment.id, { kinds: ['export_pack'], by: CLERK })).papers;
+    assert.deepEqual([again.ref, again.version], ['JL-EXP-1115-04', 2]);
+  } finally {
+    await h.cleanup();
+    await cleanup();
   }
 });

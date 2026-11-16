@@ -15,11 +15,14 @@ import {
   nativeImage,
   screen,
   session,
+  protocol,
 } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+// First of our own files: it removes the switches a packaged copy must not honour before config.js reads them.
+import { TEST_SWITCHES, REFUSED_SWITCH } from './env.js';
 import QRCode from 'qrcode';
 import * as config from '../core/config.js';
 import { createLog } from './log.js';
@@ -27,7 +30,7 @@ import { createSettings } from './settings.js';
 import { createSecrets } from './secrets.js';
 import { createAppState } from './state.js';
 import { createHandlers, registerIpc, toPlain } from './ipc.js';
-import { createMainWindow, makeAppUrlCheck } from './window.js';
+import { createMainWindow, makeAppUrlCheck, createAppProtocolHandler, APP_SCHEME, APP_ORIGIN, PAGES_ORIGIN } from './window.js';
 import { buildAppMenu } from './menu.js';
 import { createTray } from './tray.js';
 import { createNotifier } from './notify.js';
@@ -41,17 +44,23 @@ import { isSafeExternalUrl } from './validate.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RENDERER_DIR = path.join(HERE, '..', 'renderer');
-const INDEX_FILE = path.join(RENDERER_DIR, 'index.html');
+const INDEX_URL = `${APP_ORIGIN}/index.html`; // the screens, served from RENDERER_DIR (window.js)
 const FALLBACK_FILE = path.join(HERE, 'fallback.html');
 const PAGES_FILE = path.join(HERE, 'rasterize.html');
+const PAGES_URL = `${PAGES_ORIGIN}/rasterize.html`; // the hidden pdf.js page (rasterize.js, print.js)
 const ICONS_DIR = path.join(config.ASSETS_DIR, 'icons');
-const IS_E2E = process.env.JL_E2E === '1';
+// Test runs (JL_E2E=1) only in development or a self-check build: an installed copy ignores it (env.js).
+const IS_E2E = TEST_SWITCHES && process.env.JL_E2E === '1';
 const IS_DEV = !app.isPackaged;
 const LOGIN_ARGS = ['--hidden']; // Windows: started at login, so start quietly in the tray
 const ALLOWED_PERMISSIONS = new Set(['clipboard-read', 'clipboard-sanitized-write', 'fullscreen']);
 
 const log = createLog();
-const isAppUrl = makeAppUrlCheck({ dirs: [RENDERER_DIR], files: [FALLBACK_FILE] });
+const isAppUrl = makeAppUrlCheck({ origins: [APP_ORIGIN], files: [FALLBACK_FILE] });
+
+// app:// behaves like a normal https site for our pages (modules, fetch, workers): app://jewel-labs/ for the
+// screens, app://pages/ for the hidden pdf.js page. It must be registered before the app is ready.
+protocol.registerSchemesAsPrivileged([{ scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true } }]);
 
 let mainWindow = null;
 let tray = null;
@@ -68,8 +77,13 @@ if (process.env.JL_USER_DATA || IS_E2E) {
 if (process.platform === 'win32') app.setAppUserModelId('io.jewellabs.desk'); // Windows notifications need it
 process.on('unhandledRejection', (reason) => log.error('Unhandled promise rejection:', reason));
 
-// One copy of the app at a time: opening it again brings the first window forward.
-if (!app.requestSingleInstanceLock()) {
+// An installed copy started with a remote-debugging or inspector switch would let another program drive it,
+// with the house's sign-in and keys: it does not start.
+if (REFUSED_SWITCH) {
+  log.error(`Jewel Labs does not start with --${REFUSED_SWITCH}.`);
+  app.exit(1);
+} else if (!app.requestSingleInstanceLock()) {
+  // One copy of the app at a time: opening it again brings the first window forward.
   app.quit();
 } else {
   app.on('second-instance', () => showWindow());
@@ -120,8 +134,9 @@ async function startApp() {
     onClick: () => showWindow(),
   });
   const wasmDir = pdfjsWasmDir();
-  const rasterizer = createRasterizer({ BrowserWindow, htmlPath: PAGES_FILE, wasmDir });
-  const printer = createPrinter({ BrowserWindow, htmlPath: PAGES_FILE, wasmDir });
+  const wasmUrl = wasmDir ? `${PAGES_ORIGIN}/wasm/` : null;
+  const rasterizer = createRasterizer({ BrowserWindow, pageUrl: PAGES_URL, wasmUrl });
+  const printer = createPrinter({ BrowserWindow, pageUrl: PAGES_URL, wasmUrl });
   const core = await loadCore();
   const testHooks = IS_E2E ? await import('./e2e.js') : null; // test-only helpers, never loaded otherwise
 
@@ -151,6 +166,18 @@ async function startApp() {
   // Our pages may copy, paste and go full screen; nothing else (camera, location ...).
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)));
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
+  // What app:// serves: the screens, and the hidden page with the pdf.js copy and its image decoders.
+  protocol.handle(APP_SCHEME, createAppProtocolHandler({
+    sites: {
+      'jewel-labs': { '/': RENDERER_DIR },
+      pages: {
+        '/rasterize.html': PAGES_FILE,
+        '/rasterize-page.mjs': path.join(HERE, 'rasterize-page.mjs'),
+        '/renderer/vendor/': path.join(RENDERER_DIR, 'vendor'),
+        '/wasm/': wasmDir,
+      },
+    },
+  }));
 
   const handlers = createHandlers({
     state,
@@ -292,7 +319,7 @@ function openMainWindow({ show = true } = {}) {
     Menu,
     screen,
     preload: path.join(HERE, 'preload.cjs'),
-    indexFile: INDEX_FILE,
+    indexUrl: INDEX_URL,
     fallbackFile: FALLBACK_FILE,
     isAppUrl,
     openExternal: (url) => shell.openExternal(url),

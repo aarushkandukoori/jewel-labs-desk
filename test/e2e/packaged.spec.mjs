@@ -1,16 +1,35 @@
-// Checks the PACKAGED app (macOS): mounts the .dmg read-only, starts the app inside it with a throwaway
-// data folder, and lets the app check itself (src/main/e2e.js, JL_E2E_REPORT): start, load the sample,
-// let the agents read it, OCR the phone photo with the unpacked tesseract worker, draw a PDF page.
+// Checks the PACKAGED app (macOS): mounts the .dmg read-only, checks the Electron fuses, starts the app inside it
+// with a throwaway data folder, and lets the app check itself (src/main/e2e.js, JL_E2E_REPORT): start, load the
+// sample, let the agents read it, OCR the phone photo with the unpacked tesseract worker, draw a PDF page.
 //
-//   npx electron-builder --mac --arm64 --publish never
+// An installed copy ignores the test switches (src/main/switches.js), so the check needs a self-check build:
+// the same app with "selfCheck": true in its package.json.
+//
+//   npx electron-builder --mac --arm64 --publish never -c.extraMetadata.selfCheck=true
 //   node test/e2e/packaged.spec.mjs [path/to/Jewel-Labs-mac-arm64.dmg]
 //
 // The AI stays off here (a packaged app never reads a developer key), so the offline reader and OCR do
 // the reading. Playwright is not used: it cannot attach to a packaged app, so the app is started directly.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import fuses from '@electron/fuses';
 import { ROOT, TMP, sleep, tempDir } from './helpers.mjs';
+
+const { getCurrentFuseWire, FuseV1Options } = fuses;
+const FUSE_ON = 49; // the fuse wire's bytes: '1' is on, '0' is off (FuseState in @electron/fuses)
+const FUSE_OFF = 48;
+
+// What electron-builder.yml asks for (electronFuses).
+const WANTED_FUSES = {
+  RunAsNode: false,
+  EnableNodeOptionsEnvironmentVariable: false,
+  EnableNodeCliInspectArguments: false,
+  EnableEmbeddedAsarIntegrityValidation: true,
+  OnlyLoadAppFromAsar: true,
+  EnableCookieEncryption: true,
+  GrantFileProtocolExtraPrivileges: false,
+};
 
 const dmg = path.resolve(process.argv[2] || path.join(ROOT, 'dist', 'Jewel-Labs-mac-arm64.dmg'));
 if (process.platform !== 'darwin') {
@@ -40,6 +59,16 @@ try {
   console.log(`${dmg}: ${(fs.statSync(dmg).size / 1024 / 1024).toFixed(1)} MB`);
   console.log(`unpacked modules: ${missing.length ? `MISSING ${missing.join(', ')}` : 'all present'}`);
   if (missing.length) failed = true;
+
+  const wire = await getCurrentFuseWire(path.join(mountPoint, appDir));
+  const wrongFuses = Object.entries(WANTED_FUSES).filter(([name, on]) => wire[FuseV1Options[name]] !== (on ? FUSE_ON : FUSE_OFF));
+  console.log(`${wrongFuses.length ? 'FAIL ' : 'ok   '} electron fuses${wrongFuses.length ? `: ${wrongFuses.map(([n]) => n).join(', ')} not as electron-builder.yml asks` : ' as electron-builder.yml asks'}`);
+  if (wrongFuses.length) failed = true;
+  // codesign prints the signature details on stderr: "flags=0x10002(adhoc,runtime)".
+  const signature = spawnSync('codesign', ['--display', '--verbose=4', path.join(mountPoint, appDir)], { encoding: 'utf8' });
+  const hardened = /flags=0x[0-9a-f]+\([^)]*\bruntime\b[^)]*\)/.test(`${signature.stdout}${signature.stderr}`);
+  console.log(`${hardened ? 'ok   ' : 'FAIL '} hardened runtime ${hardened ? 'on' : 'off'}`);
+  if (!hardened) failed = true;
 
   const lines = [];
   const started = Date.now();

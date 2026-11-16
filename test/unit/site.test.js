@@ -1,5 +1,7 @@
 // Tests for the website: the build script (scripts/build-site.js), the small pure helpers in
-// site/js, and the page content rules (copy, links, agents, image sizes, no secrets).
+// site/js, and the page content rules (copy, links, agents, image sizes, no secrets). Also the
+// repository docs that describe the code (README.md, the docs/ARCHITECTURE.md contract, the npm
+// scripts) and the license notices the app and the site ship.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -49,11 +51,13 @@ function fakeRepo() {
   write(root, 'site/css/site.css', 'body { color: white; }');
   write(root, 'site/.DS_Store', 'junk');
   write(root, 'src/renderer/fonts/Geist-Medium.woff2', 'font bytes');
+  write(root, 'src/renderer/fonts/OFL.txt', 'SIL OPEN FONT LICENSE Version 1.1');
   write(root, 'src/renderer/fonts/notes.txt', 'not a font');
   write(root, 'src/renderer/index.html', '<link rel="stylesheet" href="styles/app.css"><script type="module" src="app.js"></script>');
   write(root, 'src/renderer/styles/app.css', 'body {}');
   write(root, 'src/renderer/app.js', "import { AGENTS } from './lib/labels.js';\n");
   write(root, 'src/renderer/lib/labels.js', 'export const AGENTS = [];\n');
+  write(root, 'src/renderer/demo/sample-run.json', JSON.stringify({ meta: { format: 1 }, files: {}, steps: [{ t: 0, kind: 'mark' }] }));
   write(root, 'assets/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>');
   return root;
 }
@@ -79,7 +83,8 @@ test('build copies the site, fonts, favicon and app, and writes .nojekyll', () =
   assert.ok(fs.existsSync(path.join(out, 'css', 'site.css')));
   assert.ok(!fs.existsSync(path.join(out, '.DS_Store')), 'hidden files are left out');
   assert.ok(fs.existsSync(path.join(out, 'fonts', 'Geist-Medium.woff2')));
-  assert.ok(!fs.existsSync(path.join(out, 'fonts', 'notes.txt')), 'only .woff2 files go to fonts/');
+  assert.equal(fs.readFileSync(path.join(out, 'fonts', 'OFL.txt'), 'utf8'), 'SIL OPEN FONT LICENSE Version 1.1', 'the license goes with the fonts');
+  assert.ok(!fs.existsSync(path.join(out, 'fonts', 'notes.txt')), 'only the fonts and their license go to fonts/');
   assert.ok(fs.existsSync(path.join(out, 'favicon.svg')));
   assert.ok(fs.existsSync(path.join(out, 'app', 'index.html')));
   assert.ok(fs.existsSync(path.join(out, 'app', 'lib', 'labels.js')));
@@ -91,6 +96,17 @@ test('build copies the site, fonts, favicon and app, and writes .nojekyll', () =
   assert.equal(summary.fonts, 1);
   assert.deepEqual(summary.warnings, []);
   assert.equal(summary.files, listFiles(out).length);
+});
+
+test('build warns when the fonts have no OFL.txt, since the license must go with them', () => {
+  const root = fakeRepo();
+  fs.rmSync(path.join(root, 'src', 'renderer', 'fonts', 'OFL.txt'));
+  const out = path.join(root, 'site-dist');
+  const summary = buildSite({ root, out, log: quiet });
+  assert.equal(summary.fonts, 1);
+  assert.ok(!fs.existsSync(path.join(out, 'fonts', 'OFL.txt')));
+  assert.equal(summary.warnings.length, 1);
+  assert.match(summary.warnings[0], /no OFL\.txt/);
 });
 
 test('build copies the sample shipment into app/samples when it exists', () => {
@@ -123,14 +139,29 @@ test('build switches the video section on only when media/demo.mp4 exists', () =
   assert.match(html(), /data-video-poster="media\/demo-poster.jpg"/);
 });
 
-test('build writes a placeholder app page when the app UI is not there yet', () => {
+test('build refuses to run without the app screens, which the live demo is made of', () => {
   const root = fakeRepo();
   fs.rmSync(path.join(root, 'src', 'renderer', 'index.html'));
+  assert.throws(() => buildSite({ root, out: path.join(root, 'site-dist'), log: quiet }), /No src\/renderer\/index\.html/);
+});
+
+test('build reports the recorded demo run, and warns when it is missing, empty or broken (the demo then shows an error)', () => {
+  const root = fakeRepo();
   const out = path.join(root, 'site-dist');
-  const summary = buildSite({ root, out, log: quiet });
-  assert.equal(summary.app, 'placeholder');
-  assert.match(fs.readFileSync(path.join(out, 'app', 'index.html'), 'utf8'), /The app preview is being prepared/);
-  assert.equal(summary.warnings.length, 1);
+  const runFile = path.join(root, 'src', 'renderer', 'demo', 'sample-run.json');
+  let summary = buildSite({ root, out, log: quiet });
+  assert.equal(summary.demo, 'recorded');
+  assert.equal(summary.demoSteps, 1);
+  for (const [content, why] of [['{"steps": []}', /no recorded steps/], ['{ not json', /not valid JSON/], [null, /is missing/]]) {
+    if (content === null) fs.rmSync(runFile);
+    else fs.writeFileSync(runFile, content);
+    summary = buildSite({ root, out, log: quiet });
+    assert.equal(summary.demo, 'none');
+    assert.equal(summary.warnings.length, 1);
+    assert.match(summary.warnings[0], why);
+    assert.match(summary.warnings[0], /the demo shows an error banner/);
+    assert.doesNotMatch(summary.warnings[0], /scripted/);
+  }
 });
 
 test('build empties the output folder first, so deleted files do not linger', () => {
@@ -169,6 +200,10 @@ test('the real site builds, and every file the page refers to is in the output',
   assert.ok(summary.fonts >= 8, 'fonts are copied');
   assert.ok(fs.existsSync(path.join(out, 'favicon.svg')));
   assert.ok(fs.existsSync(path.join(out, 'app', 'index.html')));
+  // The site ships third-party fonts and code, so their licenses go with them.
+  for (const notice of ['fonts/OFL.txt', 'app/fonts/OFL.txt', 'app/vendor/preact-htm.LICENSE.txt', 'app/vendor/pdfjs/LICENSE']) {
+    assert.ok(fs.existsSync(path.join(out, notice)), `${notice} is in site-dist`);
+  }
 
   const html = fs.readFileSync(path.join(out, 'index.html'), 'utf8');
   // Whole attribute names only (data-video-src is the optional video, checked by the build test above).
@@ -465,4 +500,116 @@ test('no image in the site is heavier than 200 KB', () => {
     const size = fs.statSync(path.join(SITE, rel)).size;
     assert.ok(size <= 200 * 1024, `${rel} is ${Math.round(size / 1024)} KB`);
   }
+});
+
+/* ───────── the repository docs ───────── */
+
+const readRepo = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+const ARCHITECTURE = readRepo('docs/ARCHITECTURE.md');
+
+/** Code files under a folder (relative to the repo), leaving out hidden folders such as test/.tmp and vendor/. */
+function codeFiles(dir) {
+  return fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((entry) => {
+    const rel = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) return entry.name.startsWith('.') || entry.name === 'vendor' ? [] : codeFiles(rel);
+    return /\.(m?js|cjs)$/.test(entry.name) ? [rel] : [];
+  });
+}
+
+/** { area: Set of method names } from a list of `area.method` names. */
+function byArea(pairs) {
+  const methods = {};
+  for (const [area, name] of pairs) (methods[area] ||= new Set()).add(name);
+  return Object.fromEntries(Object.entries(methods).map(([area, names]) => [area, [...names].sort()]));
+}
+
+test('docs/ARCHITECTURE.md lists exactly the bridge methods src/main/preload.cjs gives the screens', () => {
+  const preload = readRepo('src/main/preload.cjs');
+  const table = preload.match(/const METHODS = \{([\s\S]*?)\n\};/)[1];
+  const real = [];
+  for (const [, area, names] of table.matchAll(/(\w+): \[([^\]]*)\]/g)) {
+    for (const [, name] of names.matchAll(/'(\w+)'/g)) real.push([area, name]);
+  }
+  for (const [, area, name] of preload.matchAll(/^jl\.(\w+)\.(\w+) = /gm)) real.push([area, name]); // jl.app.pathForFile
+  assert.ok(real.length > 50, 'the method table was read');
+
+  // One line per area in the bridge block: "jl.<area>.<method>(...) .<method>(...)".
+  const section = ARCHITECTURE.slice(ARCHITECTURE.indexOf('## Electron bridge'));
+  const block = section.match(/```\n([\s\S]*?)```/)[1];
+  const documented = [];
+  for (const line of block.split('\n')) {
+    const area = line.match(/^jl\.(\w+)\./)?.[1];
+    if (area) for (const [, name] of line.matchAll(/\.(\w+)\(/g)) documented.push([area, name]);
+  }
+  assert.deepEqual(byArea(documented), byArea(real));
+  assert.match(block, /^jl\.on\(event, fn\)/m);
+});
+
+test('docs/ARCHITECTURE.md lists every JL_ environment variable the code reads, and no others', () => {
+  const inCode = new Set();
+  for (const file of ['src', 'scripts', 'test'].flatMap(codeFiles)) {
+    for (const [name] of readRepo(file).matchAll(/\bJL_[A-Z0-9_]+\b/g)) inCode.add(name);
+  }
+  const section = ARCHITECTURE.slice(ARCHITECTURE.indexOf('## Development and test environment variables'));
+  const documented = new Set([...section.slice(0, section.indexOf('\n## ', 1)).matchAll(/`(JL_[A-Z0-9_]+)`/g)].map((m) => m[1]));
+  assert.ok(inCode.has('JL_DEV_OPENAI_KEY_FILE') && inCode.has('JL_E2E'), 'the code was read');
+  assert.deepEqual([...documented].sort(), [...inCode].sort());
+});
+
+test('every repository path the docs name in backticks exists', () => {
+  const docs = ['README.md', 'docs/ARCHITECTURE.md', 'docs/DESIGN.md', 'THIRD_PARTY_NOTICES.md', 'src/renderer/demo/README.md'];
+  const repoPath = /^(?:src|scripts|test|backend|site|docs|samples|assets|\.github)\/[\w./-]*$/;
+  const written = ['test/.tmp/', 'site/media/']; // made by the scripts, not kept in the repository
+  let checked = 0;
+  for (const doc of docs) {
+    const prose = readRepo(doc).replace(/```[\s\S]*?```/g, ''); // inline code only
+    for (const [, code] of prose.matchAll(/`([^`]+)`/g)) {
+      for (const word of code.split(/\s+/)) {
+        const rel = word.replace(/^\(/, '').replace(/[),.:;]+$/, '');
+        if (!repoPath.test(rel) || written.some((dir) => rel.startsWith(dir))) continue;
+        checked++;
+        assert.ok(fs.existsSync(path.join(ROOT, rel)), `${doc} names ${rel}, which does not exist`);
+      }
+    }
+  }
+  assert.ok(checked > 40, `${checked} paths checked`);
+});
+
+test('every npm script runs a file that exists, and README.md shows each script', () => {
+  const { scripts } = JSON.parse(readRepo('package.json'));
+  const readme = readRepo('README.md');
+  for (const [name, command] of Object.entries(scripts)) {
+    for (const [, file] of command.matchAll(/\bnode\s+([\w./-]+\.(?:m?js|cjs))\b/g)) {
+      assert.ok(fs.existsSync(path.join(ROOT, file)), `npm run ${name} runs ${file}, which does not exist`);
+    }
+    const shown = ['start', 'test'].includes(name) ? `npm ${name}` : `npm run ${name}`;
+    assert.ok(readme.includes(shown), `README.md does not show ${shown}`);
+  }
+  assert.equal(scripts['demo:run'], 'node scripts/record-run.js', 'the demo recording');
+  assert.equal(scripts['demo:video'], 'node scripts/record-demo.js', 'the demo video');
+});
+
+test('the fonts and the vendored UI code the app and the site ship carry their licenses', () => {
+  const owners = {
+    geist: 'Copyright (c) 2023 Vercel, in collaboration with basement.studio',
+    inter: 'Copyright 2016 The Inter Project Authors',
+  };
+  for (const dir of ['src/renderer/fonts', 'src/core/papers/fonts']) {
+    const license = readRepo(`${dir}/OFL.txt`);
+    assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/, `${dir}/OFL.txt holds the license`);
+    for (const name of fs.readdirSync(path.join(ROOT, dir)).filter((n) => /\.(woff2|ttf)$/.test(n))) {
+      const owner = owners[name.toLowerCase().startsWith('inter') ? 'inter' : 'geist'];
+      assert.ok(license.includes(owner), `${dir}/OFL.txt names who owns ${name}`);
+    }
+  }
+  const bundle = readRepo('src/renderer/vendor/preact-htm.LICENSE.txt');
+  assert.match(bundle, /Apache License\s+Version 2\.0/, 'htm');
+  assert.match(bundle, /Copyright \(c\) 2015-present Jason Miller[\s\S]*Permission is hereby granted/, 'Preact');
+  assert.match(readRepo('src/renderer/vendor/pdfjs/LICENSE'), /Apache License\s+Version 2\.0/, 'pdf.js');
+
+  const notices = readRepo('THIRD_PARTY_NOTICES.md');
+  for (const name of ['pdf.js', 'htm', 'Preact', 'tesseract.js', 'SheetJS', 'Geist', 'Inter']) {
+    assert.ok(notices.includes(name), `THIRD_PARTY_NOTICES.md lists ${name}`);
+  }
+  assert.match(readRepo('LICENSE'), /^Copyright \(c\) 2026 Jewel Labs\. All rights reserved\./);
 });

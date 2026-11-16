@@ -3,19 +3,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const MAX_DEPTH = 5;
-const MAX_FILES = 2000;
+// Not a working limit: the seen list stops old files from being read again. This only stops someone from
+// watching a whole drive by mistake, and says so instead of quietly leaving files out.
+export const MAX_FILES = 50000;
 // Hidden files, Office lock files and half-finished downloads are never papers.
 const SKIP_NAME = /^(\.|~\$|__MACOSX$|Thumbs\.db$|desktop\.ini$)|\.(tmp|part|crdownload|download|partial)$/i;
 
 /** Every file under `dir` as { full, rel, size, mtimeMs }, sorted by path. Folders are walked a few levels deep. */
-export async function listFiles(dir) {
+export async function listFiles(dir, { maxFiles = MAX_FILES } = {}) {
   const out = [];
-  await walk(dir, '', 0, out);
+  await walk(dir, '', 0, out, maxFiles);
   return out.sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
-async function walk(root, relDir, depth, out) {
-  if (depth > MAX_DEPTH || out.length >= MAX_FILES) return;
+async function walk(root, relDir, depth, out, maxFiles) {
+  if (depth > MAX_DEPTH) return;
   let entries;
   try {
     entries = await fs.readdir(path.join(root, relDir), { withFileTypes: true });
@@ -28,10 +30,13 @@ async function walk(root, relDir, depth, out) {
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
     const full = path.join(root, rel);
     if (entry.isDirectory()) {
-      await walk(root, rel, depth + 1, out);
-    } else if (entry.isFile() && out.length < MAX_FILES) {
-      const stat = await fs.stat(full);
-      out.push({ full, rel, size: stat.size, mtimeMs: stat.mtimeMs });
+      await walk(root, rel, depth + 1, out, maxFiles);
+    } else if (entry.isFile()) {
+      if (out.length >= maxFiles) {
+        throw new Error(`This folder holds more than ${maxFiles.toLocaleString('en-US')} files. Choose the folder where new papers land.`);
+      }
+      const stat = await fs.stat(full).catch(() => null); // gone or locked since it was listed: next round
+      if (stat) out.push({ full, rel, size: stat.size, mtimeMs: stat.mtimeMs });
     }
   }
 }

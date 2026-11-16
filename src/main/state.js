@@ -3,37 +3,25 @@
 // It never imports Electron, so the unit tests run it in plain Node with small fakes.
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { NO_SAFE_STORAGE } from './secrets.js';
 import { isPlainObject } from './validate.js';
 
 export const LOCAL_WORKSPACE_NAME = 'Local workspace';
+// The sandbox's name (the same as SAMPLE_WORKSPACE_NAME in pipeline/sample.js, which gives the sandbox the SAMPLE
+// house's details when the sample is loaded and keeps any other name the person chose).
 export const SAMPLE_WORKSPACE_NAME = 'Sample workspace';
 export const DESK_ONLY = 'Only Jewel Labs desk staff can do this.';
-
-// The fictional house the SAMPLE papers belong to (samples/answers.json). The agents need it to tell an
-// export from an import and to put the right name on the papers.
-export const SAMPLE_HOUSE = {
-  name: 'Kavya Gems LLP (SAMPLE)',
-  legalEntity: 'Kavya Gems LLP (SAMPLE)',
-  address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
-  taxId: 'SAMPLE00012',
-  city: 'Surat',
-  country: 'India',
-  role: 'exporter',
-  environment: 'sandbox',
-  letterhead: {
-    companyName: 'Kavya Gems LLP (SAMPLE)',
-    address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
-    cityCountry: 'Surat, India',
-    iec: 'SAMPLE00012',
-    email: 'ops@kavya-gems.example.com',
-    phone: '+91 555 010 0012',
-  },
-};
+export const DESK_APPROVAL_ONLY =
+  'Only a signed-in Jewel Labs desk account can approve a held pack. Fix what the checks found and run the agents again, or sign in so Jewel Labs can review it.';
+export const ANSWER_FIRST = 'Answer this question; the agents need to know which is right.';
 
 // Record fields the screens may never overwrite.
 const PROTECTED_FIELDS = ['id', 'workspaceId', 'createdAt', 'updatedAt'];
+// What a person may change on a shipment directly: only their own note. Everything else comes from the papers, the
+// answers to the agents' questions and the checks (status, approvals, the papers it needs), never from a screen.
+const SHIPMENT_EDITABLE = ['note'];
 // Settings the app manages itself; the screens cannot set them as preferences.
 const INTERNAL_SETTINGS = new Set([
   'deviceId', 'selected', 'localWorkspaceId', 'sampleWorkspaceId', 'workspaces', 'windowBounds', 'toldAboutTray', 'prefs', 'autopilot',
@@ -58,6 +46,8 @@ export function createAppState({
   let cloud = null; // the Supabase client (src/core/store/cloud.js), when the cloud is configured
   let session = null; // the signed-in session { user: { id, email, name }, isDesk }, or null
   let cloudWorkspaces = []; // last list from the cloud; each carries myRole, the person's role there
+  let housesUnknown = false; // the list of houses could not be read at start (offline, a cloud blip)
+  let fellBack = false; // the saved house did not open (offline, signed out): reopen it once the sign-in is back
   let current = null; // the open workspace: { kind: 'local' | 'cloud', id }
   let store = null;
   let ai = null;
@@ -82,13 +72,18 @@ export function createAppState({
       if (core.error) throw core.error;
       const localIds = await ensureLocalWorkspaces();
       if (config.SUPABASE_URL && core.cloud) await connectCloud();
+      const saved = settings.get().selected;
       const target = pickStartWorkspace(localIds);
+      // Opening at start never changes the saved choice: a fallback (offline, signed out) is not what the
+      // person picked, and the next start, or the sign-in coming back, opens their house again.
+      fellBack = saved?.kind === 'cloud' && target.id !== saved.id;
       try {
-        await open(target);
+        await open(target, { remember: false });
       } catch (error) {
         if (target.kind !== 'cloud') throw error;
         log.warn('The shared workspace did not open, using the local one:', error.message);
-        await open(localRef()); // offline or the cloud is down: keep working locally
+        fellBack = true;
+        await open(localRef(), { remember: false }); // offline or the cloud is down: keep working locally
       }
     });
   }
@@ -98,11 +93,16 @@ export function createAppState({
     try {
       cloud = await core.cloud.createCloud({
         url: config.SUPABASE_URL,
-        anonKey: config.SUPABASE_ANON_KEY,
+        anonKey: config.SUPABASE_PUBLISHABLE_KEY,
         sessionStorage: secrets.storage('supabase'),
       });
       session = await readSession();
-      if (session) cloudWorkspaces = await cloud.workspaces.list().catch(() => []);
+      if (session) {
+        cloudWorkspaces = await cloud.workspaces.list().catch(() => {
+          housesUnknown = true; // offline: the saved house still opens from its copy on this computer
+          return [];
+        });
+      }
       cloud.auth.onChange?.(() => onSessionChange());
     } catch (error) {
       log.warn('Sign-in is not available right now:', error.message);
@@ -121,13 +121,15 @@ export function createAppState({
     return runInOrder(() => open(ref));
   }
 
-  async function open(ref) {
+  // remember: false opens a workspace without making it the person's choice (start-up and fallbacks).
+  async function open(ref, { remember = true } = {}) {
+    if (remember) fellBack = false;
     await close();
     lastError = null;
     try {
       store =
         ref.kind === 'cloud'
-          ? await core.store.openCloudStore({ cloud, workspaceId: ref.id, cacheDir: path.join(paths.cacheDir, 'cloud') })
+          ? await core.store.openCloudStore({ cloud, workspaceId: ref.id, cacheDir: path.join(paths.cacheDir, 'cloud'), userId: session?.user?.id || null })
           : await core.store.openLocalStore({ dir: paths.localDir, workspaceId: ref.id });
       current = ref;
       ai = await makeAI();
@@ -139,7 +141,7 @@ export function createAppState({
         labsVerify: labsVerify || undefined,
         rasterize: rasterize || undefined,
         notify,
-        paths: { ...paths, samples: paths.samplesDir },
+        paths,
         deviceId: settings.get().deviceId,
         lease: ref.kind === 'cloud' ? cloud.lease : undefined,
         getMembers: ref.kind === 'cloud' ? () => cloud.workspaces.members(ref.id) : undefined,
@@ -148,12 +150,14 @@ export function createAppState({
       rememberAutopilot((await services.autopilot.get()) !== false);
       reconnectMail(ref);
       startWorker(services);
-      settings.set({ selected: ref });
+      if (remember) settings.set({ selected: ref });
       sendEvent('sync', { reason: 'opened', workspaceId: ref.id, kind: ref.kind });
     } catch (error) {
       lastError = error;
       log.error('The workspace did not open:', error);
       await close();
+      // The server says this person is no longer in the house: its copy on this computer goes too.
+      if (ref.kind === 'cloud' && error?.code === 'NOT_FOUND') await forgetHouse(ref.id);
       throw error;
     }
   }
@@ -221,9 +225,10 @@ export function createAppState({
   }
 
   // Reopens the workspace used last time, or the first shared one after a sign-in, or the local one.
+  // A saved house opens even when the list of houses could not be read (offline): its copy on this computer opens.
   function pickStartWorkspace(localIds) {
     const saved = settings.get().selected;
-    if (saved?.kind === 'cloud' && session && cloudWorkspaces.some((w) => w.id === saved.id)) return saved;
+    if (saved?.kind === 'cloud' && session && (housesUnknown || cloudWorkspaces.some((w) => w.id === saved.id))) return saved;
     if (saved?.kind === 'local' && localIds.has(saved.id)) return saved;
     if (session && cloudWorkspaces[0]) return { kind: 'cloud', id: cloudWorkspaces[0].id };
     return localRef();
@@ -284,6 +289,11 @@ export function createAppState({
       .get(mailSecretName(ref.id))
       .then((appPassword) => appPassword && svc.mail.connect({ ...saved, appPassword, test: false }))
       .catch((e) => {
+        // Saved by an older copy with no domains: retrying cannot help. The mailbox status asks for them.
+        if (e?.code === 'no_domains') {
+          log.warn('The mailbox did not reconnect: it has no email domains to bring mail in from.');
+          return;
+        }
         log.warn('The mailbox did not reconnect; trying again in a few minutes:', e?.message || e);
         mailRetry = setTimeout(() => services === svc && reconnectMail(ref), config.MAILBOX_POLL_MINUTES * 60 * 1000);
         mailRetry.unref?.();
@@ -302,8 +312,33 @@ export function createAppState({
 
   async function onSessionChange() {
     session = await readSession();
-    if (!session && current?.kind === 'cloud') await openWorkspace(localRef()).catch(() => {});
+    if (!session && current?.kind === 'cloud') {
+      // The sign-in ran out (offline, or signed out on another computer): work locally for now, keep the house as
+      // the saved choice, and reopen it when the sign-in comes back.
+      await runInOrder(async () => {
+        await open(localRef(), { remember: false });
+        fellBack = true;
+      }).catch(() => {});
+    }
+    if (session) await reopenSavedHouse();
     sendEvent('auth', authStatus());
+  }
+
+  // After an offline start (or a sign-in that ran out) the app works in another workspace. Once the sign-in is
+  // back (the token refreshes about a minute after the network returns), the saved house opens again, with the AI.
+  async function reopenSavedHouse() {
+    const saved = settings.get().selected;
+    if (!fellBack || saved?.kind !== 'cloud' || !cloud) return;
+    const list = await cloud.workspaces.list().catch(() => null);
+    if (!list) return; // still offline: try again on the next sign-in change
+    cloudWorkspaces = list;
+    housesUnknown = false;
+    if (!list.some((w) => w.id === saved.id)) return;
+    await runInOrder(async () => {
+      if (!fellBack) return; // the person opened a workspace themselves meanwhile
+      await open(saved, { remember: false });
+      fellBack = false;
+    }).catch((e) => log.warn('The house did not reopen yet:', e?.message || e));
   }
 
   function isDeskUser() {
@@ -313,6 +348,12 @@ export function createAppState({
   // Local mode has no accounts: everything is the person's own data, so the desk views are allowed.
   function deskAllowed() {
     return !session || isDeskUser();
+  }
+
+  // Approving a held pack is the Jewel Labs review itself: only a signed-in desk account may do it, never the
+  // house's own clerk in a local workspace.
+  function canApprove() {
+    return Boolean(session) && isDeskUser();
   }
 
   function role() {
@@ -346,6 +387,7 @@ export function createAppState({
       user: user ? { id: user.id || null, email: user.email || null, name: user.name || user.email || null } : null,
       role: role(),
       deskAllowed: deskAllowed(),
+      canApprove: canApprove(),
     };
   }
 
@@ -383,13 +425,56 @@ export function createAppState({
     sendEvent('auth', authStatus());
   }
 
+  // Signing out sends what is still waiting while the sign-in works, then removes this computer's copies of the
+  // houses (cache/cloud/<houseId>/), so the next person at this computer, or a member who was removed, keeps none.
+  // A house with changes that could not be sent (offline) is kept, so no work is lost: keptUnsent says how many.
   async function signOut() {
+    const house = current?.kind === 'cloud' ? store : null;
+    if (typeof house?.flush === 'function') await settle(() => withTimeout(house.flush(), 5000), 'send the last changes');
     if (cloud) await settle(() => cloud.auth.signOut(), 'sign out of the cloud');
     session = null;
     cloudWorkspaces = [];
+    housesUnknown = false;
     await openWorkspace(current?.kind === 'local' ? current : localRef());
+    const kept = await forgetHouses();
     sendEvent('auth', authStatus());
-    return authStatus();
+    return { ...authStatus(), keptUnsent: kept.length };
+  }
+
+  // ---------- this computer's copies of the shared houses ----------
+
+  function houseCacheDir(id) {
+    return path.join(paths.cacheDir, 'cloud', path.basename(String(id)));
+  }
+
+  // True when the house's copy still holds changes that never reached the server (cloud-store.js keeps them in
+  // _sync.json as its outbox). An unreadable file counts as unsent: keeping it is the safe side.
+  async function hasUnsentChanges(dir) {
+    try {
+      const sync = JSON.parse(await fs.readFile(path.join(dir, '_sync.json'), 'utf8'));
+      return Array.isArray(sync?.outbox) && sync.outbox.length > 0;
+    } catch (error) {
+      return error?.code !== 'ENOENT';
+    }
+  }
+
+  // Removes one house's copy unless it holds unsent changes. Returns true when it is gone.
+  async function forgetHouse(id) {
+    const dir = houseCacheDir(id);
+    if (await hasUnsentChanges(dir)) {
+      log.warn('A house copy kept on this computer: it has changes that were not sent yet.');
+      return false;
+    }
+    await settle(() => fs.rm(dir, { recursive: true, force: true }), 'remove a house copy');
+    return true;
+  }
+
+  // Removes the copy of every house on this computer. Returns the ids that were kept (unsent changes).
+  async function forgetHouses() {
+    const names = await fs.readdir(path.join(paths.cacheDir, 'cloud')).catch(() => []);
+    const kept = [];
+    for (const id of names) if (!(await forgetHouse(id))) kept.push(id);
+    return kept;
   }
 
   // ---------- workspaces ----------
@@ -403,6 +488,7 @@ export function createAppState({
     }));
     if (!session) return local;
     cloudWorkspaces = await cloud.workspaces.list();
+    housesUnknown = false;
     return [...cloudWorkspaces.map((w) => ({ ...w, kind: 'cloud', sample: false })), ...local];
   }
 
@@ -445,6 +531,15 @@ export function createAppState({
     requireSession();
     if (current?.kind !== 'cloud') throw new Error('Invites work for shared workspaces. Open your house workspace first.');
     return cloud.workspaces.invite(current.id, inviteRole);
+  }
+
+  // Withdraws an invite code (the house owner or Jewel Labs): nobody can join with it any more.
+  async function revokeInvite(code) {
+    requireSession();
+    const revoked = await cloud.workspaces.revoke(code);
+    if (!revoked) throw new Error('That code was not found, or only the house owner can withdraw it.');
+    await logActivity(store, { action: 'invite.revoke', detail: 'Withdrew an invite code' }).catch(() => {});
+    return { revoked: true };
   }
 
   async function members() {
@@ -516,6 +611,11 @@ export function createAppState({
     const shipment = await s.get('shipments', id);
     if (!shipment) throw new Error('That shipment was not found.');
     const changes = withoutProtected(patch);
+    const refused = Object.keys(changes).filter((key) => !SHIPMENT_EDITABLE.includes(key));
+    if (refused.length) {
+      throw new Error(`${refused.join(', ')} cannot be changed here. Answer the agents' questions, or add corrected papers.`);
+    }
+    if (changes.note !== undefined && changes.note !== null && typeof changes.note !== 'string') throw new Error('The note must be text.');
     const saved = await s.put('shipments', { ...shipment, ...changes, id });
     const what = Object.keys(changes).join(', ') || 'nothing';
     await logActivity(s, { shipmentId: id, action: 'shipment.edit', detail: `Edited ${what} on ${shipment.ref || 'the shipment'}` });
@@ -524,9 +624,12 @@ export function createAppState({
 
   async function dismissQuestion(id) {
     const { store: s, services: svc } = await ready();
-    if (typeof svc.dismissQuestion === 'function') return svc.dismissQuestion(id, actor());
     const question = await s.get('questions', id);
     if (!question) throw new Error('That question was not found.');
+    // Two papers that disagree, or a possible sanctions match, need an answer: closing the question unanswered
+    // would let the shipment go on to Ready to sign.
+    if (question.kind === 'mismatch' || question.kind === 'confirm') throw new Error(ANSWER_FIRST);
+    if (typeof svc.dismissQuestion === 'function') return svc.dismissQuestion(id, actor());
     const saved = await s.put('questions', {
       ...question,
       status: 'dismissed',
@@ -557,7 +660,8 @@ export function createAppState({
     const { store: s } = await ready();
     const paper = await s.get('papers', id);
     if (!paper) throw new Error('That paper was not found.');
-    return { name: `${paper.ref}-v${paper.version}.pdf`, mime: 'application/pdf', bytes: await s.getFile(paper.fileKey) };
+    const signed = paper.status === 'signed' || paper.status === 'sent' ? '-signed' : '';
+    return { name: `${paper.ref}-v${paper.version}${signed}.pdf`, mime: 'application/pdf', bytes: await s.getFile(paper.fileKey) };
   }
 
   async function sendMessage({ text, shipmentId = null, to = null }) {
@@ -609,7 +713,14 @@ export function createAppState({
     }));
     const inviteCode = session ? await cloud.workspaces.invite(workspace.id, 'owner').catch((e) => ({ error: e.message })) : null;
     if (session) cloudWorkspaces = await cloud.workspaces.list().catch(() => cloudWorkspaces);
-    return { workspace: { ...workspace, kind: session ? 'cloud' : 'local' }, screening, invite: inviteCode };
+    // The new house opens at once, so its mailbox, chat export and records go to it, never to the house that was
+    // open before (another customer). If it does not open, the old house is closed all the same (open() closes
+    // first), so nothing can land there; the result still carries the invite code.
+    let openError = null;
+    await openWorkspace({ kind: session ? 'cloud' : 'local', id: workspace.id }).catch((e) => {
+      openError = e.message;
+    });
+    return { workspace: { ...workspace, kind: session ? 'cloud' : 'local' }, screening, invite: inviteCode, opened: !openError, openError };
   }
 
   // ---------- OFAC sanctions list ----------
@@ -769,22 +880,11 @@ export function createAppState({
     return (await ready()).services;
   }
 
-  // options.later: true delivers the papers that arrive late in the sample's story (the packing list).
+  // options.later: true delivers the papers that arrive late in the sample's story (the packing list). The services
+  // give the sandbox the SAMPLE house's details the first time (pipeline/sample.js).
   async function loadSample(options = {}) {
     const svc = await openSample();
-    await useSampleHouse();
     return svc.loadSample({ later: options?.later === true });
-  }
-
-  // Gives the sample workspace the SAMPLE house's name and details the first time, so the agents can tell
-  // its exports from its imports. Details already there (from an earlier load, or typed in) are kept.
-  async function useSampleHouse() {
-    const { store: s } = await ready();
-    const workspace = await s.workspace();
-    if (workspace.legalEntity) return;
-    const patch = { ...SAMPLE_HOUSE, sample: true };
-    if (workspace.name && workspace.name !== SAMPLE_WORKSPACE_NAME) delete patch.name; // keep a name the person chose
-    await s.updateWorkspace(patch);
   }
 
   async function resetSample() {
@@ -806,6 +906,7 @@ export function createAppState({
       signedIn: Boolean(session),
       role: role(),
       deskAllowed: deskAllowed(),
+      canApprove: canApprove(),
       ai: ai ? aiInfo(ai) : { mode: 'off', model: null, available: false, calls: 0, lastError: null },
       autopilot: autopilotOn(),
       secureStorage: secrets.available(),
@@ -824,6 +925,7 @@ export function createAppState({
     personName,
     actor,
     deskAllowed,
+    canApprove,
     listWorkspaces,
     selectWorkspace,
     currentWorkspace,
@@ -831,6 +933,7 @@ export function createAppState({
     updateWorkspace,
     joinWorkspace,
     invite,
+    revokeInvite,
     members,
     list,
     get,
@@ -883,6 +986,16 @@ function mailSecretName(workspaceId) {
   return `mail:${workspaceId}`;
 }
 
+// Waits for the promise, but never longer than ms (then carries on; the promise may still finish later).
+function withTimeout(promise, ms) {
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 function withoutProtected(patch) {
   const copy = { ...patch };
   for (const key of PROTECTED_FIELDS) delete copy[key];
@@ -905,6 +1018,8 @@ export function newestFirst(a, b) {
   return time(b).localeCompare(time(a));
 }
 
+// The audit line for a lab check. A check that could not run (no online check, the window closed, a timeout)
+// never reads as "not found": that would sound like a fake report.
 export function labCheckDetail(stone, result) {
   const name = `${stone.lab || 'Lab'} report ${stone.reportNumber}`;
   if (result.status === 'match') return `${name} matches the lab's record.`;
@@ -912,5 +1027,7 @@ export function labCheckDetail(stone, result) {
     const fields = (result.diffs || []).map((d) => d.field).join(', ');
     return `${name} differs from the lab's record${fields ? `: ${fields}` : ''}.`;
   }
+  if (result.status === 'unavailable') return `${name} could not be checked: ${result.reason || 'the lab has no online report check.'}`;
+  if (result.status === 'incomplete') return `${name} was not checked: ${result.reason || 'the check did not finish.'}`;
   return `${name} could not be confirmed on the lab's site.`;
 }

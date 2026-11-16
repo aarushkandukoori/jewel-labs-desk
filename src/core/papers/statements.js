@@ -2,6 +2,7 @@
 // Each one is drawn by a function that takes a paper context, so the export or import pack can draw the
 // same pages inside itself, and buildStatement can draw them as a paper of their own.
 import { DOC_TYPE_LABELS } from '../types.js';
+import { normalizeEori } from '../rules/formats.js';
 import { TEMPLATES } from './templates.js';
 import { nextRef } from './refs.js';
 import {
@@ -10,7 +11,7 @@ import {
   drawSignatureBlock, drawText, ensureSpace, finishPaper, fitLine, sectionLabel, startPaper, wrap,
 } from './layout.js';
 import {
-  NOT_ON_FILE, countryName, docTitle, findField, firstOf, formatDay, formatSlashDate, growthText, isBelgium,
+  NOT_ON_FILE, countryName, docTitle, fieldOf, findField, firstOf, formatDay, growthText, isBelgium,
   isBlank, isEuCountry, isLabGrown, isSampleData, miningCountries, printedLabel, stoneFacts, stonesText,
 } from './format.js';
 
@@ -51,18 +52,37 @@ export function letterheadFor(shipment, house) {
     name: houseName(house),
     address: firstOf(house?.address, house?.city),
     country: countryName(house?.country),
-    eori: firstOf(house?.eori),
+    // The house's EORI number from its profile, or the answer to the rules' question on this shipment.
+    eori: firstOf(house?.eori, house?.letterhead?.eori, normalizeEori(shipment?.answers?.['house.eori'])),
     vat: firstOf(house?.vat, house?.vatNumber),
   };
 }
 
-/** The customs office the goods are declared at, when the destination tells us. */
+/** Natural rough in the shipment: a rough parcel, or loose rough shipped with jewellery. */
+function hasNaturalRough(shipment) {
+  const goods = shipment?.goods || {};
+  const rough = ['rough', 'mixed'].includes(goods.form) || (goods.loose || []).includes('rough');
+  return rough && ['natural', 'mixed'].includes(goods.nature);
+}
+
+/**
+ * The customs office the goods are declared at, when the destination tells us. Natural rough into any EU member
+ * state is verified by the Diamond Office in Antwerp (EC FAQ Question 11).
+ */
 export function customsOffice(shipment) {
   if (!isBlank(shipment?.customsOffice)) return shipment.customsOffice;
   const destination = firstOf(shipment?.destinationCountry, shipment?.consignee?.country);
+  if (isEuCountry(destination) && hasNaturalRough(shipment)) return 'Diamond Office, Antwerp (FPS Economy, Hoveniersstraat 22, 2018 Antwerpen): verifies natural rough for the EU';
   if (isBelgium(destination)) return 'Antwerp Diamond Office (FPS Economy)';
   if (isEuCountry(destination)) return `Customs office of entry, ${countryName(destination)}`;
   return null;
+}
+
+/** Every commercial invoice of the shipment, by number (one statement may cover several parcels). */
+function invoiceNumbers(shipment, documents) {
+  const numbers = (documents || []).filter((doc) => doc.docType === 'commercial_invoice')
+    .map((doc) => fieldOf(doc, 'invoice.number') || fieldOf(doc, 'doc.number')).filter((n) => !isBlank(n));
+  return [...new Set([shipment?.invoiceNumber, ...numbers].filter((n) => !isBlank(n)))];
 }
 
 function plural(type) {
@@ -189,35 +209,56 @@ function drawWordingNote(ctx, text) {
   drawParagraph(ctx, text, { size: 7, color: COLOR.muted, gapAfter: 0 });
 }
 
+/** "12 stones, 9.84 ct", saying how many have no carat on file (their weight is not in the total). */
+function allStonesText(facts) {
+  if (!facts.count) return null;
+  if (!facts.sizesKnown) return `${facts.count} ${facts.count === 1 ? 'stone' : 'stones'}, no carat on file`;
+  return `${stonesText(facts.count, facts.carats)}${facts.unknownCarat ? `. ${facts.unknownCarat} with no carat on file` : ''}`;
+}
+
+/** "4 stones, 3.64 ct. 150 more in lots that may reach 0.50 ct", or null when no stone size is on file. */
+function inScopeText(facts) {
+  if (!facts.sizesKnown) return null;
+  let text = stonesText(facts.inScopeCount, facts.inScopeCarats);
+  if (facts.maybeCount) text += `. ${facts.maybeCount} more in lots that may reach 0.50 ct`;
+  if (facts.unknownCarat) text += `. ${facts.unknownCarat} more with no carat on file`;
+  return text;
+}
+
 function drawEuDds(ctx, { shipment, stones, house, status, documents, evidenceNote }) {
   const t = TEMPLATES.eu_dds;
   const head = letterheadFor(shipment, house);
   const facts = shipmentFacts(shipment, documents);
   const natural = stoneFacts(stones, { naturalOnly: true });
   const countries = miningCountries(stones, documents);
+  const invoices = invoiceNumbers(shipment, documents);
   addPage(ctx, 'EU statement');
   drawLetterhead(ctx, head, { status, house });
   drawTitleBlock(ctx, { label: 'EU · Article 3p of Council Regulation (EU) No 833/2014', title: t.title, subtitle: t.scope });
 
-  let scopeText = stonesText(natural.inScopeCount, natural.inScopeCarats);
-  if (natural.unknownCarat) scopeText += `. ${natural.unknownCarat} more with no carat on file`;
+  const invoiceText = invoices.length > 1 ? `${invoices.join(', ')} (${invoices.length} parcels)` : invoices[0];
   drawRows(ctx, [
     { label: t.fields.company, value: head.name },
     { label: t.fields.address, value: addressWithCountry(head) },
-    { label: t.fields.eori, value: head.eori },
-    { label: t.fields.vat, value: head.vat },
+    // The importer completes these when they are not on file; the template leaves them to the declarant.
+    { label: t.fields.eori, value: head.eori, writeIn: true },
+    { label: t.fields.vat, value: head.vat, writeIn: true },
     { label: t.fields.hawb, value: facts.hawb },
-    { label: t.fields.shipmentRef, value: [...new Set([shipment?.ref, facts.invoiceNumber].filter((v) => !isBlank(v)))].join(' / ') },
-    { label: t.fields.date, value: isBlank(facts.invoiceDate) ? null : formatSlashDate(facts.invoiceDate) },
+    { label: t.fields.shipmentRef, value: [...new Set([shipment?.ref, invoiceText].filter((v) => !isBlank(v)))].join(' / ') },
+    // The day the importer makes the declaration: left blank for its pen, or the day the house signs as importer.
+    { label: t.fields.date, value: null, writeIn: { role: head.forImporter ? 'importer' : 'signer' } },
     { label: 'Customs office', value: customsOffice(shipment) },
     { label: 'Exporter', value: facts.exporter },
-    { label: 'Natural stones of 0.50 ct and up', value: scopeText },
+    { label: 'Natural stones of 0.50 ct and up', value: inScopeText(natural) },
     { label: 'Countries of mining (KP)', value: countries.join(', ') },
   ], ROWS);
 
   if (shipment?.goods?.nature === 'lab-grown') {
     ctx.y -= 8;
     drawNotice(ctx, 'These goods are lab-grown. Lab-grown goods use the Diamond Office G7/GF declaration, not this statement.');
+  } else if (shipment?.goods?.nature === 'unknown') {
+    ctx.y -= 8;
+    drawNotice(ctx, 'Prepared to be safe: the papers do not say yet whether the stones are natural or lab-grown.');
   }
   sectionLabel(ctx, 'Statement', { keepWith: 60 });
   t.paragraphs.forEach((text) => drawParagraph(ctx, text, { size: 8.6, gapAfter: 4 }));
@@ -236,15 +277,21 @@ function drawEuDds(ctx, { shipment, stones, house, status, documents, evidenceNo
   drawWordingNote(ctx, t.wordingNote);
 }
 
-/** Which CBP sentences apply: loose diamonds, jewelry or unsorted diamonds (HS 7102.10), or both. */
+/**
+ * Which CBP sentences apply: the non-industrial diamonds sentence for loose stones, the jewelry sentence for
+ * diamond jewelry (HS 7113) and unsorted diamonds (HS 7102.10). Rough with polished ('mixed') is loose diamonds only.
+ */
 export function cbpSentences(shipment) {
   const t = TEMPLATES.us_cbp_certificate;
-  const form = shipment?.goods?.form;
-  const hsCodes = (shipment?.goods?.hsCodes || []).map((code) => String(code).replace(/\D/g, ''));
+  const goods = shipment?.goods || {};
+  const hsCodes = (goods.hsCodes || []).map((code) => String(code).replace(/\D/g, ''));
   const unsorted = hsCodes.some((code) => code.startsWith('710210'));
-  if (form === 'jewelry') return [t.jewelry];
-  if (form === 'mixed' || unsorted) return [t.diamonds, t.jewelry];
-  return [t.diamonds];
+  const jewelry = goods.form === 'jewelry' || hsCodes.some((code) => code.startsWith('7113'));
+  const loose = goods.form !== 'jewelry' || (goods.loose || []).length > 0;
+  const sentences = [];
+  if (loose) sentences.push(t.diamonds);
+  if (jewelry || unsorted) sentences.push(t.jewelry);
+  return sentences;
 }
 
 function goodsText(shipment) {
@@ -270,11 +317,15 @@ function drawCbp(ctx, { shipment, stones, house, status, documents }) {
     { label: 'Invoice', value: [facts.invoiceNumber, isBlank(facts.invoiceDate) ? null : formatDay(facts.invoiceDate)].filter((v) => !isBlank(v)).join(', ') },
     { label: 'Air waybill', value: [facts.hawb && `HAWB ${facts.hawb}`, facts.mawb && `MAWB ${facts.mawb}`].filter(Boolean).join(', ') },
     { label: 'Goods', value: [goodsText(shipment), hsCodes && `HS ${hsCodes}`].filter(Boolean).join(', ') },
-    { label: 'Stones', value: all.count ? stonesText(all.count, all.carats) : null },
-    { label: 'Stones of 0.50 ct and up', value: all.count ? stonesText(all.inScopeCount, all.inScopeCarats) : null },
+    { label: 'Stones', value: allStonesText(all) },
+    { label: 'Stones of 0.50 ct and up', value: inScopeText(all) },
     { label: 'Countries of mining (KP)', value: miningCountries(stones, documents).join(', ') },
     { label: 'Exporter', value: facts.exporter },
   ], ROWS);
+  if (shipment?.goods?.nature === 'unknown') {
+    ctx.y -= 8;
+    drawNotice(ctx, 'Prepared to be safe: the papers do not say yet whether the stones are natural or lab-grown.');
+  }
 
   sectionLabel(ctx, 'Certification', { keepWith: 50 });
   cbpSentences(shipment).forEach((sentence) => drawParagraph(ctx, sentence, { size: 9.6, font: ctx.fonts.medium, gapAfter: 6 }));
@@ -291,21 +342,34 @@ function drawCbp(ctx, { shipment, stones, house, status, documents }) {
   drawWordingNote(ctx, t.wordingNote);
 }
 
+/**
+ * The G7/GF note. The Diamond Office template serves lab-grown goods and natural rough, so the note says which of
+ * the two this shipment has and lists the facts each one needs: the growth method and country of manufacture for
+ * lab-grown, the KP certificate and its countries of mining for natural rough.
+ */
 function drawG7Note(ctx, { shipment, stones, house, documents }) {
   const t = TEMPLATES.g7_gf_declaration;
   const facts = shipmentFacts(shipment, documents);
   const all = stoneFacts(stones);
+  const rough = hasNaturalRough(shipment);
+  const labGrown = ['lab-grown', 'mixed'].includes(shipment?.goods?.nature) || (stones || []).some(isLabGrown);
   const growth = [...new Set((stones || []).map((s) => s.growth).filter((g) => !isBlank(g)).map(growthText))];
   const labs = [...new Set((stones || []).map((s) => s.lab).filter((l) => !isBlank(l)))];
   const reports = (stones || []).filter((s) => !isBlank(s.reportNumber)).length;
   const importer = letterheadFor(shipment, house);
   addPage(ctx, 'G7 / GF note');
   drawHeaderForNote(ctx, house);
-  drawTitleBlock(ctx, { label: 'EU · Lab-grown diamonds', title: t.title, subtitle: t.scope });
-  t.paragraphs.forEach((text) => drawParagraph(ctx, text, { size: 8.8, gapAfter: 4 }));
-  if (shipment?.goods?.nature && !['lab-grown', 'mixed'].includes(shipment.goods.nature) && !(stones || []).some(isLabGrown)) {
-    drawNotice(ctx, 'The records do not show lab-grown goods in this shipment. Check the goods before using this note.');
+  const label = rough && labGrown ? 'EU · Natural rough and lab-grown diamonds' : rough ? 'EU · Natural rough diamonds' : 'EU · Lab-grown diamonds';
+  const scope = rough && labGrown ? `${t.rough.scope} ${t.scope}` : rough ? t.rough.scope : t.scope;
+  drawTitleBlock(ctx, { label, title: t.title, subtitle: scope });
+  const paragraphs = rough && labGrown
+    ? [...t.rough.paragraphs.slice(0, 2), ...t.paragraphs]
+    : rough ? t.rough.paragraphs : t.paragraphs;
+  paragraphs.forEach((text) => drawParagraph(ctx, text, { size: 8.6, gapAfter: 3 }));
+  if (shipment?.goods?.nature && !rough && !labGrown) {
+    drawNotice(ctx, 'The records do not show lab-grown goods or natural rough in this shipment. Check the goods before using this note.');
   }
+  const kpNumber = firstOf(findField(documents, 'kp.certificateNumber', ['kp_certificate']), (stones || []).map((s) => s?.kp?.certificateNumber).find((n) => !isBlank(n)));
   sectionLabel(ctx, 'Facts for the template');
   drawRows(ctx, [
     { label: 'Importer', value: importer.name },
@@ -314,12 +378,19 @@ function drawG7Note(ctx, { shipment, stones, house, documents }) {
     { label: 'House air waybill (HAWB)', value: facts.hawb },
     { label: 'Master air waybill (MAWB)', value: facts.mawb },
     { label: 'Goods', value: goodsText(shipment) },
-    { label: 'Growth method', value: growth.join(', ') },
-    { label: 'Stones', value: all.count ? stonesText(all.count, all.carats) : null },
-    { label: 'Stones of 0.50 ct and up', value: all.count ? stonesText(all.inScopeCount, all.inScopeCarats) : null },
+    ...(rough ? [
+      { label: 'KP certificate', value: kpNumber },
+      { label: 'Countries of mining (KP)', value: miningCountries(stones, documents).join(', ') },
+    ] : []),
+    ...(labGrown || !rough ? [
+      { label: 'Growth method', value: growth.join(', ') },
+      { label: 'Country of manufacture', value: findField(documents, 'goods.countryOfOrigin', ['commercial_invoice', 'packing_list', 'shipping_bill']) },
+    ] : []),
+    { label: 'Stones', value: allStonesText(all) },
+    { label: 'Stones of 0.50 ct and up', value: inScopeText(all) },
     { label: 'HS codes', value: (shipment?.goods?.hsCodes || []).join(', ') },
-    { label: 'Grading reports', value: reports ? `${reports} on file${labs.length ? `, ${labs.join(', ')}` : ''}` : null },
-    { label: 'Customs office', value: customsOffice(shipment) },
+    ...(labGrown || !rough ? [{ label: 'Grading reports', value: reports ? `${reports} on file${labs.length ? `, ${labs.join(', ')}` : ''}` : null }] : []),
+    { label: rough ? 'Verified at' : 'Customs office', value: customsOffice(shipment) },
   ], ROWS);
   drawCheckedBy(ctx, { heading: `Checked by ${houseName(house)}` });
   drawWordingNote(ctx, t.wordingNote);

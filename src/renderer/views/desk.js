@@ -150,7 +150,7 @@ function FilterRow({ filter, setFilter }) {
   async function switchHouse(id) {
     if (!id || id === ws.id) return;
     const r = await call(jl.workspaces.select(id));
-    if (r) toast('Now filing for', r.name, 'ok');
+    if (r) toast('Now working on', r.name, 'ok');
   }
   return html`<div class="filter-row">
     <div><div class="label mb-8">1. Company</div>
@@ -204,6 +204,8 @@ function RequestCard({ item, done }) {
     .sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
   const steps = state.data.activity.filter((a) => a.shipmentId === paper.shipmentId && a.actor?.type === 'agent')
     .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  // Approving is the Jewel Labs review itself: a signed-in desk account only, never the house's own clerk.
+  const canApprove = state.auth?.canApprove === true;
 
   async function approve() {
     const r = await call(jl.desk.approve(paper.id, message.trim()));
@@ -234,7 +236,8 @@ function RequestCard({ item, done }) {
     ${done ? (paper.deskNote ? html`<div class="issues">Message sent: ${paper.deskNote}</div>` : null) : html`<div class="reply">
       <label class="field-label muted" for=${`msg-${paper.id}`}>Message to the client</label>
       <textarea id=${`msg-${paper.id}`} class="textarea" rows="3" value=${message} onInput=${(e) => setMessage(e.currentTarget.value)} placeholder="Approved. Ready to sign."></textarea>
-      <div class="form-actions"><${Button} kind="primary" size="sm" onClick=${approve}>Approve and send to the client<//><${Button} size="sm" onClick=${hold}>Hold with message<//></div>
+      <div class="form-actions">${canApprove ? html`<${Button} kind="primary" size="sm" onClick=${approve}>Approve and send to the client<//>` : null}<${Button} size="sm" onClick=${hold}>Hold with message<//></div>
+      ${canApprove ? null : html`<div class="form-help">Approving a held pack needs a signed-in Jewel Labs desk account. In this workspace, fix what the checks found and run the agents again.</div>`}
     </div>`}
   </div>`;
 }

@@ -1,5 +1,7 @@
 // "Onboard a house": the desk's Connect modal from the walkthrough. Past clients (the house form),
 // Connect email, Upload records, WhatsApp (a QR code that opens the chat on a phone).
+// Onboarding opens the new house (state.js onboardHouse), so the mailbox, records and chat export that follow
+// go to it, never to the house that was open before. Each tab says which house its files go to.
 import { html, useEffect, useRef, useState } from '../vendor/preact-htm.mjs';
 import { useApp } from '../lib/context.js';
 import { go } from '../lib/router.js';
@@ -10,37 +12,58 @@ import { phoneDigits, screeningStatus } from '../lib/format.js';
 
 const COMMODITIES = ['Diamonds', 'Gold', 'Silver', 'Platinum', 'Copper', 'Steel'];
 const ROLES = [['exporter', 'Exporter'], ['importer', 'Importer'], ['manufacturer', 'Manufacturer'], ['trader', 'Trader'], ['supplier', 'Supplier']];
+const EMPTY_FORM = {
+  name: '', legalName: '', country: '', city: '', role: 'exporter', commodities: ['Diamonds'], contactEmails: '', contactName: '',
+  whatsapp: '', portalUser: '', portalEmail: '',
+  may: { mailbox: true, whatsapp: true, drafts: false, ofac: true }, autopilot: true,
+};
 
 export function OnboardModal({ onClose }) {
   const [tab, setTab] = useState('clients');
   const tabs = [['clients', 'Past clients'], ['email', 'Connect email'], ['upload', 'Upload records'], ['whatsapp', 'WhatsApp']];
   const [result, setResult] = useState(null);
-  const [form, setForm] = useState({
-    name: '', legalName: '', country: '', city: '', role: 'exporter', commodities: ['Diamonds'], contactEmails: '', contactName: '',
-    whatsapp: '', portalUser: '', portalEmail: '',
-    may: { mailbox: true, whatsapp: true, drafts: false, ofac: true }, autopilot: true,
-  });
+  const [form, setForm] = useState(EMPTY_FORM);
   const kyc = useRef(null);
+  // Once a house is onboarded, the footer offers to start another one (a clean form) instead of onboarding
+  // the same house again.
+  function another() {
+    setForm(EMPTY_FORM);
+    setResult(null);
+    if (kyc.current) kyc.current.value = '';
+  }
 
   return html`<${Modal} title="Connect: past clients, your email, or upload records" onClose=${onClose} size="wide" label="Onboard a house"
     tabs=${html`<div class="modal-tabs" role="tablist">${tabs.map(([id, label]) => html`<button type="button" role="tab" aria-selected=${tab === id ? 'true' : 'false'} class=${tab === id ? 'active' : ''} onClick=${() => setTab(id)}>${label}</button>`)}</div>`}
-    footer=${tab === 'clients' ? html`<${Check} checked=${form.autopilot} onChange=${(on) => setForm({ ...form, autopilot: on })}>Build statements automatically<//>
-      <${OnboardButton} form=${form} kyc=${kyc} onDone=${setResult} />` : null}>
+    footer=${tab !== 'clients' ? null : result
+      ? html`<span class="muted small">${result.workspace?.name} is onboarded.</span>
+        <div class="row-flex"><button class="btn" type="button" onClick=${another}>Onboard another house</button>
+        <button class="btn btn-primary" type="button" onClick=${onClose}>Done</button></div>`
+      : html`<${Check} checked=${form.autopilot} onChange=${(on) => setForm({ ...form, autopilot: on })}>Build statements automatically<//>
+        <${OnboardButton} form=${form} kyc=${kyc} onDone=${setResult} />`}>
     ${tab === 'clients' ? html`<${HouseForm} form=${form} setForm=${setForm} kyc=${kyc} result=${result} onTab=${setTab} onClose=${onClose} />` : null}
-    ${tab === 'email' ? html`<div class="modal-sub">Connect the mailbox the agents search for this house’s mail</div><${EmailForm} onDone=${() => setTab('clients')} />` : null}
+    ${tab === 'email' ? html`<div class="modal-sub">Connect the mailbox the agents search for this house’s mail</div><${GoesTo} /><${EmailForm} onDone=${() => setTab('clients')} />` : null}
     ${tab === 'upload' ? html`<${UploadTab} />` : null}
     ${tab === 'whatsapp' ? html`<${WhatsAppTab} numbers=${form.whatsapp} />` : null}
   <//>`;
 }
 
+/** Which house the mailbox, records and chat exports on these tabs go to: the open one. */
+function GoesTo() {
+  const { state } = useApp();
+  return html`<p class="soft small" role="note">Goes to <b class="strong">${state.workspace?.name || 'the open house'}</b>, the house open now.</p>`;
+}
+
 function OnboardButton({ form, kyc, onDone }) {
-  const { jl, call, toast } = useApp();
+  const { jl, call, toast, state } = useApp();
   async function onboard() {
     if (!form.name.trim()) return toast('Name the house first', 'House name is the one field the agents need.', 'warn');
+    const name = form.name.trim();
+    const same = (state.workspaces || []).find((w) => String(w.name || '').trim().toLowerCase() === name.toLowerCase());
+    if (same && !window.confirm(`${same.name} is already a house here. Onboard another house with the same name?`)) return undefined;
     const list = (text) => String(text || '').split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
     const emails = list(form.contactEmails).filter((e) => e.includes('@'));
     const profile = {
-      name: form.name.trim(), legalEntity: form.legalName.trim() || undefined, country: form.country.trim() || undefined,
+      name, legalEntity: form.legalName.trim() || undefined, country: form.country.trim() || undefined,
       city: form.city.trim() || undefined, role: form.role, commodities: form.commodities,
       contactEmails: emails, contactName: form.contactName.trim() || undefined,
       emailDomains: [...new Set(emails.map((e) => e.split('@')[1]))],
@@ -115,29 +138,30 @@ function HouseForm({ form, setForm, kyc, result, onTab, onClose }) {
 }
 
 function OnboardResult({ result, onTab, onClose }) {
-  const { jl, call, toast } = useApp();
+  const { jl, call, toast, state } = useApp();
   const ws = result.workspace || {};
   const s = result.screening || {};
   const status = screeningStatus(s.status);
   const invite = result.invite;
+  const isOpen = state.workspace?.id === ws.id;
 
   async function open() {
-    const r = await call(jl.workspaces.select(ws.id));
-    if (!r) return;
+    if (!isOpen && !(await call(jl.workspaces.select(ws.id)))) return;
     if (result.kycFiles?.length) await call(jl.docs.add(result.kycFiles));
     onClose();
     go('desk');
-    toast(`Now filing for ${ws.name}`, result.kycFiles?.length ? 'The KYC files went to the agents.' : 'Upload their records or connect their mailbox to begin.', 'ok');
+    toast(`Now working on ${ws.name}`, result.kycFiles?.length ? 'The KYC files went to the agents.' : 'Upload their records or connect their mailbox to begin.', 'ok');
   }
 
   return html`<div class="result-box" role="status">
-    <div class="t">${ws.name} is onboarded.</div>
+    <div class="t">${ws.name} is onboarded${isOpen ? ' and open' : ''}.</div>
     <div class="row-flex"><${Chip} tone=${status.tone} small>${status.text}<//>
       <span>${s.status === 'clear' ? `No match on the OFAC SDN list (${s.compared ?? 0} similar names compared).` : s.best ? `Closest SDN name: ${s.best.sdnName}. A person checks it before any paper is built.` : s.note || s.error || 'The screening finishes when the agents run.'}</span></div>
+    ${result.openError ? html`<div class="form-error" role="alert">It did not open here: ${result.openError} Open it before you connect its mailbox or add its records.</div>` : null}
     <div class="row-flex wrap">
-      <button class="btn btn-sm btn-primary" type="button" onClick=${() => onTab('email')}>Connect your mailbox</button>
-      <button class="btn btn-sm" type="button" onClick=${() => onTab('whatsapp')}>Upload their WhatsApp export</button>
-      <button class="btn btn-sm" type="button" onClick=${open}>Open in the dashboard</button>
+      ${isOpen ? html`<button class="btn btn-sm btn-primary" type="button" onClick=${() => onTab('email')}>Connect your mailbox</button>
+        <button class="btn btn-sm" type="button" onClick=${() => onTab('whatsapp')}>Upload their WhatsApp export</button>` : null}
+      <button class=${`btn btn-sm${isOpen ? '' : ' btn-primary'}`} type="button" onClick=${open}>Open in the dashboard</button>
     </div>
     <div class="row-flex"><${Chip} small tone=${invite?.code ? 'info' : 'muted'}>Login<//>
       <span>${invite?.code ? html`Invite code created: <span class="mono strong">${invite.code}</span>. Send it to them; it works once.` : invite?.error ? invite.error : 'Portal logins need a signed-in desk account. The house can still use the app on its own computer.'}</span></div>
@@ -148,6 +172,7 @@ function UploadTab() {
   const upload = useUpload();
   return html`<div>${upload.input}
     <div class="modal-sub">Upload records</div>
+    <${GoesTo} />
     <p class="soft small" style=${{ marginBottom: '4px' }}>The whole shipment folder as a .zip, or any papers. The agents group them into shipments for the open house.</p>
     <${DropZone} upload=${upload} title="Drop the house’s records here, or click to choose" />
   </div>`;
@@ -163,6 +188,7 @@ function WhatsAppTab({ numbers }) {
   }, [first]);
   return html`<div>${upload.input}
     <div class="modal-sub">WhatsApp</div>
+    <${GoesTo} />
     <p class="soft small">In the chat, choose Export chat, then Include media, and add the .zip here. The agents read the messages and the files in it.</p>
     ${qr ? html`<div class="qr-card"><img src=${qr} alt=${`QR code for wa.me/${first}`} /><div><div class="num">+${first}</div><p>Scan with your phone to open the chat.</p></div></div>` : null}
     <div class="form-actions"><button class="btn btn-primary" type="button" onClick=${() => upload.choose('chat')}>Add a chat export</button></div>

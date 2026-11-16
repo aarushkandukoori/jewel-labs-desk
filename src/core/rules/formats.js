@@ -2,6 +2,7 @@
 // grading report formats, KP participants, and plain normalizers for shape, colour and clarity.
 // Everything here is a table or a small lookup so the rules stay explainable.
 import { EU_MEMBER_STATES } from '../types.js';
+import { cleanReportNumber } from '../labs/index.js';
 
 // ---------- countries ----------
 
@@ -192,27 +193,34 @@ function exactCountry(input) {
 
 /** Split a list such as "Botswana, Namibia / South Africa" or "BW, NA, ZA" into ISO2 codes. */
 export function splitCountries(input) {
+  const codes = [];
+  for (const { code } of splitCountryList(input)) if (code && !codes.includes(code)) codes.push(code);
+  return codes;
+}
+
+/**
+ * The parts of a printed country list, each as { code, text }: code is the ISO2 code, or null when the part is
+ * not a country we know ("Sierra Leon" with a typo), so a paper can still print it as written.
+ */
+export function splitCountryList(input) {
   if (!input) return [];
   const list = Array.isArray(input) ? input : [input];
-  const codes = [];
-  const add = (code) => {
-    if (code && !codes.includes(code)) codes.push(code);
-  };
+  const parts = [];
   for (const item of list) {
     const text = String(item).replace(/^\s*(MIXED( ORIGIN)?|COUNTRIES OF MINING|COUNTRY OF MINING|ORIGIN)\s*[:-]?\s*/i, '');
     // "Congo, Democratic Republic of the" is one country even with a comma.
     const whole = exactCountry(text);
     if (whole) {
-      add(whole);
+      parts.push({ code: whole, text: text.trim() });
       continue;
     }
-    const parts = text.split(/[,;/&+\n]|\band\b/i).map((part) => part.trim()).filter(Boolean);
-    for (const part of parts) {
+    const pieces = text.split(/[,;/&+\n]|\band\b/i).map((part) => part.trim()).filter(Boolean);
+    for (const part of pieces) {
       // Inside a list a bare "NA" is Namibia.
-      add(/^N\.?A\.?$/i.test(part) && parts.length > 1 ? 'NA' : normalizeCountry(part));
+      parts.push({ code: /^N\.?A\.?$/i.test(part) && pieces.length > 1 ? 'NA' : normalizeCountry(part), text: part });
     }
   }
-  return codes;
+  return parts;
 }
 
 /** 'BE' -> 'Belgium'. Unknown codes come back as given. */
@@ -227,9 +235,33 @@ export function isEU(codeOrName) {
   return Boolean(code && (code === 'EU' || EU_MEMBER_STATES[code]));
 }
 
+/**
+ * An EORI number as typed ("be 0123.456.789") cleaned up ("BE0123456789"), or null when it does not look like one:
+ * two letters for the country, then up to 15 letters or digits, with digits among them ("not needed" is no EORI).
+ */
+export function normalizeEori(text) {
+  const clean = String(text || '').toUpperCase().replace(/[\s.-]/g, '');
+  return /^[A-Z]{2}(?=[A-Z0-9]*\d)[A-Z0-9]{5,15}$/.test(clean) ? clean : null;
+}
+
 /** The country at an airport code on an air waybill route. */
 export function airportCountry(code) {
   return AIRPORTS[String(code || '').toUpperCase().trim()] || null;
+}
+
+// The time zone of the diamond hubs, so a house's "today" is its own calendar day. Countries not listed use the
+// computer's clock. The US uses New York, where most of its diamond trade sits.
+const TIME_ZONES = {
+  AE: 'Asia/Dubai', AU: 'Australia/Sydney', BE: 'Europe/Brussels', BW: 'Africa/Gaborone', CA: 'America/Toronto',
+  CH: 'Europe/Zurich', CN: 'Asia/Shanghai', DE: 'Europe/Berlin', FR: 'Europe/Paris', GB: 'Europe/London',
+  HK: 'Asia/Hong_Kong', IL: 'Asia/Jerusalem', IN: 'Asia/Kolkata', IT: 'Europe/Rome', JP: 'Asia/Tokyo',
+  NA: 'Africa/Windhoek', NL: 'Europe/Amsterdam', SG: 'Asia/Singapore', TH: 'Asia/Bangkok', US: 'America/New_York',
+  ZA: 'Africa/Johannesburg',
+};
+
+/** 'Asia/Kolkata' for India; null when we do not know the country's zone. */
+export function timeZoneOf(country) {
+  return TIME_ZONES[normalizeCountry(country)] || null;
 }
 
 // ---------- Russia ----------
@@ -240,8 +272,9 @@ export const RUSSIA_CODES = ['RU', 'RUS'];
 
 // A Russia word after one of these in the same sentence ("not of Russian origin",
 // "excluding transits to/from Ukraine, Russia") is not a hit. "No" is left out on purpose:
-// addresses say "Plot No. 5".
-const NEGATIONS = new Set(['NOT', 'NON', 'EXCLUDING', 'EXCLUDED', 'EXCEPT', 'WITHOUT', 'THAN']);
+// addresses say "Plot No. 5". "Non" only negates the word right after it ("non-Russian"): the trade
+// writes "non-industrial" and "non-certified" in front of goods that may well be Russian.
+const NEGATIONS = new Set(['NOT', 'EXCLUDING', 'EXCLUDED', 'EXCEPT', 'WITHOUT', 'THAN']);
 
 /**
  * The Russia indicator found in free text, or null. Negated mentions are ignored, so a declaration
@@ -254,6 +287,7 @@ export function findRussiaWord(text) {
     for (let i = 0; i < words.length; i++) {
       const hit = RUSSIA_WORDS.find((word) => word.split(' ').every((part, j) => words[i + j] === part));
       if (!hit) continue;
+      if (words[i - 1] === 'NON') continue; // "non-Russian goods"
       const before = words.slice(Math.max(0, i - 8), i);
       if (before.some((word) => NEGATIONS.has(word))) continue;
       return hit;
@@ -311,22 +345,40 @@ export function hsInfo(input) {
 
 // ---------- words on the papers ----------
 
-const LAB_GROWN_PATTERN = /\b(LAB[\s-]?GROWN|LABORATORY[\s-]GROWN|LAB[\s-]CREATED|LGD|CVD|HPHT|SYNTHETIC|MAN[\s-]?MADE|CULTURED)\b/;
+const LAB_GROWN_TERM = String.raw`(?:LAB[\s-]?GROWN|LABORATORY[\s-]GROWN|LAB[\s-]CREATED|LGD|CVD|HPHT|SYNTHETIC|MAN[\s-]?MADE|CULTURED)`;
+const LAB_GROWN_PATTERN = new RegExp(String.raw`\b${LAB_GROWN_TERM}\b`);
 const NATURAL_PATTERN = /\b(NATURAL|EARTH[\s-]MINED|MINED)\b/;
+// "not lab-grown", "non-synthetic", "no CVD/HPHT", "free of HPHT": the paper says the stone is NOT lab-grown.
+const DENIED_LAB_GROWN = new RegExp(String.raw`\b(?:NOT|NON|NO|FREE\s+OF|WITHOUT)[\s-]+(?:AN?\s+)?${LAB_GROWN_TERM}(?:\s*(?:/|,|OR|AND|&|NOR)\s*${LAB_GROWN_TERM})*\b`, 'g');
+// "HPHT treated", "treated with HPHT": a colour treatment of a natural stone, not the way it grew.
+const HPHT_TREATMENT = /\bHPHT[\s-]+(?:TREATED|TREATMENT|PROCESSED|ENHANCED|ANNEALED)\b|\b(?:TREATED|PROCESSED|ENHANCED)\s+(?:BY|WITH|USING)\s+HPHT\b/g;
+// "not natural", "non-natural", "not mined": the paper says the stone is NOT natural.
+const DENIED_NATURAL = /\b(?:NOT|NON)[\s-]+(?:AN?\s+)?(?:NATURAL|EARTH[\s-]MINED|MINED)\b/g;
 
-/** 'natural', 'lab-grown' or null from a description, a growth column or a lab comment. */
+/**
+ * 'natural', 'lab-grown' or null from a description, a growth column or a lab comment. A text that names both
+ * ("natural and lab-grown diamonds", a mixed parcel) gives null: a person decides, because calling it lab-grown
+ * could leave out the EU statement the natural stones need.
+ */
 export function natureFromText(text) {
   if (!text) return null;
   const upper = String(text).toUpperCase();
-  if (LAB_GROWN_PATTERN.test(upper)) return 'lab-grown';
-  if (NATURAL_PATTERN.test(upper)) return 'natural';
+  const untreated = upper.replace(HPHT_TREATMENT, ' ');
+  const notLabGrown = untreated.replace(DENIED_LAB_GROWN, ' ');
+  const rest = notLabGrown.replace(DENIED_NATURAL, ' ');
+  const labGrown = LAB_GROWN_PATTERN.test(rest);
+  const natural = NATURAL_PATTERN.test(rest);
+  if (labGrown && natural) return null;
+  if (labGrown) return 'lab-grown';
+  if (natural) return 'natural';
+  if (notLabGrown !== untreated) return 'natural'; // it only said "not lab-grown"
   return null;
 }
 
-/** 'CVD', 'HPHT' or null. */
+/** 'CVD', 'HPHT' or null. "no CVD/HPHT" and "HPHT treated" name no growth method. */
 export function growthMethodFromText(text) {
   if (!text) return null;
-  const upper = String(text).toUpperCase();
+  const upper = String(text).toUpperCase().replace(HPHT_TREATMENT, ' ').replace(DENIED_LAB_GROWN, ' ');
   if (/\bCVD\b|CHEMICAL VAPOU?R/.test(upper)) return 'CVD';
   if (/\bHPHT\b|HIGH PRESSURE/.test(upper)) return 'HPHT';
   return null;
@@ -370,11 +422,9 @@ export function normalizeLab(text) {
   return name || null;
 }
 
-/** Remove spaces and labels: "GIA # 2141 438 171" -> "2141438171". */
-export function cleanReportNumber(input) {
-  if (!input) return '';
-  return String(input).toUpperCase().replace(/\b(GIA|IGI|HRD|GCAL|GSI|REPORT|NO|NUMBER)\b\.?/g, '').replace(/[^A-Z0-9]/g, '');
-}
+// Remove spaces and labels: "GIA # 2141 438 171" -> "2141438171", "GIA2141438172" -> "2141438172". One copy for the
+// whole app: the lab module's (imported at the top).
+export { cleanReportNumber };
 
 // Report number shapes per lab. Approximate: labs change formats over time, so a miss is a
 // question for a person, never a failure.
@@ -426,25 +476,42 @@ export function normalizeShape(text) {
 }
 
 /** 'G', 'g color', 'G ' -> 'G'. Fancy colours come back in upper case. */
+/**
+ * 'g color', 'F (colourless)', 'E colour grade' -> 'G', 'F', 'E'. A lot's range stays a range: 'E-G', 'w - x' -> 'W-X'.
+ * Anything else ('Fancy Intense Yellow') is kept, in capitals.
+ */
 export function normalizeColor(text) {
   if (!text) return null;
-  const upper = String(text).toUpperCase().trim();
-  const letter = upper.match(/^([D-Z])(\b|$|\s|-)/);
-  if (letter && !/^[D-Z]-[D-Z]/.test(upper)) return letter[1];
-  return upper.replace(/\s+/g, ' ') || null;
+  const upper = String(text).toUpperCase().replace(/\([^)]*\)/g, ' ').replace(/\bCOLOU?R(?:LESS)?\b|\bGRADE\b/g, ' ')
+    .replace(/\s*[-–]\s*/g, '-').replace(/\s+/g, ' ').trim();
+  const range = upper.match(/^([D-Z])-([D-Z])\b/);
+  if (range) return `${range[1]}-${range[2]}`;
+  const letter = upper.match(/^([D-Z])(?:\b|$)/);
+  if (letter) return letter[1];
+  return upper || null;
 }
 
 const CLARITIES = ['FL', 'IF', 'VVS1', 'VVS2', 'VS1', 'VS2', 'SI1', 'SI2', 'SI3', 'I1', 'I2', 'I3'];
+// Words labs print for a grade: HRD's LC (loupe clean) is IF; P1 to P3 (piqué) are I1 to I3.
+const CLARITY_SYNONYMS = {
+  F: 'FL', FLAWLESS: 'FL', INTERNALLYFLAWLESS: 'IF', LC: 'IF', LOUPECLEAN: 'IF',
+  P1: 'I1', PK1: 'I1', P2: 'I2', PK2: 'I2', P3: 'I3', PK3: 'I3',
+};
 
-/** 'VS 1', 'vs-1' -> 'VS1'. A lot's range stays a range: 'VS1-VS2', 'vs1 to vs2' -> 'VS1-VS2'. */
+/**
+ * 'VS 1', 'vs-1', 'VS1 (very slightly included)' -> 'VS1'; 'Flawless' -> 'FL', 'LC' -> 'IF', 'P1' -> 'I1'.
+ * A lot's range stays a range: 'VS1-VS2', 'vs1 to vs2' -> 'VS1-VS2'.
+ */
 export function normalizeClarity(text) {
   if (!text) return null;
-  const range = String(text).toUpperCase().match(/^\s*([A-Z]{1,3}\s?\d?)\s*(?:-|–|\/|TO)\s*([A-Z]{1,3}\s?\d?)\s*$/);
+  const upper = String(text).toUpperCase().replace(/\([^)]*\)/g, ' ');
+  const range = upper.match(/^\s*([A-Z]{1,3}\s?\d?)\s*(?:-|–|\/|TO)\s*([A-Z]{1,3}\s?\d?)\s*$/);
   if (range) {
     const [from, to] = [range[1], range[2]].map((grade) => grade.replace(/\s/g, ''));
     if (CLARITIES.includes(from) && CLARITIES.includes(to) && from !== to) return `${from}-${to}`;
   }
-  const compact = String(text).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const compact = upper.replace(/[^A-Z0-9]/g, '');
+  if (CLARITY_SYNONYMS[compact]) return CLARITY_SYNONYMS[compact];
   if (CLARITIES.includes(compact)) return compact;
   const found = CLARITIES.slice().sort((a, b) => b.length - a.length).find((grade) => compact.startsWith(grade));
   return found || compact || null;

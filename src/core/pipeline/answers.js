@@ -1,6 +1,7 @@
 // Answers to the Review agent's one-line questions. An answer can set a value on the shipment,
 // fill a missing field on a document, or mark a paper as not needed. Then the shipment is checked again.
 import { personName } from './context.js';
+import { normalizeEori } from '../rules/formats.js';
 
 // Field key -> where that value lives on the shipment record.
 const SHIPMENT_PATHS = {
@@ -18,6 +19,9 @@ const SHIPMENT_PATHS = {
 };
 const NUMBER_KEYS = new Set(['goods.totalPieces', 'goods.totalCarats', 'goods.totalValue']);
 const NOT_NEEDED = /^(not needed|not required|no need|n\/?a|none needed|not applicable)\.?$/i;
+// Keys only the rules read (from shipment.answers): a stone's chosen value, a sanctions review, the house's EORI.
+// They are never written into a paper, even when the question points at one ("see it on the page").
+const RULES_ONLY = /^(stone|sanctions|house)\./;
 
 /** Puts every answer the house gave back onto the shipment (answers beat what the papers say). */
 export function applyAnswers(shipment) {
@@ -54,7 +58,10 @@ function isNotNeeded(question, answer) {
   return question.kind === 'missing_document' && NOT_NEEDED.test(String(answerText(answer) || '').trim());
 }
 
-/** Stores the answer, applies it, counts a house edit and checks the shipment again. */
+/**
+ * Stores the answer, applies it, counts a house edit and starts a new check of the shipment. The check runs in
+ * the background, so the person gets "saved" at once, even while the agents are busy with a big batch.
+ */
 export async function answerQuestion(ctx, { run }, id, answer, by) {
   const { store } = ctx;
   const question = await store.get('questions', id);
@@ -70,25 +77,33 @@ export async function answerQuestion(ctx, { run }, id, answer, by) {
   };
   await store.put('questions', saved);
   if (question.shipmentId) await applyToShipment(ctx, question, value, notNeeded);
-  if (question.docId && question.key && !notNeeded) await applyToDocument(ctx, question, value, by);
+  // doc.checkedBy is written onto the agents' packing list draft: the rules read it there.
+  if (question.docId && question.key && !notNeeded && !RULES_ONLY.test(question.key)) await applyToDocument(ctx, question, value, by);
+  if (question.key === 'house.eori' && !notNeeded) await saveHouseEori(ctx, value);
 
   await ctx.usage('question_answered', { questionId: id, shipmentId: question.shipmentId || null, by: personName(by) }, by);
   await ctx.usage('house_edit', { questionId: id, shipmentId: question.shipmentId || null, by: personName(by) }, by);
   await ctx.log(ctx.personActor(by), 'answered', `${question.text} ${notNeeded ? 'Not needed.' : `Answer: ${value}`}`, { shipmentId: question.shipmentId });
 
-  if (question.shipmentId) await run({ shipmentId: question.shipmentId, reason: 'question answered' });
+  if (question.shipmentId) ctx.background(run({ shipmentId: question.shipmentId, reason: 'question answered' }));
   const shipment = question.shipmentId ? await store.get('shipments', question.shipmentId) : null;
   return { question: saved, shipment, status: shipment?.status || null };
 }
 
-/** Closes a question without an answer (the person says it does not apply). Not counted as an edit. */
+/**
+ * Closes a question without an answer (the person says it does not apply). Not counted as an edit. Papers that
+ * disagree and questions to confirm (a possible sanctions match, say) cannot be closed that way: closing them
+ * unanswered would let the shipment go on to Ready to sign.
+ */
 export async function dismissQuestion(ctx, { run }, id, by) {
   const question = await ctx.store.get('questions', id);
   if (!question) throw new Error('That question is no longer there.');
+  if (question.status !== 'open') throw new Error('That question is already closed.');
+  if (question.kind === 'mismatch' || question.kind === 'confirm') throw new Error('Answer this question; the agents need to know which is right.');
   const saved = { ...question, status: 'dismissed', closedBy: personName(by), closedAt: ctx.nowIso() };
   await ctx.store.put('questions', saved);
   await ctx.log(ctx.personActor(by), 'dismissed', `Dismissed: ${question.text}`, { shipmentId: question.shipmentId });
-  if (question.shipmentId) await run({ shipmentId: question.shipmentId, reason: 'question dismissed' });
+  if (question.shipmentId) ctx.background(run({ shipmentId: question.shipmentId, reason: 'question dismissed' }));
   return saved;
 }
 
@@ -109,6 +124,22 @@ async function applyToShipment(ctx, question, value, notNeeded) {
   }
   applyAnswers(next);
   await ctx.store.put('shipments', next);
+}
+
+/**
+ * A valid EORI number answered for the house goes into the house profile too (eori and the letterhead), so the
+ * next import does not ask again. Someone who may not change the house settings keeps the answer on this shipment.
+ */
+async function saveHouseEori(ctx, value) {
+  const eori = normalizeEori(value);
+  if (!eori) return;
+  try {
+    const house = await ctx.store.workspace();
+    if (house.eori === eori && house.letterhead?.eori === eori) return;
+    await ctx.store.updateWorkspace({ eori, letterhead: { eori } }); // letterhead merges one level deep
+  } catch {
+    // the shipment's own answer still puts the number on its statement
+  }
 }
 
 async function applyToDocument(ctx, question, value, by) {

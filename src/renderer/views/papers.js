@@ -4,7 +4,8 @@ import { useApp } from '../lib/context.js';
 import { Section, StatusChip, Chip, Empty, Skeleton, Button, CopyButton } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
 import { PdfPreview } from '../components/pdf-preview.js';
-import { usePaperActions, paperNote } from '../components/paper-actions.js';
+import { usePaperActions } from '../components/paper-actions.js';
+import { paperNoteFor } from '../lib/papers.js';
 import { paperStatus, paperKindLabel, day, dayTime, ago, plural } from '../lib/format.js';
 
 const FILTERS = [['all', 'All'], ['ready_to_sign', 'To sign'], ['held_for_review', 'Held'], ['signed', 'Signed'], ['sent', 'Sent']];
@@ -60,7 +61,7 @@ export function PapersView({ id, query = {} }) {
                   <div><div class="label">Pages</div><div class="v">${paper.pages || '–'}</div></div>
                 </div>
                 <div class="section-body" style=${{ borderTop: '1px solid var(--line)' }}>
-                  <div class="soft">${paperNote(paper)}</div>
+                  <div class="soft">${paperNoteFor(paper, state)}</div>
                   ${paper.sha256 ? html`<div class="row-flex mt-12"><span class="label">SHA-256</span><span class="hash ellipsis" title=${paper.sha256}>${paper.sha256}</span><${CopyButton} text=${paper.sha256} /></div>` : null}
                   ${(paper.contents || []).length ? html`<div class="mt-16"><div class="label mb-8">In this pack, in the order customs reads them</div>
                     <ol class="soft small" style=${{ margin: 0, paddingLeft: '18px', lineHeight: 1.8 }}>

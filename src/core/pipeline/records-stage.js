@@ -36,7 +36,10 @@ export async function runRecords(ctx) {
 async function assignDocuments(ctx, readDocs, assignments) {
   for (const doc of readDocs) {
     const shipmentId = assignments[doc.id] ?? doc.shipmentId ?? null;
-    if (shipmentId !== doc.shipmentId) await ctx.store.put('documents', { ...doc, shipmentId });
+    if (shipmentId === doc.shipmentId) continue;
+    // Saved on the newest copy, and only if the paper is still there: one removed meanwhile is not put back.
+    const latest = await ctx.store.get('documents', doc.id);
+    if (latest) await ctx.store.put('documents', { ...latest, shipmentId });
   }
 }
 

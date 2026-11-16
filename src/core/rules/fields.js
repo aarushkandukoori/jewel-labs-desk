@@ -61,7 +61,9 @@ export function parseNumber(input) {
 
   // Thousands written with spaces, like "1 234 567,89".
   const spaced = text.match(/-?\d{1,3}(?: \d{3})+(?:[.,]\d+)?/);
-  const token = spaced ? spaced[0].replace(/ /g, '') : (text.match(/-?\d[\d.,'’]*/) || [null])[0];
+  // A number may start with its decimal point (".50 ct" is half a carat), but not right after a word: in "No.123"
+  // and "Ct.1.02" the dot ends a label.
+  const token = spaced ? spaced[0].replace(/ /g, '') : (text.match(/-?(?:\d|(?<![\w.])\.\d)[\d.,'’]*/) || [null])[0];
   if (!token) return null;
 
   let clean = token.replace(/['’]/g, '').replace(/[.,]+$/, '');
@@ -152,7 +154,7 @@ const MONTHS = {
  */
 export function parseDate(input) {
   if (!hasValue(input)) return null;
-  if (input instanceof Date) return Number.isNaN(input.getTime()) ? null : input.toISOString().slice(0, 10);
+  if (input instanceof Date) return calendarDay(input);
   const text = String(input).trim().toUpperCase();
 
   // 2026-11-05 or 2026-11-05T10:00:00Z
@@ -179,17 +181,40 @@ export function parseDate(input) {
   return null;
 }
 
+/**
+ * The calendar day of a moment as 'YYYY-MM-DD': in a time zone ('Asia/Kolkata') when one is given, else on the
+ * computer's own clock. Never the UTC day, which is a day off near midnight in India or New York.
+ */
+export function calendarDay(date, timeZone = null) {
+  const moment = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(moment.getTime())) return null;
+  if (timeZone) {
+    try {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(moment).map((part) => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day}`;
+    } catch {
+      // An unknown zone name: use the computer's own day.
+    }
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${moment.getFullYear()}-${pad(moment.getMonth() + 1)}-${pad(moment.getDate())}`;
+}
+
 function monthNumber(word) {
   return MONTHS[word] || MONTHS[word.slice(0, 3)] || null;
 }
 
+// Two-digit years 70 to 99 are 1970 to 1999, so an old date ("05/11/99") never reads as one far ahead (2099),
+// which would make an expired certificate look valid.
 function fullYear(year) {
-  if (year < 100) return 2000 + year;
+  if (year < 70) return 2000 + year;
+  if (year < 100) return 1900 + year;
   return year;
 }
 
 function makeDate(year, month, day) {
-  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1990 || year > 2100) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) return null;
   const date = new Date(Date.UTC(year, month - 1, day));
   if (date.getUTCMonth() !== month - 1) return null; // 31 Feb
   return date.toISOString().slice(0, 10);

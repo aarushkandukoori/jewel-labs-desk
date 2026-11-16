@@ -9,6 +9,7 @@ import path from 'node:path';
 import { after, describe, test } from 'node:test';
 
 import { makeApi } from '../../src/core/store/cloud-api.js';
+import { MAX_FILE_BYTES } from '../../src/core/store/cloud-store.js';
 import { writeFileAtomic } from '../../src/core/store/disk.js';
 import {
   createCloud,
@@ -483,7 +484,8 @@ const clone = (value) => (value === undefined || value === null ? value ?? null 
 
 function fakeSupabase() {
   const rows = new Map(); // "ws|collection|id" -> row
-  const files = new Map(); // "ws/fileKey" -> { bytes, mime }
+  const files = new Map();
+  const refs = new Map(); // paper ref stem -> last number handed out // "ws/fileKey" -> { bytes, mime }
   const listeners = new Set();
   const house = { id: WS, name: 'SAMPLE Exports', environment: 'sandbox', data: { city: 'Surat' }, rev: 1, created_at: '2026-11-01T00:00:00.000Z', created_by: null };
   const state = { offline: false, refuse: null, slowAnswer: null, calls: [], missing: false };
@@ -554,6 +556,13 @@ function fakeSupabase() {
       check('uploadFile');
       files.set(`${WS}/${fileKey}`, { bytes: new Uint8Array(bytes), mime });
     },
+    async reservePaperRef(stem, floor) {
+      check('reservePaperRef');
+      if (state.noRefFunction) throw Object.assign(new Error('Could not find the function public.reserve_paper_ref'), { status: 404, code: 'PGRST202', retryable: false });
+      const next = Math.max(refs.get(stem) || 0, floor || 0) + 1;
+      refs.set(stem, next);
+      return next;
+    },
     async downloadFile(fileKey) {
       check('downloadFile');
       const file = files.get(`${WS}/${fileKey}`);
@@ -605,10 +614,11 @@ function fakeSupabase() {
   };
 }
 
-async function openCloud(fake, cacheDir) {
+async function openCloud(fake, cacheDir, { userId } = {}) {
   return openCloudStore({
     workspaceId: WS,
     cacheDir: cacheDir || (await tempDir()),
+    userId,
     api: fake.api,
     flushDelayMs: 5,
     retryDelaysMs: [20, 40],
@@ -792,6 +802,55 @@ describe('cloud store (fake Supabase)', () => {
     await again.close();
   });
 
+  test('changes one person made offline are never sent under another person\'s sign-in', async () => {
+    const fake = fakeSupabase();
+    const cacheDir = await tempDir();
+    const asha = await openCloud(fake, cacheDir, { userId: 'user-asha' });
+    await asha.put('shipments', { id: 's1', ref: 'JL-EXP-1115-01' });
+    await asha.flush();
+    fake.state.offline = true;
+    await asha.put('shipments', { id: 's1', ref: 'JL-EXP-1115-01', note: 'edited offline by Asha' });
+    await asha.flush();
+    assert.equal(asha.syncStatus().pending, 1);
+    await asha.close();
+
+    // Ravi signs in on the same computer and opens the house: Asha's change stays aside.
+    fake.state.offline = false;
+    const ravi = await openCloud(fake, cacheDir, { userId: 'user-ravi' });
+    await ravi.flush();
+    await settle();
+    assert.equal(fake.row('shipments', 's1').data.note, undefined, 'not sent under Ravi\'s sign-in');
+    assert.equal(ravi.syncStatus().pending, 0);
+    assert.match(ravi.syncStatus().lastError, /another person made offline on this computer were not sent/);
+    await ravi.put('shipments', { id: 's2', ref: 'JL-EXP-1115-02' });
+    await ravi.flush();
+    await settle();
+    assert.ok(fake.row('shipments', 's2'), 'Ravi\'s own changes go out');
+    await ravi.close();
+
+    // When Asha opens the house here again, her change goes out.
+    const ashaAgain = await openCloud(fake, cacheDir, { userId: 'user-asha' });
+    assert.equal(ashaAgain.syncStatus().pending, 1);
+    await ashaAgain.flush();
+    await settle();
+    assert.equal(ashaAgain.syncStatus().pending, 0);
+    await ashaAgain.close();
+  });
+
+  test('paper numbers come from the server, never twice; an older back end leaves numbering to this computer', async () => {
+    const fake = fakeSupabase();
+    const store = await openCloud(fake);
+    assert.equal(await store.reserveRef('JL-EXP-1116-', 0), 1);
+    assert.equal(await store.reserveRef('JL-EXP-1116-', 0), 2, 'another computer asking gets the next one');
+    assert.equal(await store.reserveRef('JL-EXP-1116-', 4), 5, 'never below what this computer has seen');
+    fake.state.offline = true;
+    await assert.rejects(store.reserveRef('JL-EXP-1116-', 0), /Could not get a paper number from Jewel Labs/);
+    fake.state.offline = false;
+    fake.state.noRefFunction = true;
+    assert.equal(await store.reserveRef('JL-EXP-1116-', 0), null);
+    await store.close();
+  });
+
   test('after a reconnect it catches up on changes it missed', async () => {
     const fake = fakeSupabase();
     fake.remotePut('shipments', 's2', { ref: 'JL-EXP-1115-02' }, { quiet: true });
@@ -827,6 +886,21 @@ describe('cloud store (fake Supabase)', () => {
     await store.flush();
     assert.equal(fake.files.size, 0);
     await other.close();
+    await store.close();
+  });
+
+  test('a file bigger than a shared house keeps is refused at once, before anything is queued', async () => {
+    assert.equal(MAX_FILE_BYTES, 50 * 1024 * 1024, 'the same 50 MB as the documents bucket');
+    const fake = fakeSupabase();
+    const store = await openCloudStore({
+      workspaceId: WS, cacheDir: await tempDir(), api: fake.api, flushDelayMs: 5, retryDelaysMs: [20, 40], realtimeWaitMs: 300,
+      maxFileBytes: 4,
+    });
+    await assert.rejects(store.putFile('docs/d1/big scan.pdf', new Uint8Array(5), 'application/pdf'), /^Error: big scan\.pdf is 1 MB, and a house shared online keeps files of up to 1 MB\.$/);
+    await store.putFile('docs/d2/small.pdf', new Uint8Array(4), 'application/pdf');
+    await store.flush();
+    assert.deepEqual([...fake.files.keys()], [`${WS}/docs/d2/small.pdf`], 'only the file that fits went up');
+    await assert.rejects(store.getFile('docs/d1/big scan.pdf'), { code: 'ENOENT' });
     await store.close();
   });
 
@@ -944,6 +1018,9 @@ describe('cloud over HTTP (real supabase-js, local stand-in server)', () => {
       if (r.path.startsWith(prefix)) {
         const name = r.path.slice(prefix.length);
         if (r.method === 'POST') {
+          if (r.headers['x-upsert'] === 'false' && objects.has(name)) {
+            return { status: 400, json: { statusCode: '409', error: 'Duplicate', message: 'The resource already exists' } };
+          }
           objects.set(name, { bytes: r.raw, mime: r.headers['content-type'], upsert: r.headers['x-upsert'] });
           return { json: { Key: `documents/${name}`, Id: 'object-1' } };
         }
@@ -1004,6 +1081,13 @@ describe('cloud over HTTP (real supabase-js, local stand-in server)', () => {
       await assert.rejects(api.downloadFile('docs/none/missing.pdf'), (err) => err.code === 'ENOENT' && err.retryable === false);
       await api.removeFile('docs/d1/SAMPLE invoice.pdf');
       assert.equal(objects.size, 0);
+
+      // Papers are write-once: uploaded without replacing, and a second try (an answer lost on the way) counts as done.
+      await api.uploadFile('papers/p1/JL-EXP-1115-01-v1.pdf', pdf, 'application/pdf');
+      assert.equal(objects.get(`${WS}/papers/p1/JL-EXP-1115-01-v1.pdf`).upsert, 'false');
+      await api.uploadFile('papers/p1/JL-EXP-1115-01-v1.pdf', pdf, 'application/pdf');
+      await assert.rejects(api.downloadFile('papers/none.pdf'));
+      objects.clear();
 
       // Nothing listening: fails fast and is worth retrying later.
       const deadApi = makeApi(createClient('http://127.0.0.1:9', TEST_KEY, { auth: { persistSession: false, autoRefreshToken: false } }), WS);

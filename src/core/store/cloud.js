@@ -19,7 +19,7 @@ export * from './rows.js';
  */
 export function createCloud({ url, anonKey, sessionStorage, fetch } = {}) {
   if (!url || !anonKey) {
-    throw new Error('Cloud sign-in is not set up. Set JL_SUPABASE_URL and JL_SUPABASE_ANON_KEY (see backend/supabase/README.md).');
+    throw new Error('Cloud sign-in is not set up. Set JL_SUPABASE_URL and JL_SUPABASE_PUBLISHABLE_KEY (see backend/supabase/README.md).');
   }
   const options = {
     auth: {
@@ -127,6 +127,11 @@ export function createCloud({ url, anonKey, sessionStorage, fetch } = {}) {
     async invite(workspaceId, role = 'preparer') {
       const code = await rpc('create_invite', { p_workspace: workspaceId, p_role: role });
       return { code };
+    },
+
+    /** Withdraws an invite code at once (the house owner or Jewel Labs). true when it was withdrawn. */
+    async revoke(code) {
+      return Boolean(await rpc('revoke_invite', { p_code: String(code || '') }));
     },
 
     async members(workspaceId) {

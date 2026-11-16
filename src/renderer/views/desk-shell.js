@@ -18,7 +18,8 @@ import { agentOf } from '../lib/labels.js';
 const NAV = [
   { id: 'dashboard', num: '01', label: 'Dashboard' },
   { id: 'data', num: '02', label: 'Data', count: (s) => s.data.documents.length },
-  { id: 'filings', num: '03', label: 'Filings', count: (s) => s.data.papers.length },
+  // Jewel Labs prepares the papers; the house signs them and the house or its broker lodges them.
+  { id: 'filings', num: '03', label: 'Papers', count: (s) => s.data.papers.length },
   { id: 'counterparties', num: '04', label: 'Counterparties', count: (s) => counterpartyCount(s) },
   { id: 'audit', num: '05', label: 'Audit trail', count: (s) => s.data.activity.length },
   { id: 'metrics', num: '06', label: 'Metrics' },
@@ -74,7 +75,7 @@ function Sidebar({ page }) {
   async function switchHouse(id) {
     if (!id || id === ws.id) return;
     const r = await call(jl.workspaces.select(id));
-    if (r) toast('Now filing for', r.name, 'ok');
+    if (r) toast('Now working on', r.name, 'ok');
   }
   async function environment(value) {
     if (value === 'sandbox') return startSample().then(() => go('desk'));
@@ -88,8 +89,8 @@ function Sidebar({ page }) {
     <div class="sidebar-house">
       <div class="name ellipsis">${ws.name || 'No house open'}</div>
       <div class="meta ellipsis">${ws.city ? `${ws.city}${ws.country ? `, ${ws.country}` : ''}` : ws.legalEntity && ws.legalEntity !== ws.name ? ws.legalEntity : 'Not set'}</div>
-      <select class="select input-sm" value="" onChange=${(e) => switchHouse(e.currentTarget.value)} aria-label="Switch company you file for">
-        <option value="">Switch company you file for</option>
+      <select class="select input-sm" value="" onChange=${(e) => switchHouse(e.currentTarget.value)} aria-label="Switch house">
+        <option value="">Switch house</option>
         ${(state.workspaces || []).map((w) => html`<option value=${w.id}>${w.name}${w.sample ? ' (sample)' : ''}</option>`)}
       </select>
     </div>
@@ -138,7 +139,9 @@ function DeskTopBar({ onConnect }) {
   const toSign = state.data.papers.filter((p) => p.status === 'ready_to_sign').length;
 
   async function generate() {
-    const target = state.data.shipments.find((s) => ['ready_to_sign', 'held_for_review', 'questions'].includes(s.status)) || state.data.shipments[0];
+    // A shipment ready to build first, then one held for review; one with open questions only gives a draft.
+    const pick = (status) => state.data.shipments.find((s) => s.status === status);
+    const target = pick('ready_to_sign') || pick('held_for_review') || pick('questions') || state.data.shipments[0];
     if (!target) return toast('Nothing to build yet', 'Add a shipment’s papers first.', 'info');
     const r = await call(jl.papers.build(target.id));
     if (r) toast(`Building the papers for ${target.ref}`, 'The Paperwork agent writes the pack and cites every value.', 'ok');

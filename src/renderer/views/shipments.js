@@ -5,6 +5,7 @@ import { Section, StatusChip, Empty, Skeleton, Chip } from '../components/ui.js'
 import { Icon } from '../components/icons.js';
 import { shipmentStatus, route, ago, number, money } from '../lib/format.js';
 import { useUpload, DropZone } from '../components/upload.js';
+import { piecesOf } from '../lib/store.js';
 
 export function ShipmentsView() {
   const { state, nav } = useApp();
@@ -33,17 +34,16 @@ export function ShipmentsView() {
       ? html`<${Section}><${Empty} icon=${Icon.box} title="No shipments yet">Drop a parcel’s papers and the agents put the shipment together.<//>
           <${DropZone} upload=${upload} /><//>`
       : html`<div class="panel"><div class="table-wrap"><table class="table">
-          <thead><tr><th>Reference</th><th>Route</th><th>Consignee</th><th class="num">Papers</th><th class="num">Stones</th><th class="num">Carats</th><th class="num">Value</th><th>Status</th><th>Updated</th></tr></thead>
+          <thead><tr><th>Reference</th><th>Route</th><th>Consignee</th><th class="num">Papers</th><th class="num" title="Stones in the parcel: a lot counts every stone in it">Pieces</th><th class="num">Carats</th><th class="num">Value</th><th>Status</th><th>Updated</th></tr></thead>
           <tbody>
             ${rows.map((s) => {
               const docs = state.data.documents.filter((d) => d.shipmentId === s.id).length;
-              const stones = state.data.stones.filter((x) => x.shipmentId === s.id).length;
               return html`<tr class="clickable" key=${s.id} onClick=${() => nav.shipment(s.id)} tabindex="0" onKeyDown=${(e) => e.key === 'Enter' && nav.shipment(s.id)}>
                 <td><span class="ref">${s.ref}</span></td>
                 <td>${route(s)}</td>
                 <td class="ellipsis" style=${{ maxWidth: '220px' }}>${s.consignee?.name || '–'}</td>
                 <td class="num">${docs}</td>
-                <td class="num">${stones || s.totals?.pieces || ''}</td>
+                <td class="num">${piecesOf(s, state.data.stones)}</td>
                 <td class="num">${s.totals?.carats ? number(s.totals.carats, 2) : ''}</td>
                 <td class="num">${s.totals?.value ? money(s.totals.value, s.totals.currency) : ''}</td>
                 <td><${StatusChip} status=${shipmentStatus(s.status)} small /></td>

@@ -19,11 +19,12 @@ import { createNotifier, normalizeNotice } from '../../src/main/notify.js';
 import { createLog } from '../../src/main/log.js';
 import { appMenuTemplate } from '../../src/main/menu.js';
 import { trayIconFile, trayMenuTemplate } from '../../src/main/tray.js';
-import { makeAppUrlCheck, boundsThatFit, guardContents, contextMenuTemplate } from '../../src/main/window.js';
+import { makeAppUrlCheck, boundsThatFit, guardContents, contextMenuTemplate, createAppProtocolHandler, APP_ORIGIN, PAGES_ORIGIN } from '../../src/main/window.js';
+import { scrubSwitches, forbiddenDebugSwitch, isSelfCheckBuild, TEST_ENV } from '../../src/main/switches.js';
 import { createHandlers, registerIpc, runHandler, toPlain } from '../../src/main/ipc.js';
 import { createAppState, matches, newestFirst, labCheckDetail, LOCAL_WORKSPACE_NAME, SAMPLE_WORKSPACE_NAME } from '../../src/main/state.js';
 import { createLabsVerify } from '../../src/main/labs-window.js';
-import { createRasterizer, dataUrlToBytes, wasmUrlFor } from '../../src/main/rasterize.js';
+import { createRasterizer, dataUrlToBytes } from '../../src/main/rasterize.js';
 import { createPrinter } from '../../src/main/print.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -141,11 +142,33 @@ describe('files', () => {
     assert.equal(safeFileName(''), 'file');
   });
 
-  test('writeTempFile writes inside the folder', async () => {
+  test('readDroppedPaths never follows a symbolic link out of the dropped folder', async () => {
+    const secret = path.join(tmpDir('outside'), 'id_rsa');
+    fs.writeFileSync(secret, 'PRIVATE');
+    const dir = tmpDir('unzipped');
+    fs.writeFileSync(path.join(dir, 'invoice.pdf'), 'pdf');
+    fs.symlinkSync(secret, path.join(dir, 'key.pdf'));
+    fs.symlinkSync(path.dirname(secret), path.join(dir, 'more'));
+    const files = await readDroppedPaths([dir]);
+    assert.deepEqual(files.map((f) => f.name), ['invoice.pdf']);
+    await assert.rejects(readDroppedPaths([path.join(dir, 'key.pdf')]), /Links to other places/);
+  });
+
+  test('writeTempFile writes a new copy inside the folder each time, and clears day-old copies', async () => {
     const dir = path.join(tmpRoot, 'temp-out');
     const file = await writeTempFile(dir, '../escape.pdf', new Uint8Array([1, 2, 3]));
-    assert.equal(path.dirname(file), dir);
+    assert.equal(path.dirname(path.dirname(file)), dir);
+    assert.equal(path.basename(file), '_escape.pdf');
     assert.deepEqual([...fs.readFileSync(file)], [1, 2, 3]);
+    // The same paper opened again (the first copy may be locked by a PDF app): its own copy, same name.
+    const again = await writeTempFile(dir, 'JL-EXP-1115-01-v1.pdf', new Uint8Array([4]));
+    const third = await writeTempFile(dir, 'JL-EXP-1115-01-v1.pdf', new Uint8Array([5]));
+    assert.notEqual(path.dirname(again), path.dirname(third));
+    assert.deepEqual([...fs.readFileSync(again)], [4]);
+    // A day later the old copies are removed when the next one is written.
+    await writeTempFile(dir, 'later.pdf', new Uint8Array([6]), { now: Date.now() + 25 * 3600 * 1000 });
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.readdirSync(dir).length, 1);
   });
 });
 
@@ -423,13 +446,89 @@ describe('window rules', () => {
   test('makeAppUrlCheck accepts only our pages', () => {
     const dir = path.join(tmpRoot, 'app', 'src', 'renderer');
     const fallback = path.join(tmpRoot, 'app', 'src', 'main', 'fallback.html');
-    const isAppUrl = makeAppUrlCheck({ dirs: [dir], files: [fallback] });
+    const isAppUrl = makeAppUrlCheck({ origins: [APP_ORIGIN], dirs: [dir], files: [fallback] });
+    assert.equal(isAppUrl(`${APP_ORIGIN}/index.html#/papers`), true);
     assert.equal(isAppUrl(`${pathToFileURL(path.join(dir, 'index.html')).href}#/papers`), true);
     assert.equal(isAppUrl(pathToFileURL(fallback).href), true);
     assert.equal(isAppUrl(pathToFileURL(path.join(tmpRoot, 'app', 'src', 'main', 'rasterize.html')).href), false);
     assert.equal(isAppUrl(`${pathToFileURL(dir).href}-evil/index.html`), false);
+    assert.equal(isAppUrl('app://jewel-labs.evil/index.html'), false);
+    assert.equal(isAppUrl('app://other/index.html'), false);
     assert.equal(isAppUrl('https://jewellabs.io'), false);
     assert.equal(isAppUrl(undefined), false);
+  });
+
+  test('app:// serves the renderer folder and the hidden page only, with the right content types', async () => {
+    const dir = tmpDir('screens');
+    fs.mkdirSync(path.join(dir, 'vendor'));
+    fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html>');
+    fs.writeFileSync(path.join(dir, 'vendor', 'pdf.worker.mjs'), 'export {}');
+    const main = tmpDir('main');
+    fs.writeFileSync(path.join(main, 'rasterize.html'), '<!doctype html><title>pages</title>');
+    fs.writeFileSync(path.join(main, 'e2e.js'), 'secret test hooks');
+    fs.writeFileSync(path.join(tmpRoot, 'secret.txt'), 'PRIVATE');
+    const serve = createAppProtocolHandler({
+      sites: {
+        'jewel-labs': { '/': dir },
+        pages: { '/rasterize.html': path.join(main, 'rasterize.html'), '/renderer/vendor/': path.join(dir, 'vendor'), '/wasm/': null },
+      },
+    });
+    const get = (url) => serve({ url });
+    const page = await get(`${APP_ORIGIN}/index.html`);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-type'), /^text\/html/);
+    assert.equal(await page.text(), '<!doctype html>');
+    const worker = await get(`${APP_ORIGIN}/vendor/pdf.worker.mjs?v=1`);
+    assert.match(worker.headers.get('content-type'), /^text\/javascript/);
+    assert.equal(await (await get(`${PAGES_ORIGIN}/rasterize.html`)).text(), '<!doctype html><title>pages</title>');
+    assert.equal((await get(`${PAGES_ORIGIN}/renderer/vendor/pdf.worker.mjs`)).status, 200);
+    for (const url of [
+      `${APP_ORIGIN}/../secret.txt`,
+      `${APP_ORIGIN}/%2e%2e/secret.txt`,
+      `${APP_ORIGIN}/..%2F..%2Fsecret.txt`,
+      `${APP_ORIGIN}/missing.js`,
+      `${APP_ORIGIN}/`,
+      `${APP_ORIGIN}/%E0%A4%A`,
+      `${PAGES_ORIGIN}/e2e.js`, // only the files the hidden page needs
+      `${PAGES_ORIGIN}/rasterize.html/../e2e.js`,
+      `${PAGES_ORIGIN}/renderer/vendor/..%2F..%2Fsecret.txt`,
+      `${PAGES_ORIGIN}/wasm/openjpeg.wasm`, // no image decoders on this computer
+      `${PAGES_ORIGIN}/index.html`,
+      'app://other-host/index.html',
+      'https://jewel-labs/index.html',
+      'not a url',
+    ]) {
+      assert.equal((await get(url)).status, 404, url);
+    }
+  });
+
+  test('an installed copy ignores the test and back-end switches; development and a self-check build keep the test ones', () => {
+    const all = () => ({
+      JL_E2E: '1', JL_USER_DATA: '/tmp/x', JL_E2E_OPEN_FILES: '/a.pdf', JL_E2E_SAVE_DIR: '/tmp', JL_E2E_REPORT: '/r.json', JL_E2E_QUIT: '1',
+      JL_SUPABASE_URL: 'https://evil.example', JL_SUPABASE_PUBLISHABLE_KEY: 'x', JL_SUPABASE_ANON_KEY: 'x', HOME: '/Users/x',
+    });
+    const installed = all();
+    assert.equal(scrubSwitches(installed, { packaged: true }).testSwitches, false);
+    assert.deepEqual(installed, { HOME: '/Users/x' });
+    const selfCheck = all();
+    assert.equal(scrubSwitches(selfCheck, { packaged: true, selfCheck: true }).testSwitches, true);
+    assert.deepEqual(Object.keys(selfCheck).sort(), [...TEST_ENV, 'HOME'].sort());
+    const dev = all();
+    assert.equal(scrubSwitches(dev, { packaged: false }).testSwitches, true);
+    assert.deepEqual(dev, all());
+
+    const dir = tmpDir('app-path');
+    assert.equal(isSelfCheckBuild(dir), false);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'jewel-labs-desk', selfCheck: true }));
+    assert.equal(isSelfCheckBuild(dir), true);
+  });
+
+  test('an installed copy refuses to start with a remote-debugging or inspector switch', () => {
+    const started = (switches) => (name) => switches.includes(name);
+    assert.equal(forbiddenDebugSwitch(started(['remote-debugging-port']), { packaged: true }), 'remote-debugging-port');
+    assert.equal(forbiddenDebugSwitch(started(['inspect']), { packaged: true }), 'inspect');
+    assert.equal(forbiddenDebugSwitch(started(['hidden']), { packaged: true }), null);
+    assert.equal(forbiddenDebugSwitch(started(['remote-debugging-port']), { packaged: false }), null); // development, e2e tests
   });
 
   test('boundsThatFit drops a position on a missing screen', () => {
@@ -511,7 +610,7 @@ function loadPreload() {
 const CONTRACT = {
   app: ['info', 'openExternal', 'showItem', 'qr', 'checkUpdate', 'pathForFile'],
   auth: ['status', 'signIn', 'signUp', 'signOut'],
-  workspaces: ['list', 'create', 'select', 'current', 'update', 'join', 'invite', 'members'],
+  workspaces: ['list', 'create', 'select', 'current', 'update', 'join', 'invite', 'revoke', 'members'],
   docs: ['pick', 'add', 'list', 'get', 'file', 'remove'],
   shipments: ['list', 'get', 'update'],
   stones: ['list', 'history', 'verify'],
@@ -684,6 +783,7 @@ function fakeCloudModule({ desk = false } = {}) {
       create: async (profile) => ({ id: 'cloud-2', ...profile }),
       join: async () => shared[0],
       invite: async () => ({ code: 'INVITE-1' }),
+      revoke: async (code) => code === 'INVITE-1',
       members: async () => [{ name: 'Sample Person', role: 'owner' }],
     },
     lease: { acquire: async () => true, release: async () => {} },
@@ -748,7 +848,7 @@ function makeState({ core = fakeCore(), safeStorage = fakeSafeStorage(), config 
   const autopilotChanges = [];
   const state = createAppState({
     core,
-    config: { SUPABASE_URL: '', SUPABASE_ANON_KEY: '', AI_MODELS: ['gpt-5-mini'], MAILBOX_POLL_MINUTES: 5, OFAC_MAX_AGE_HOURS: 24, ...config },
+    config: { SUPABASE_URL: '', SUPABASE_PUBLISHABLE_KEY: '', AI_MODELS: ['gpt-5-mini'], MAILBOX_POLL_MINUTES: 5, OFAC_MAX_AGE_HOURS: 24, ...config },
     paths: { userData: dir, localDir: path.join(dir, 'local'), cacheDir: path.join(dir, 'cache'), tempDir: path.join(dir, 'tmp') },
     settings,
     secrets,
@@ -859,15 +959,21 @@ describe('app state', () => {
     await assert.rejects(state.removeDocument('nope'), /not found/);
   });
 
-  test('updateShipment keeps protected fields', async () => {
+  test('updateShipment changes only the note, and keeps protected fields', async () => {
     const { state, core, settings } = makeState();
     await state.start();
     const store = core.stores.get(settings.get().localWorkspaceId);
-    await store.put('shipments', { id: 's1', workspaceId: 'w', ref: 'EXP/1', destinationCountry: 'BE' });
-    const saved = await state.updateShipment('s1', { destinationCountry: 'US', id: 'hacked', workspaceId: 'other' });
+    await store.put('shipments', { id: 's1', workspaceId: 'w', ref: 'EXP/1', destinationCountry: 'BE', status: 'questions' });
+    const saved = await state.updateShipment('s1', { note: 'Courier booked for Friday', id: 'hacked', workspaceId: 'other' });
     assert.equal(saved.id, 's1');
     assert.equal(saved.workspaceId, 'w');
-    assert.equal(saved.destinationCountry, 'US');
+    assert.equal(saved.note, 'Courier booked for Friday');
+    for (const patch of [{ status: 'ready_to_sign' }, { deskApproved: { by: 'me' } }, { destinationCountry: 'US' }, { required: [] }]) {
+      await assert.rejects(state.updateShipment('s1', patch), /cannot be changed here/);
+    }
+    const after = await store.get('shipments', 's1');
+    assert.equal(after.status, 'questions');
+    assert.equal(after.destinationCountry, 'BE');
   });
 
   test('dismissQuestion records who dismissed it', async () => {
@@ -879,6 +985,38 @@ describe('app state', () => {
     const saved = await state.dismissQuestion('q1');
     assert.equal(saved.status, 'dismissed');
     assert.equal(saved.answeredBy, 'Export clerk');
+  });
+
+  test('a weight mismatch or a sanctions question cannot be dismissed: it needs an answer', async () => {
+    const core = fakeCore();
+    const realCreate = core.services.createServices;
+    core.services.createServices = (opts) => {
+      const svc = realCreate(opts);
+      svc.dismissQuestion = async () => assert.fail('the hold must not be released');
+      return svc;
+    };
+    const { state, settings } = makeState({ core });
+    await state.start();
+    const store = core.stores.get(settings.get().localWorkspaceId);
+    await store.put('shipments', { id: 's1', ref: 'KG/26-27/041', status: 'questions' });
+    await store.put('questions', { id: 'q1', shipmentId: 's1', kind: 'mismatch', text: 'Report 7391020002 weighs 0.70 ct or 0.71 ct?', status: 'open' });
+    await store.put('questions', { id: 'q2', shipmentId: 's1', kind: 'confirm', text: 'Is this the SDN entry?', status: 'open' });
+    await assert.rejects(state.dismissQuestion('q1'), /Answer this question/);
+    await assert.rejects(state.dismissQuestion('q2'), /Answer this question/);
+    assert.equal((await store.get('questions', 'q1')).status, 'open');
+    assert.equal((await store.get('shipments', 's1')).status, 'questions');
+    await assert.rejects(state.dismissQuestion('nope'), /not found/);
+  });
+
+  test('a paper file is named for its version, with -signed once signed', async () => {
+    const { state, core, settings } = makeState();
+    await state.start();
+    const store = core.stores.get(settings.get().localWorkspaceId);
+    await store.putFile('papers/p1/a.pdf', new Uint8Array([1]));
+    await store.put('papers', { id: 'p1', ref: 'JL-EXP-1116-01', version: 2, status: 'ready_to_sign', fileKey: 'papers/p1/a.pdf' });
+    assert.equal((await state.paperFile('p1')).name, 'JL-EXP-1116-01-v2.pdf');
+    await store.put('papers', { id: 'p1', ref: 'JL-EXP-1116-01', version: 2, status: 'signed', fileKey: 'papers/p1/a.pdf' });
+    assert.equal((await state.paperFile('p1')).name, 'JL-EXP-1116-01-v2-signed.pdf');
   });
 
   test('autopilot is a workspace switch: set through the agents, remembered for the tray', async () => {
@@ -962,6 +1100,41 @@ describe('app state', () => {
     assert.equal(settings.workspace(id).mail, null);
   });
 
+  test('a mailbox saved without domains is not retried every 5 minutes: it asks to be connected again', async () => {
+    const core = fakeCore();
+    const create = core.services.createServices;
+    core.services.createServices = (opts) => {
+      const svc = create(opts);
+      const connect = svc.mail.connect;
+      svc.mail.connect = async (o) => {
+        if (o.test === false && !(o.domains || []).length) {
+          svc.calls.push('mail.reconnect.refused');
+          throw Object.assign(new Error('Add the email domains of your brokers, labs and shippers first.'), { code: 'no_domains' });
+        }
+        return connect(o);
+      };
+      return svc;
+    };
+    const { state, secrets, settings } = makeState({ core });
+    await state.start();
+    await state.connectMail({ provider: 'gmail', email: 'ops@example.com', appPassword: 'app-password-for-tests' }); // an older copy: no domains
+    const warnings = [];
+    const again = createAppState({
+      core,
+      config: { AI_MODELS: [], MAILBOX_POLL_MINUTES: 5, OFAC_MAX_AGE_HOURS: 24 },
+      paths: { localDir: '/x', cacheDir: '/y' },
+      settings,
+      secrets,
+      log: { ...quietLog, warn: (...parts) => warnings.push(parts.join(' ')) },
+    });
+    await again.start();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(core.lastServices.calls.includes('mail.reconnect.refused'));
+    assert.ok(warnings.some((w) => /no email domains/.test(w)), warnings.join(' | '));
+    assert.ok(!warnings.some((w) => /trying again/.test(w)), 'no retry loop on an error a retry cannot fix');
+    await again.stop?.();
+  });
+
   test('a house that saves no secret never touches the Keychain', async () => {
     let asked = 0;
     const safeStorage = { ...fakeSafeStorage(), isAsyncEncryptionAvailable: async () => (asked += 1) > 0 };
@@ -1039,8 +1212,9 @@ describe('app state', () => {
       svc.dismissQuestion = async (id, by) => ({ id, status: 'dismissed', by: by.name });
       return svc;
     };
-    const { state } = makeState({ core, labsVerify: async () => assert.fail('the services check the stone themselves') });
+    const { state, settings } = makeState({ core, labsVerify: async () => assert.fail('the services check the stone themselves') });
     await state.start();
+    await core.stores.get(settings.get().localWorkspaceId).put('questions', { id: 'q1', kind: 'missing_document', text: 'Packing list', status: 'open' });
     assert.deepEqual(await state.verifyStone('st1'), { status: 'match', id: 'st1', by: state.personName() });
     assert.deepEqual(await state.dismissQuestion('q1'), { id: 'q1', status: 'dismissed', by: state.personName() });
   });
@@ -1055,6 +1229,49 @@ describe('app state', () => {
     assert.deepEqual(await state.sanctionsStatus(), { count: 17589, date: '2026-11-02', source: 'snapshot' });
   });
 
+  test('onboarding opens the new house, so its chats, papers and mailbox never go to the house open before', async () => {
+    const { state, core, settings } = makeState();
+    await state.start();
+    const before = state.info().workspaceId;
+    const result = await state.onboardHouse({ name: 'Meridian Stones (SAMPLE)', country: 'BE' });
+    assert.equal(result.opened, true);
+    assert.equal(state.info().workspaceId, result.workspace.id);
+    assert.notEqual(result.workspace.id, before);
+    assert.deepEqual(settings.get().selected, { kind: 'local', id: result.workspace.id });
+    await state.addFiles([{ name: 'WhatsApp Chat - Meridian Stones SAMPLE.txt', bytes: new Uint8Array([1]) }]);
+    assert.equal(core.lastServices.opts.store, core.stores.get(result.workspace.id));
+    assert.ok(core.lastServices.calls.some((c) => c[0] === 'addFiles'));
+    await state.connectMail({ provider: 'gmail', email: 'ops@meridian.example.com', appPassword: 'pw-for-tests' });
+    assert.equal(settings.workspace(result.workspace.id).mail.email, 'ops@meridian.example.com');
+    assert.equal(settings.workspace(before).mail, undefined);
+  });
+
+  test('cloud: onboarding on the desk opens the new shared house and keeps the invite code', async () => {
+    const core = fakeCore({ cloud: fakeCloudModule({ desk: true }) });
+    const { state } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    await state.start();
+    await state.signIn({ email: 'desk@example.com', password: 'pw' });
+    assert.equal(state.info().workspaceId, 'cloud-1');
+    const result = await state.onboardHouse({ name: 'Meridian Stones (SAMPLE)' });
+    assert.deepEqual(result.invite, { code: 'INVITE-1' });
+    assert.equal(state.info().mode, 'cloud');
+    assert.equal(state.info().workspaceId, 'cloud-2');
+  });
+
+  test('approving a held pack needs a signed-in desk account, never a local clerk', async () => {
+    const local = makeState();
+    await local.state.start();
+    assert.equal(local.state.deskAllowed(), true); // the desk views still open in a local workspace
+    assert.equal(local.state.canApprove(), false);
+    assert.equal(local.state.authStatus().canApprove, false);
+    const core = fakeCore({ cloud: fakeCloudModule({ desk: true }) });
+    const { state } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    await state.start();
+    await state.signIn({ email: 'desk@example.com', password: 'pw' });
+    assert.equal(state.canApprove(), true);
+    assert.equal(state.info().canApprove, true);
+  });
+
   test('sending a message from a house goes to the desk', async () => {
     const { state } = makeState();
     await state.start();
@@ -1065,7 +1282,7 @@ describe('app state', () => {
 
   test('cloud: signing in opens the shared workspace with the Jewel Labs AI service', async () => {
     const core = fakeCore({ cloud: fakeCloudModule() });
-    const { state, events } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON_KEY: 'anon' } });
+    const { state, events } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid', SUPABASE_PUBLISHABLE_KEY: 'anon' } });
     await state.start();
     assert.equal(state.info().mode, 'local');
     assert.equal(state.authStatus().cloud, true);
@@ -1080,6 +1297,8 @@ describe('app state', () => {
     assert.equal(ai.getAccessToken(), 'token-for-tests');
     assert.ok(core.lastServices.opts.lease);
     assert.deepEqual(await state.invite('preparer'), { code: 'INVITE-1' });
+    assert.deepEqual(await state.revokeInvite('INVITE-1'), { revoked: true });
+    await assert.rejects(state.revokeInvite('NOPE-2'), /not found, or only the house owner/);
     assert.ok(events.some((e) => e.name === 'auth'));
     const workspaces = await state.listWorkspaces();
     assert.deepEqual(workspaces.map((w) => w.kind), ['cloud', 'local', 'local']);
@@ -1097,6 +1316,158 @@ describe('app state', () => {
     await state.signIn({ email: 'desk@example.com', password: 'pw' });
     assert.equal(state.authStatus().role, 'desk');
     assert.equal(state.deskAllowed(), true);
+  });
+
+  // A cloud whose network can be cut: list() fails while offline, and the sign-in change callback is kept.
+  function flakyCloudModule({ session = null, offline = true } = {}) {
+    const box = { session, offline, onChange: null };
+    const houses = [{ id: 'cloud-1', name: 'SAMPLE Diamond House', role: 'exporter', myRole: 'owner' }];
+    const cloud = {
+      auth: {
+        signIn: async () => {},
+        signUp: async () => {},
+        signOut: async () => {
+          box.session = null;
+        },
+        session: async () => box.session,
+        onChange: (fn) => {
+          box.onChange = fn;
+        },
+      },
+      workspaces: {
+        list: async () => {
+          if (box.offline) throw new Error('fetch failed');
+          return box.session ? houses : [];
+        },
+        members: async () => [],
+      },
+      lease: { acquire: async () => true, release: async () => {} },
+      aiProxyUrl: 'https://example.invalid/functions/v1/ai',
+      accessToken: () => 'token-for-tests',
+    };
+    return { box, module: { createCloud: () => cloud } };
+  }
+  const CLERK = { user: { id: 'u1', email: 'clerk@example.com', name: 'Sample Clerk' } };
+  const HOUSE = { kind: 'cloud', id: 'cloud-1' };
+
+  test('offline start, still signed in: the saved house opens from its copy with the AI, and stays the choice', async () => {
+    const { module } = flakyCloudModule({ session: CLERK, offline: true });
+    const core = fakeCore({ cloud: module });
+    const { state, settings } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    settings.set({ selected: HOUSE });
+    await state.start();
+    assert.equal(state.info().mode, 'cloud');
+    assert.equal(state.info().workspaceId, 'cloud-1');
+    assert.equal(state.info().ai.mode, 'proxy');
+    assert.deepEqual(settings.get().selected, HOUSE);
+  });
+
+  test('offline start with no copy of the house: Local for now, the house stays the saved choice', async () => {
+    const { module } = flakyCloudModule({ session: CLERK, offline: true });
+    const core = fakeCore({ cloud: module });
+    core.store.openCloudStore = async () => {
+      throw new Error('No copy of this house on this computer, and no network.');
+    };
+    const { state, settings } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    settings.set({ selected: HOUSE });
+    await state.start();
+    assert.equal(state.info().mode, 'local');
+    assert.deepEqual(settings.get().selected, HOUSE);
+  });
+
+  test('a sign-in that ran out overnight: Local while offline, the house reopens with the AI once the network is back', async () => {
+    const { box, module } = flakyCloudModule({ session: null, offline: true });
+    const core = fakeCore({ cloud: module });
+    const { state, settings, secrets } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    settings.set({ selected: HOUSE });
+    await state.start();
+    assert.equal(state.info().mode, 'local');
+    assert.equal(state.info().ai.mode, 'off');
+    assert.deepEqual(settings.get().selected, HOUSE);
+
+    // The network returns; supabase-js refreshes the token and reports the new session.
+    box.offline = false;
+    box.session = CLERK;
+    await box.onChange();
+    assert.equal(state.info().mode, 'cloud');
+    assert.equal(state.info().workspaceId, 'cloud-1');
+    assert.equal(state.info().ai.mode, 'proxy');
+    assert.deepEqual(settings.get().selected, HOUSE);
+
+    // The sign-in runs out again in the middle of the day: Local for now, the house is still the choice.
+    box.session = null;
+    await box.onChange();
+    assert.equal(state.info().mode, 'local');
+    assert.deepEqual(settings.get().selected, HOUSE);
+
+    // The next start, online, opens the house.
+    box.session = CLERK;
+    const again = createAppState({
+      core,
+      config: { SUPABASE_URL: 'https://example.invalid', AI_MODELS: [], MAILBOX_POLL_MINUTES: 5, OFAC_MAX_AGE_HOURS: 24 },
+      paths: { localDir: '/x', cacheDir: path.join(path.dirname(settings.file), 'cache') },
+      settings,
+      secrets,
+      log: quietLog,
+    });
+    await again.start();
+    assert.equal(again.info().workspaceId, 'cloud-1');
+  });
+
+  test('a workspace the person picks after a fallback is saved, and the house no longer takes over', async () => {
+    const { box, module } = flakyCloudModule({ session: null, offline: true });
+    const core = fakeCore({ cloud: module });
+    const { state, settings } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    settings.set({ selected: HOUSE });
+    await state.start();
+    await state.selectWorkspace(settings.get().sampleWorkspaceId);
+    assert.deepEqual(settings.get().selected, { kind: 'local', id: settings.get().sampleWorkspaceId });
+    box.offline = false;
+    box.session = CLERK;
+    await box.onChange();
+    assert.equal(state.info().workspaceId, settings.get().sampleWorkspaceId);
+  });
+
+  test('signing out sends the last changes first, then removes the house copies except one with unsent changes', async () => {
+    const core = fakeCore({ cloud: fakeCloudModule() });
+    const { state, settings } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    await state.start();
+    await state.signIn({ email: 'clerk@example.com', password: 'pw' });
+    const order = [];
+    core.stores.get('cloud-1').flush = async () => order.push('flush');
+    const cloud = core.cloud.createCloud();
+    const signOut = cloud.auth.signOut;
+    cloud.auth.signOut = async () => {
+      order.push('signOut');
+      return signOut();
+    };
+    const root = path.join(path.dirname(settings.file), 'cache', 'cloud');
+    fs.mkdirSync(path.join(root, 'cloud-1'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'cloud-1', 'documents.json'), '{"d1":{"fileName":"Invoice.pdf"}}');
+    fs.writeFileSync(path.join(root, 'cloud-1', '_sync.json'), JSON.stringify({ outbox: [] }));
+    fs.mkdirSync(path.join(root, 'cloud-9'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'cloud-9', '_sync.json'), JSON.stringify({ outbox: [{ op: 'put', collection: 'documents', id: 'd2' }] }));
+    const status = await state.signOut();
+    assert.deepEqual(order, ['flush', 'signOut']);
+    assert.equal(fs.existsSync(path.join(root, 'cloud-1')), false);
+    assert.equal(fs.existsSync(path.join(root, 'cloud-9')), true);
+    assert.equal(status.keptUnsent, 1);
+    assert.equal(status.signedIn, false);
+  });
+
+  test('a house the server says this person left: its copy on this computer is removed', async () => {
+    const core = fakeCore({ cloud: fakeCloudModule() });
+    const { state, settings } = makeState({ core, config: { SUPABASE_URL: 'https://example.invalid' } });
+    await state.start();
+    await state.signIn({ email: 'clerk@example.com', password: 'pw' });
+    const dir = path.join(path.dirname(settings.file), 'cache', 'cloud', 'cloud-1');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'documents.json'), '{}');
+    core.store.openCloudStore = async () => {
+      throw Object.assign(new Error('This house was not found, or you are no longer a member.'), { code: 'NOT_FOUND' });
+    };
+    await assert.rejects(state.selectWorkspace('cloud-1'), /no longer a member/);
+    assert.equal(fs.existsSync(dir), false);
   });
 
   test('without the cloud, signing in explains why', async () => {
@@ -1151,6 +1522,7 @@ function fakeIpcState(overrides = {}) {
     personName: () => 'Export clerk',
     actor: () => ({ id: 'u1', name: 'Export clerk', email: null }),
     deskAllowed: () => true,
+    canApprove: () => true,
     addFiles: async (files, kind) => {
       calls.push(['addFiles', files, kind]);
       return { documentIds: files.map((f) => f.name) };
@@ -1335,6 +1707,14 @@ describe('ipc handlers', () => {
     assert.throws(() => handlers['desk.onboard']({ name: 'X' }), /Only Jewel Labs desk staff/);
   });
 
+  test('a held pack is approved only by a signed-in desk account', async () => {
+    const local = makeHandlers({ state: fakeIpcState({ canApprove: () => false }) });
+    await assert.rejects(local.handlers['desk.approve']('p1', 'Looks fine'), /signed-in Jewel Labs desk account/);
+    assert.equal(await local.handlers['desk.hold']('p1', 'Fix the carat first'), true); // holding stays allowed
+    const desk = makeHandlers();
+    assert.equal(await desk.handlers['desk.approve']('p1', 'Approved'), true);
+  });
+
   test('workspaces.invite allows house roles only', async () => {
     const { handlers } = makeHandlers();
     assert.deepEqual(await handlers['workspaces.invite'](), { code: 'X', role: 'preparer' });
@@ -1363,6 +1743,16 @@ describe('ipc handlers', () => {
     assert.equal(passed.port, 993);
     assert.throws(() => handlers['mail.connect']({ provider: 'gmail', email: 'ops@example.com' }), /app password/);
     assert.throws(() => handlers['mail.connect']({ provider: 'custom', email: 'a@b.co', appPassword: 'x', port: 'abc' }), /port/);
+    // The domains mail is brought in from: a short list of host names.
+    await handlers['mail.connect']({ provider: 'gmail', email: 'ops@example.com', appPassword: 'pw', domains: 'Broker.example, @lab.example broker.example' });
+    assert.deepEqual(passed.domains, ['broker.example', 'lab.example']);
+    await handlers['mail.connect']({ provider: 'gmail', email: 'ops@example.com', appPassword: 'pw', domains: ['courier.example'] });
+    assert.deepEqual(passed.domains, ['courier.example']);
+    const login = { provider: 'gmail', email: 'ops@example.com', appPassword: 'pw' };
+    assert.throws(() => handlers['mail.connect']({ ...login, domains: ['not a domain'] }), /is not an email domain/);
+    assert.throws(() => handlers['mail.connect']({ ...login, domains: ['https://broker.example/'] }), /is not an email domain/);
+    assert.throws(() => handlers['mail.connect']({ ...login, domains: [`${'a'.repeat(300)}.example`] }), /is not an email domain/);
+    assert.throws(() => handlers['mail.connect']({ ...login, domains: Array.from({ length: 51 }, (_, i) => `d${i}.example`) }), /at most 50/);
   });
 
   test('list handlers pass the filter on', async () => {
@@ -1383,9 +1773,14 @@ describe('ipc handlers', () => {
 // labs-window.js, rasterize.js and print.js with fake windows
 
 describe('lab report check window', () => {
+  const LABS = {
+    GIA: { checkUrl: 'https://www.gia.example/report-check?reportno=', landingUrl: 'https://www.gia.example/report-check-landing' },
+    IGI: { checkUrl: 'https://www.igi.example/verify/?r=', landingUrl: 'https://www.igi.example/verify/' },
+  };
   const labs = {
+    LABS,
     detectLab: (n, hint) => hint || (n.startsWith('LG') ? 'IGI' : 'GIA'),
-    reportCheckUrl: (lab, n) => (lab === 'GCAL' ? null : `https://example.invalid/${lab}/${n}`),
+    reportCheckUrl: (lab, n) => (LABS[lab] ? `${LABS[lab].checkUrl}${n}` : null),
     parseLabPage: (_lab, text) => {
       if (text.includes('REPORT 7451234567')) return { found: true, reportNumber: '7451234567', carat: 0.71 };
       return { found: false, reason: text.includes('No such report') ? 'not_found' : 'no_result' };
@@ -1401,8 +1796,10 @@ describe('lab report check window', () => {
         this.destroyed = false;
         this.pages = [...pages];
         this.listeners = {};
+        this.contentsListeners = {};
         this.webContents = {
           setWindowOpenHandler: (fn) => (this.openHandler = fn),
+          on: (name, fn) => (this.contentsListeners[name] = fn),
           mainFrame: {
             framesInSubtree: [{ executeJavaScript: async () => (this.pages.length > 1 ? this.pages.shift() : this.pages[0]) }],
           },
@@ -1411,6 +1808,9 @@ describe('lab report check window', () => {
       }
       on(name, fn) {
         this.listeners[name] = fn;
+      }
+      setTitle(title) {
+        this.title = title;
       }
       loadURL(url) {
         this.url = url;
@@ -1430,9 +1830,9 @@ describe('lab report check window', () => {
     const verify = createLabsVerify({ BrowserWindow, labs, pollMs: 1, timeoutMs: 2000 });
     const result = await verify({ reportNumber: '7451234567', lab: 'GIA', carat: 0.71 });
     assert.equal(result.status, 'match');
-    assert.equal(result.url, 'https://example.invalid/GIA/7451234567');
+    assert.equal(result.url, 'https://www.gia.example/report-check?reportno=7451234567');
     const win = BrowserWindow.last;
-    assert.equal(win.opts.title, 'Checking GIA report 7451234567');
+    assert.equal(win.opts.title, 'Checking GIA report 7451234567 · www.gia.example');
     assert.equal(win.opts.width, 900);
     assert.equal(win.opts.webPreferences.sandbox, true);
     assert.equal(win.opts.webPreferences.preload, undefined);
@@ -1440,13 +1840,33 @@ describe('lab report check window', () => {
     assert.equal(win.destroyed, true);
   });
 
-  test('uses the URL the services pass and returns the page text', async () => {
+  test('never opens a link saved on the stone record, and returns the page text', async () => {
     const BrowserWindow = fakeWindowClass(['GIA REPORT 7451234567 0.71']);
     const verify = createLabsVerify({ BrowserWindow, labs, pollMs: 1 });
-    const result = await verify({ lab: 'GIA', reportNumber: '7451234567', url: 'https://example.invalid/report-check?r=7451234567' });
-    assert.equal(BrowserWindow.last.url, 'https://example.invalid/report-check?r=7451234567');
+    const result = await verify({ lab: 'GIA', reportNumber: '7451234567', url: 'https://evil.example/sign-in' });
+    assert.equal(BrowserWindow.last.url, 'https://www.gia.example/report-check?reportno=7451234567');
     assert.equal(result.text, 'GIA REPORT 7451234567 0.71');
     assert.equal(result.parsed.found, true);
+  });
+
+  test('the window stays on the lab site and its title says which page shows', async () => {
+    const BrowserWindow = fakeWindowClass(['still loading']);
+    const verify = createLabsVerify({ BrowserWindow, labs, pollMs: 1, timeoutMs: 40 });
+    const pending = verify({ reportNumber: '7451234567', lab: 'GIA', carat: 0.71 });
+    const win = BrowserWindow.last;
+    const tryGoing = (name, url) => {
+      let stopped = false;
+      win.contentsListeners[name]({ url, preventDefault: () => (stopped = true) });
+      return stopped;
+    };
+    assert.equal(tryGoing('will-navigate', 'https://www.gia.example/report-check?reportno=1'), false);
+    assert.equal(tryGoing('will-navigate', 'https://login.gia.example/challenge'), false);
+    assert.equal(tryGoing('will-navigate', 'https://evil.example/sign-in'), true);
+    assert.equal(tryGoing('will-redirect', 'https://gia.example.evil.example/'), true);
+    assert.equal(tryGoing('will-navigate', 'http://www.gia.example/report-check'), true);
+    win.contentsListeners['did-navigate']({}, 'https://www.gia.example/report-check-landing?x=1');
+    assert.equal(win.title, 'Checking GIA report 7451234567 · www.gia.example/report-check-landing');
+    await pending;
   });
 
   test('stops when the lab says twice that there is no such report', async () => {
@@ -1466,16 +1886,22 @@ describe('lab report check window', () => {
     assert.equal(result.status, 'mismatch');
   });
 
-  test('gives up after the timeout, or when there is no online check', async () => {
+  test('a check that could not run is never "not found": incomplete or unavailable', async () => {
     const BrowserWindow = fakeWindowClass(['still loading']);
     const verify = createLabsVerify({ BrowserWindow, labs, pollMs: 1, timeoutMs: 30 });
     const late = await verify({ reportNumber: '7451234567', lab: 'GIA', carat: 0.71 });
-    assert.equal(late.status, 'not_found');
+    assert.equal(late.status, 'incomplete');
     assert.match(late.reason, /did not show within/);
-    const none = await verify({ reportNumber: '123', lab: 'GCAL' });
+    const opened = BrowserWindow.last;
+    const none = await verify({ reportNumber: '7391020001', lab: 'Northbridge Gem Laboratory (SAMPLE)' });
+    assert.equal(none.status, 'unavailable');
     assert.match(none.reason, /no online report check/);
+    assert.equal(BrowserWindow.last, opened, 'no window opens for a lab without an online check');
     const noNumber = await verify({ lab: 'GIA' });
+    assert.equal(noNumber.status, 'unavailable');
     assert.match(noNumber.reason, /no report number/);
+    assert.match(labCheckDetail({ lab: 'NGL', reportNumber: '7391020001' }, none), /could not be checked: .*no online report check/);
+    assert.match(labCheckDetail({ lab: 'GIA', reportNumber: '7451234567' }, late), /was not checked: The report did not show/);
   });
 });
 
@@ -1510,8 +1936,8 @@ function fakeRasterWindowClass({ printResult = [true, ''] } = {}) {
         print: (_opts, callback) => callback(...printResult),
       };
     }
-    loadFile(file) {
-      this.file = file;
+    loadURL(url) {
+      this.url = url;
       return Promise.resolve();
     }
     isDestroyed() {
@@ -1526,7 +1952,7 @@ function fakeRasterWindowClass({ printResult = [true, ''] } = {}) {
 describe('rasterize', () => {
   test('draws a page to PNG bytes and reuses the loaded PDF', async () => {
     const BrowserWindow = fakeRasterWindowClass();
-    const { rasterize, close } = createRasterizer({ BrowserWindow, htmlPath: '/app/rasterize.html', wasmDir: '/app/wasm', idleMs: 5 });
+    const { rasterize, close } = createRasterizer({ BrowserWindow, pageUrl: `${PAGES_ORIGIN}/rasterize.html`, wasmUrl: `${PAGES_ORIGIN}/wasm/`, idleMs: 5 });
     const pdf = new Uint8Array([37, 80, 68, 70, 45, 49]);
     const png = await rasterize(pdf, 1);
     assert.ok(png instanceof Uint8Array);
@@ -1540,11 +1966,61 @@ describe('rasterize', () => {
     close();
   });
 
-  test('dataUrlToBytes and wasmUrlFor', () => {
+  test('the page answers its own reason, and a crashed, hung or stuck page drawer is replaced', async () => {
+    const windows = [];
+    let hang = false; // the next page drawings never finish
+    class FakeWindow {
+      constructor() {
+        this.listeners = {};
+        this.contentsListeners = {};
+        this.destroyed = false;
+        windows.push(this);
+        const raster = {
+          has: () => false,
+          load: () => 1,
+          render: (key, page) => (page > 1 ? { error: 'The PDF has 1 pages, not 2.' } : PNG_DATA_URL),
+        };
+        this.webContents = {
+          on: (name, fn) => { this.contentsListeners[name] = fn; },
+          executeJavaScript: async (code) => (hang && code.includes('render') ? new Promise(() => {}) : new Function('window', `return ${code}`)({ raster })),
+        };
+      }
+      on(name, fn) { this.listeners[name] = fn; }
+      loadURL() { return Promise.resolve(); }
+      isDestroyed() { return this.destroyed; }
+      destroy() { this.destroyed = true; }
+    }
+    const { rasterize, close } = createRasterizer({ BrowserWindow: FakeWindow, pageUrl: `${PAGES_ORIGIN}/rasterize.html`, idleMs: 5, timeoutMs: 150 });
+    const pdf = new Uint8Array([37, 80, 68, 70, 45]);
+    await assert.rejects(rasterize(pdf, 2), /^Error: The PDF has 1 pages, not 2\.$/, 'the real reason, not "Script failed to execute"');
+    assert.equal(windows.length, 1, 'a page that is not there leaves the window as it is');
+
+    hang = true;
+    const crashed = rasterize(pdf, 1);
+    await new Promise((r) => setTimeout(r, 10));
+    windows[0].contentsListeners['render-process-gone']({}, { reason: 'crashed' });
+    await assert.rejects(crashed, /The page drawer stopped \(crashed\)/);
+    assert.equal(windows[0].destroyed, true);
+
+    const hung = rasterize(pdf, 1);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(windows.length, 2, 'the next call opened a new window');
+    windows[1].listeners.unresponsive();
+    await assert.rejects(hung, /stopped responding/);
+
+    await assert.rejects(rasterize(pdf, 1), /took too long/, 'a page that never finishes fails after the timeout');
+    assert.equal(windows[2].destroyed, true);
+
+    hang = false;
+    const png = await rasterize(pdf, 1);
+    assert.deepEqual([...png.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47], 'later pages no longer queue behind a stuck window');
+    assert.equal(windows.length, 4);
+    close();
+  });
+
+  test('dataUrlToBytes', () => {
     assert.equal(dataUrlToBytes(PNG_DATA_URL).length, Buffer.from(PNG_B64, 'base64').length);
     assert.throws(() => dataUrlToBytes('data:text/plain,hi'), /could not be drawn/);
-    assert.equal(wasmUrlFor(null), null);
-    assert.match(wasmUrlFor(path.join(tmpRoot, 'wasm')), /^file:\/\/.*wasm\/$/);
   });
 
   test('the hidden page loads the vendored pdf.js', () => {
@@ -1559,11 +2035,11 @@ describe('rasterize', () => {
 
 describe('print', () => {
   test('prints, reports a cancel, and throws on failure', async () => {
-    const ok = createPrinter({ BrowserWindow: fakeRasterWindowClass({ printResult: [true, ''] }), htmlPath: '/app/rasterize.html' });
+    const ok = createPrinter({ BrowserWindow: fakeRasterWindowClass({ printResult: [true, ''] }), pageUrl: `${PAGES_ORIGIN}/rasterize.html` });
     assert.deepEqual(await ok.print(new Uint8Array([1, 2, 3])), { printed: true, pages: 2 });
-    const cancelled = createPrinter({ BrowserWindow: fakeRasterWindowClass({ printResult: [false, 'cancelled'] }), htmlPath: '/x' });
+    const cancelled = createPrinter({ BrowserWindow: fakeRasterWindowClass({ printResult: [false, 'cancelled'] }), pageUrl: `${PAGES_ORIGIN}/rasterize.html` });
     assert.deepEqual(await cancelled.print(new Uint8Array([1])), { printed: false, cancelled: true, pages: 2 });
-    const failed = createPrinter({ BrowserWindow: fakeRasterWindowClass({ printResult: [false, 'failed'] }), htmlPath: '/x' });
+    const failed = createPrinter({ BrowserWindow: fakeRasterWindowClass({ printResult: [false, 'failed'] }), pageUrl: `${PAGES_ORIGIN}/rasterize.html` });
     await assert.rejects(failed.print(new Uint8Array([1])), /Printing did not work \(failed\)/);
   });
 });

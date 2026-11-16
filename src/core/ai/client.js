@@ -5,7 +5,7 @@
 // The client picks a model (falling back down the list when one is not available), adjusts settings a model
 // rejects, retries busy or failed calls, and turns errors into plain messages the app can show.
 
-import { AI_MODELS, AI_REASONING, AI_MAX_PARALLEL } from '../config.js';
+import { AI_MODELS, AI_REASONING, AI_MAX_PARALLEL, AI_PROXY_MAX_BODY_BYTES } from '../config.js';
 import { validate } from './schemas.js';
 
 export const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
@@ -28,10 +28,17 @@ export class AIError extends Error {
 
 export const NO_KEY_MESSAGE = 'No OpenAI key yet. Add one in Settings, or sign in to use the Jewel Labs AI.';
 
-/** True when the API refused a PDF file part (some models and proxies only take text and images). */
+/** True when the API refused a PDF file part: that one PDF (too many pages, cannot be parsed) or files as such. */
 export function isFileRejection(err) {
   if (!err || err.code !== 'bad_request') return false;
   return /\bfile\b|file_data|input_file|content\.type|unsupported (?:content|mime)|\bpdf\b/i.test(`${err.param || ''} ${err.detail || ''}`);
+}
+
+/** True when the refusal is about file parts as such (the model or proxy takes only text and images), not one PDF. */
+export function isFileTypeRejection(err) {
+  if (!isFileRejection(err)) return false;
+  return /content\.?\[\d+\]\.type$/i.test(err.param || '')
+    || /invalid value: 'file'|unsupported content type|does not support (?:file|pdf)/i.test(err.detail || '');
 }
 
 export function createClient({
@@ -47,6 +54,7 @@ export function createClient({
   tries = 3,
   retryBaseMs = 1000,
   maxParallel = AI_MAX_PARALLEL,
+  maxBodyBytes = mode === 'proxy' ? AI_PROXY_MAX_BODY_BYTES : Infinity, // the proxy refuses bigger requests
   onUsage = () => {},
 } = {}) {
   const modelList = [...new Set([model, ...models].filter(Boolean))];
@@ -158,13 +166,18 @@ export function createClient({
     const raw = String(info.message || `HTTP ${status}`);
     const opts = { status, param: info.param || null, detail: raw };
     const service = mode === 'proxy' ? 'The Jewel Labs AI service' : 'OpenAI';
-    if (code === 'model_not_found' || status === 404) {
+    // A proxy that does not allow a model may answer 400 model_not_allowed: the next model down the list is tried too.
+    if (code === 'model_not_found' || code === 'model_not_allowed' || status === 404) {
       return new AIError('model_unavailable', `This model is not available: ${raw}`, opts);
     }
     if (status === 401) {
       return mode === 'proxy'
         ? new AIError('signed_out', 'Your Jewel Labs sign-in has expired. Sign in again.', opts)
         : new AIError('invalid_key', 'The OpenAI key was not accepted. Check the key in Settings.', opts);
+    }
+    // The proxy's daily cap per house. It is not "busy": nothing changes until the count starts again.
+    if (code === 'daily_limit') {
+      return new AIError('quota', 'This house has used its Jewel Labs AI calls for today. The count starts again at midnight UTC.', opts);
     }
     if (status === 402 || code === 'insufficient_quota' || (status === 429 && /quota|billing/i.test(raw))) {
       const message = mode === 'proxy'
@@ -173,7 +186,7 @@ export function createClient({
       return new AIError('quota', message, opts);
     }
     if (status === 429) {
-      return new AIError('rate_limit', `${service} is busy right now. The agents will try again.`, {
+      return new AIError('rate_limit', `${service} is busy right now.`, {
         ...opts, retryable: true, retryAfterMs: retryAfterMs(res),
       });
     }
@@ -181,7 +194,7 @@ export function createClient({
     if (status === 413) return new AIError('too_large', 'This document is too large to send to the AI.', opts);
     if (status === 400 || status === 422) return new AIError('bad_request', `${service} could not use the request: ${raw}`, opts);
     if (status >= 500) {
-      return new AIError('server', `${service} had a server problem. The agents will try again.`, {
+      return new AIError('server', `${service} had a server problem.`, {
         ...opts, retryable: RETRY_STATUSES.includes(status),
       });
     }
@@ -198,6 +211,11 @@ export function createClient({
   }
 
   async function sendOnce(body) {
+    const payload = JSON.stringify(body);
+    if (Buffer.byteLength(payload) > maxBodyBytes) {
+      // The proxy would refuse it (413) and still count the call, so it is not sent.
+      throw new AIError('too_large', 'This document is too large to send to the AI.', { status: 413 });
+    }
     const token = await bearer();
     const headers = await headersFor(token);
     const controller = new AbortController();
@@ -206,7 +224,7 @@ export function createClient({
       const res = await fetchFn(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: payload,
         signal: controller.signal,
       });
       if (!res.ok) throw await errorFromResponse(res);
@@ -216,7 +234,7 @@ export function createClient({
     } catch (err) {
       if (err instanceof AIError) throw err;
       if (controller.signal.aborted) {
-        throw new AIError('timeout', 'The AI took too long to answer. The agents will try again.', { retryable: true });
+        throw new AIError('timeout', 'The AI took too long to answer.', { retryable: true });
       }
       const where = mode === 'proxy' ? 'the Jewel Labs AI service' : 'OpenAI';
       throw new AIError('network', `Could not reach ${where}. Check the internet connection.`, {
@@ -308,7 +326,7 @@ export function createClient({
     answer = await complete({ messages: repair, schema, name, maxTokens });
     parsed = readAnswer(answer.data, schema);
     if (parsed.ok) return { value: parsed.value, model: answer.model };
-    throw new AIError('bad_json', 'The AI answer could not be read. The agents will try again later.', { detail: parsed.error });
+    throw new AIError('bad_json', 'The AI answer could not be read.', { detail: parsed.error });
   }
 
   return {

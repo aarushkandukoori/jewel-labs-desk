@@ -14,18 +14,25 @@ async function sandboxCheck(ctx) {
   if (real.length) throw new Error('This workspace has real papers. Switch to the sandbox to use the sample shipment.');
 }
 
-// The fictional house the SAMPLE papers are made out to (samples/lib/facts.js). Without it the agents could not
-// tell that these are the house's exports, and every sample shipment would ask "export or import?".
+// The fictional house the SAMPLE papers are made out to (samples/lib/facts.js HOUSE; test/unit/samples.test.js checks
+// the two agree). Without it the agents could not tell that these are the house's exports, and every sample
+// shipment would ask "export or import?". The one copy: the app and scripts/eval.js use it too.
 export const SAMPLE_HOUSE = {
+  name: 'Kavya Gems LLP (SAMPLE)',
   legalEntity: 'Kavya Gems LLP (SAMPLE)',
-  country: 'India',
+  address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
+  taxId: 'SAMPLE00012',
   city: 'Surat',
+  country: 'India',
   role: 'exporter',
+  environment: 'sandbox',
   letterhead: {
     companyName: 'Kavya Gems LLP (SAMPLE)', address: 'Plot 12, Sample Diamond Park, Katargam, Surat 395004, Gujarat, India',
     cityCountry: 'Surat, India', iec: 'SAMPLE00012', email: 'ops@kavya-gems.example.com', phone: '+91 555 010 0012',
   },
 };
+// The name the app gives the sandbox workspace (src/main/state.js); a name the person chose instead is kept.
+export const SAMPLE_WORKSPACE_NAME = 'Sample workspace';
 
 // The order a house usually sends them: the WhatsApp export, the buyer's email, then the dropped files.
 // Papers under later/ (the late packing list) come only when asked for: loadSample({ later: true }).
@@ -56,11 +63,16 @@ export async function loadSample(ctx, { addFiles, samplesDir, later = false }) {
   return { ...result, files: batch.length, later };
 }
 
-/** A sample workspace that has no house of its own yet becomes the SAMPLE house. Its name is kept. */
+/**
+ * A sample workspace that has no house of its own yet becomes the SAMPLE house. Details already there (from an
+ * earlier load, or typed in) are kept, and so is a name the person chose.
+ */
 async function giveSampleIdentity(ctx) {
   const workspace = await ctx.store.workspace();
   if (workspace.sample !== true || workspace.legalEntity) return;
-  await ctx.store.updateWorkspace({ ...SAMPLE_HOUSE, letterhead: { ...(workspace.letterhead || {}), ...SAMPLE_HOUSE.letterhead } });
+  const patch = { ...SAMPLE_HOUSE, letterhead: { ...(workspace.letterhead || {}), ...SAMPLE_HOUSE.letterhead } };
+  if (workspace.name && workspace.name !== SAMPLE_WORKSPACE_NAME) delete patch.name;
+  await ctx.store.updateWorkspace(patch);
 }
 
 /**

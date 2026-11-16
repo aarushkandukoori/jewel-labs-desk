@@ -63,6 +63,8 @@ const LAB_NAME_PATTERNS = [
  * of the number ("GIA 2141438171"); then the number's shape:
  *   10 digits -> GIA, 12 digits -> HRD, 9 digits or "LG" + 8 to 10 digits -> IGI.
  * GCAL also uses 9 digits and "LG" numbers, so a GCAL report needs the hint. Other shapes -> null.
+ * This only picks the site to look a report up on. It is stricter than the rules' REPORT_FORMATS
+ * (rules/formats.js), which check a number against its lab: every shape guessed here passes that check.
  */
 export function detectLab(reportNumber, labHint) {
   const fromHint = labFromText(labHint);
@@ -88,14 +90,22 @@ function labFromText(text) {
 }
 
 /**
+ * "GIA No. 2141 438 171" -> "2141 438 171": the report number as printed, in capitals, without the lab name and
+ * the "No." written in front of it. cleanReportNumber below and the AI reader (ai/normalize.js) both start here.
+ */
+export function withoutReportLabel(reportNumber) {
+  let text = String(reportNumber ?? '').toUpperCase();
+  text = text.replace(/^\s*(?:GIA|IGI|HRD(?:\s+ANTWERP)?|GCAL|GSI)(?![A-Z])/, '');
+  text = text.replace(/^\s*(?:REPORT|CERTIFICATE|CERT)?\s*(?:NO|NUMBER|NR|N°|#)?\.?\s*:?/, '');
+  return text.trim();
+}
+
+/**
  * "GIA No. 2141 438 171" -> "2141438171", "IGI LG-612345678" -> "LG612345678".
  * Keeps letters and digits, drops a lab name and "No." written in front.
  */
 export function cleanReportNumber(reportNumber) {
-  let text = String(reportNumber ?? '').toUpperCase();
-  text = text.replace(/^\s*(?:GIA|IGI|HRD(?:\s+ANTWERP)?|GCAL)(?![A-Z])/, '');
-  text = text.replace(/^\s*(?:REPORT|CERTIFICATE|CERT)?\s*(?:NO|NUMBER|NR|N°|#)?\.?\s*:?/, '');
-  return text.replace(/[^A-Z0-9]/g, '');
+  return withoutReportLabel(reportNumber).replace(/[^A-Z0-9]/g, '');
 }
 
 /** The lab's own page for one report, or the lab's report-check page when there is no number. */
