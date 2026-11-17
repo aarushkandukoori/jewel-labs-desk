@@ -661,6 +661,14 @@ ul, ol { list-style: none; }
 .first-open__item { padding: 20px 22px; border-radius: 14px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.025); }
 .first-open__k { font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
 .first-open__v { font-size: 14px; line-height: 1.62; color: var(--text-2); }
+/* The Terminal install line: one full-width card above the first-open notes. */
+.terminal-install { margin-top: 28px; padding: 20px 22px; border-radius: 14px; border: 1px solid var(--line-2); background: rgba(255, 255, 255, 0.035); }
+.terminal-install__row { margin-top: 14px; display: flex; align-items: center; gap: 12px; }
+.terminal-install__cmd { flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: thin; white-space: nowrap; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); font-family: var(--mono); font-size: 13px; color: var(--text); }
+.terminal-install__copy { flex: 0 0 auto; }
+.terminal-install__note { margin-top: 10px; font-size: 12.5px; color: var(--text-3); }
+.terminal-install__note a { color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; }
+@media (max-width: 560px) { .terminal-install__row { flex-direction: column; align-items: stretch; } }
 .releases { margin-top: 30px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 16px; font-size: 13.5px; color: var(--text-3); text-align: center; }
 @media (max-width: 900px) {
   .downloads, .first-open { grid-template-columns: 1fr; }

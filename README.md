@@ -67,13 +67,61 @@ Flow B and `--proxy` create test accounts on the live Supabase project, always `
 ```sh
 npm run dist:mac    # dist/Jewel-Labs-mac-arm64.dmg and dist/Jewel-Labs-mac-x64.dmg
 npm run dist:win    # dist/Jewel-Labs-windows-setup.exe
+npm run clean:builds
 ```
+
+`npm run dist:mac` ends with `npm run clean:builds` (`node scripts/clean-builds.js`). electron-builder leaves the
+unpacked app next to each `.dmg` (`dist/mac/` and `dist/mac-arm64/`, the same in `dist-selfcheck/`), and macOS lists
+every `Jewel Labs.app` it finds, so after a few builds the Mac shows several "Jewel Labs" apps. The script tells macOS
+to forget those apps and deletes the folders; the `.dmg` files stay. Run it by hand after any other build. It refuses
+folders outside the repository.
 
 An installed copy ignores the test and back-end switches (`JL_E2E*`, `JL_USER_DATA` and `JL_SUPABASE_*`, see
 `src/main/switches.js`), so `test/e2e/packaged.spec.mjs` needs a self-check build of the Apple silicon `.dmg`:
 `npx electron-builder --mac --arm64 --publish never -c.extraMetadata.selfCheck=true`. Use it for that check only, never
-for a release. (`src/main/e2e.js` ships in every copy but loads only in a self-check build.) The app has no Apple Developer ID (it is signed ad hoc), so the first time macOS asks people
-to allow it: right-click > Open, or System Settings > Privacy & Security > Open Anyway.
+for a release. (`src/main/e2e.js` ships in every copy but loads only in a self-check build.)
+
+### Installing on a Mac
+
+The app is signed ad hoc and not yet notarized by Apple (there is no Apple Developer ID yet), so how it is downloaded
+matters:
+
+- **From Terminal, no warning.** `curl -fsSL https://aarushkandukoori.github.io/jewel-labs-desk/install.sh | bash`
+  runs `site/install.sh`: it picks Apple silicon or Intel, downloads the `.dmg` from the latest release, checks it
+  against the sha512 in the release's `latest-mac.yml`, copies the app into `/Applications` (or `~/Applications`), and
+  opens it. A file fetched with curl is not marked as downloaded from the internet, so macOS opens the app without
+  asking. The script never uses sudo and changes no security setting.
+- **The `.dmg` from a browser.** macOS says it cannot verify the app is free of malware. Click Done (not Move to
+  Trash), then System Settings > Privacy & Security > Open Anyway, then Open. On macOS 15 and later right-click > Open
+  no longer skips this step.
+
+To try the script without touching `/Applications`: `JL_DMG_FILE` (a local `.dmg` instead of the download),
+`JL_LATEST_YML` (a local checksum file), `JL_INSTALL_DIR` (where to install) and `JL_NO_OPEN=1` (do not open the app).
+
+### Turning on Apple signing
+
+When the five secrets below exist in the GitHub repository (Settings > Secrets and variables > Actions), the release
+workflow signs the Mac app with the Developer ID, has Apple notarize it and staples the ticket, so a browser download
+opens with no warning. Without them it builds ad hoc exactly as now. Its "Check the Mac apps" step verifies the result
+either way.
+
+| secret | what it holds |
+|--------|---------------|
+| `MAC_CERT_P12_BASE64` | the Developer ID Application certificate exported as a `.p12`, as base64 (`base64 -i cert.p12 \| pbcopy`) |
+| `MAC_CERT_PASSWORD` | the password of that `.p12` |
+| `APPLE_API_KEY_P8` | the full text of the App Store Connect API key file (`AuthKey_XXXX.p8`) |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER` | the issuer ID shown above the keys |
+
+Only the owner can do these three things:
+
+1. Enrol in the Apple Developer Program as an individual (an Apple Account with two-factor sign-in, real legal name,
+   $99 a year).
+2. As Account Holder, create a Developer ID Application certificate (developer.apple.com > Certificates > + >
+   Developer ID Application, with a signing request made in Keychain Access), install it, and export it from Keychain
+   Access as a `.p12` with a password.
+3. In App Store Connect > Users and Access > Integrations, create a Team API key (Developer role), download the `.p8`
+   (it downloads only once) and note the key ID and issuer ID. Then add the five secrets and push a new version tag.
 
 ## Releases
 

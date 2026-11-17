@@ -11,6 +11,7 @@ import { initHistory } from './history.js';
 import { initTeam } from './team.js';
 import { initWatch } from './watch.js';
 import { initClosingStone } from './closing.js';
+import { initCopyButtons } from './copy.js';
 
 window.jlStarted = true; // tells the fail-safe timer in index.html that the script is running
 
@@ -58,6 +59,7 @@ start('cursor glow', () => initCursorGlow(document.getElementById('cursor-glow')
 start('card lights', () => initCardLights());
 start('downloads', () => initDownloads());
 start('download pill', () => initDownloadPill());
+start('copy buttons', () => initCopyButtons());
 start('statement', () => initStatement(reduced));
 start('agents', () => initAgentRun(reduced));
 start('demo', () => initDemo(reduced));

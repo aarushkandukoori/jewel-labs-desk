@@ -2,6 +2,7 @@
 // site/js, and the page content rules (copy, links, agents, image sizes, no secrets). Also the
 // repository docs that describe the code (README.md, the docs/ARCHITECTURE.md contract, the npm
 // scripts) and the license notices the app and the site ship.
+import { spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -50,6 +51,7 @@ function fakeRepo() {
   write(root, 'site/index.html', '<html><body><section id="watch" data-video="pending" data-video-src="media/demo.mp4" data-video-poster="media/demo-poster.jpg"></section></body></html>');
   write(root, 'site/css/site.css', 'body { color: white; }');
   write(root, 'site/.DS_Store', 'junk');
+  write(root, 'site/install.sh', '#!/bin/bash\nmain() { :; }\nmain "$@"\n');
   write(root, 'src/renderer/fonts/Geist-Medium.woff2', 'font bytes');
   write(root, 'src/renderer/fonts/OFL.txt', 'SIL OPEN FONT LICENSE Version 1.1');
   write(root, 'src/renderer/fonts/notes.txt', 'not a font');
@@ -94,8 +96,19 @@ test('build copies the site, fonts, favicon and app, and writes .nojekyll', () =
   assert.equal(summary.samples, false);
   assert.equal(summary.video, 'pending');
   assert.equal(summary.fonts, 1);
+  assert.equal(summary.installer, true);
+  assert.ok(fs.existsSync(path.join(out, 'install.sh')), 'the Mac Terminal installer is served at the site root');
   assert.deepEqual(summary.warnings, []);
   assert.equal(summary.files, listFiles(out).length);
+});
+
+test('build warns when site/install.sh is missing, since the page tells Mac users to run it', () => {
+  const root = fakeRepo();
+  fs.rmSync(path.join(root, 'site', 'install.sh'));
+  const summary = buildSite({ root, out: path.join(root, 'site-dist'), log: quiet });
+  assert.equal(summary.installer, false);
+  assert.equal(summary.warnings.length, 1);
+  assert.match(summary.warnings[0], /install\.sh is missing/);
 });
 
 test('build warns when the fonts have no OFL.txt, since the license must go with them', () => {
@@ -413,6 +426,76 @@ test('the statement card has an EU and a US version with matching rows', () => {
   }
 });
 
+/* ───────── the Mac Terminal installer (site/install.sh) ───────── */
+
+const INSTALL_SH = path.join(SITE, 'install.sh');
+const INSTALL = fs.readFileSync(INSTALL_SH, 'utf8');
+/** The script's lines without comments, so the rules below judge what runs, not what the comments say. */
+const INSTALL_CODE = INSTALL.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+
+test('install.sh is valid bash, stops on the first error and runs only when complete', () => {
+  const check = spawnSync('bash', ['-n', INSTALL_SH], { encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stderr);
+  assert.match(INSTALL, /^#!\/bin\/bash\n/);
+  assert.match(INSTALL_CODE, /^set -euo pipefail$/m);
+  // Everything is inside main(), called on the very last line: a download cut short defines functions but runs nothing.
+  assert.match(INSTALL_CODE, /^main\(\) \{$/m);
+  assert.equal(INSTALL.trimEnd().split('\n').pop(), 'main "$@"');
+  assert.equal((INSTALL_CODE.match(/^main "\$@"$/gm) || []).length, 1);
+});
+
+test('install.sh never asks for admin rights or touches a security setting', () => {
+  for (const word of ['sudo', 'xattr', 'spctl', 'quarantine', 'csrutil', 'defaults write']) {
+    assert.ok(!INSTALL_CODE.includes(word), `install.sh runs ${word}`);
+  }
+  // It mounts the image read-only and without opening a Finder window, and checks the release checksum.
+  assert.match(INSTALL_CODE, /hdiutil attach -readonly -nobrowse/);
+  assert.match(INSTALL_CODE, /latest-mac\.yml/);
+  assert.match(INSTALL_CODE, /openssl dgst -sha512 -binary/);
+  assert.match(INSTALL_CODE, /trap cleanup EXIT/);
+  // It downloads the same files the download buttons point at.
+  assert.ok(INSTALL_CODE.includes('https://github.com/aarushkandukoori/jewel-labs-desk/releases/latest/download'));
+  assert.ok(INSTALL_CODE.includes('Jewel-Labs-mac-$arch.dmg'));
+  assert.ok(downloadUrl('mac-arm64').endsWith('Jewel-Labs-mac-arm64.dmg') && downloadUrl('mac-x64').endsWith('Jewel-Labs-mac-x64.dmg'));
+});
+
+test('the install line on the page and in README.md runs the script the site serves', () => {
+  const line = 'curl -fsSL https://aarushkandukoori.github.io/jewel-labs-desk/install.sh | bash';
+  assert.ok(HTML.includes(line));
+  assert.ok(fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').includes(line));
+  const { homepage } = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  assert.ok(line.includes(`${homepage}install.sh`), 'the line points at the website in package.json');
+});
+
+test('install.sh reads the checksum of the right file from latest-mac.yml', () => {
+  const dir = tempDir('yml');
+  const yml = path.join(dir, 'latest-mac.yml');
+  // The shape electron-builder writes (fictional checksums).
+  fs.writeFileSync(yml, [
+    'version: 9.9.9', 'files:',
+    '  - url: Jewel-Labs-mac-x64.dmg', '    sha512: INTELSUM==', '    size: 10',
+    '  - url: Jewel-Labs-mac-arm64.dmg', '    sha512: ARMSUM==', '    size: 20',
+    'path: Jewel-Labs-mac-x64.dmg', 'sha512: INTELSUM==', '',
+  ].join('\n'));
+  // Load the functions without the last line (the call to main), then ask for each file's checksum.
+  const functions = INSTALL.trimEnd().split('\n').slice(0, -1).join('\n');
+  const ask = (name) => spawnSync('bash', ['-c', `${functions}\nexpected_sha512 "$1" "$2"`, 'test', yml, name], { encoding: 'utf8' }).stdout.trim();
+  assert.equal(ask('Jewel-Labs-mac-arm64.dmg'), 'ARMSUM==');
+  assert.equal(ask('Jewel-Labs-mac-x64.dmg'), 'INTELSUM==');
+  assert.equal(ask('Jewel-Labs-windows-setup.exe'), '');
+});
+
+test('install.sh refuses to run anywhere but macOS, before it downloads anything', () => {
+  // A fake uname that says Linux, first on the PATH.
+  const bin = tempDir('bin');
+  fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/sh\necho Linux\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'curl'), '#!/bin/sh\necho "curl must not run" >&2\nexit 9\n', { mode: 0o755 });
+  const run = spawnSync('bash', [INSTALL_SH], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /this installer is for macOS/);
+  assert.doesNotMatch(run.stderr, /curl must not run/);
+});
+
 /* ───────── page content ───────── */
 
 test('the agent cards follow AGENTS in src/core/types.js: names, colours and order', () => {
@@ -436,7 +519,12 @@ test('the page has the required title, copy and links', () => {
     'Your export team sends the shipment papers. Agents read every line, trace every stone, check origin and hand back the pack your buyer and customs need, ready to sign.',
     'Watch it work',
     'This is the real app UI replaying a recorded run of the agents on a fictional sample shipment.',
-    'The app is not notarized yet. Right-click the app, choose Open, then Open again (or System Settings &gt; Privacy &amp; Security &gt; Open Anyway).',
+    'Mac: install from Terminal (opens with no warning)',
+    '<code class="terminal-install__cmd" id="install-cmd">curl -fsSL https://aarushkandukoori.github.io/jewel-labs-desk/install.sh | bash</code>',
+    'data-copy="install-cmd"',
+    'Jewel Labs is not notarized by Apple yet',
+    'Click Done, not Move to Trash. Then open System Settings &gt; Privacy &amp; Security, scroll down, click Open Anyway and then Open.',
+    'On macOS 15 and later, right-click &gt; Open no longer skips this step.',
     'If SmartScreen appears, click More info, then Run anyway.',
     'https://github.com/aarushkandukoori/jewel-labs-desk/releases"',
     'https://cal.com/soham-jariwala-4fvbkw/30min',

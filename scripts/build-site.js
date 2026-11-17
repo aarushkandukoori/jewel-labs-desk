@@ -1,6 +1,7 @@
 // Builds the website into site-dist/ for GitHub Pages:   node scripts/build-site.js
 //
 //   site/                          the page, styles, scripts and images     ->  site-dist/
+//   site/install.sh                the Mac Terminal installer                ->  site-dist/install.sh
 //   src/renderer/fonts/*.woff2     the fonts (self-hosted, no Google Fonts)  ->  site-dist/fonts/
 //   src/renderer/fonts/OFL.txt     the fonts' license, which goes with them  ->  site-dist/fonts/
 //   assets/logo.svg                the favicon                               ->  site-dist/favicon.svg
@@ -10,6 +11,8 @@
 // Then it:
 //   - marks the "Watch it work" video as ready when site/media/demo.mp4 exists (until then the page
 //     hides that section, and never asks for a file that is not there),
+//   - checks the Mac Terminal installer (install.sh) is there, since the download section tells people to run
+//     curl .../install.sh | bash and a missing file would hand them GitHub's 404 page,
 //   - warns when the app imports a file the website does not ship (the demo would break),
 //   - checks the recorded run the live demo replays (app/demo/sample-run.json) and warns about any
 //     file it points to that is missing,
@@ -24,11 +27,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // The SIL Open Font License asks that every copy of the fonts carries the license, so it is copied with them.
 const FONT_LICENSE = 'OFL.txt';
+// The Mac installer people run with: curl -fsSL <site>/install.sh | bash
+const INSTALLER = 'install.sh';
 
 /**
  * Builds the site. `root` is the repository folder, `out` the folder to write (emptied first).
  * Returns a summary: { out, files, bytes, app: 'renderer', demo: 'recorded'|'none', demoSteps, samples,
- * video: 'ready'|'pending', fonts, warnings }.
+ * video: 'ready'|'pending', fonts, installer: true|false, warnings }.
  */
 export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log = console.log } = {}) {
   root = path.resolve(root);
@@ -37,7 +42,8 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
   const from = (...parts) => path.join(root, ...parts);
   const to = (...parts) => path.join(out, ...parts);
   const summary = {
-    out, files: 0, bytes: 0, app: 'renderer', demo: 'none', demoSteps: 0, samples: false, video: 'pending', fonts: 0, warnings: [],
+    out, files: 0, bytes: 0, app: 'renderer', demo: 'none', demoSteps: 0, samples: false, video: 'pending', fonts: 0, installer: false,
+    warnings: [],
   };
   const warn = (message) => {
     summary.warnings.push(message);
@@ -54,6 +60,11 @@ export function buildSite({ root = ROOT, out = path.join(root, 'site-dist'), log
 
   // 2. The website itself.
   copyDir(from('site'), out);
+
+  // The Mac Terminal installer, served at <site>/install.sh. It must keep its exact name (the page and README
+  // print the URL) and stay a shell script.
+  if (existsExactly(out, to(INSTALLER))) summary.installer = true;
+  else warn(`site/${INSTALLER} is missing: the Terminal install line on the page would fail.`);
 
   // 3. Fonts, from the app's own copy, so the site and the app use the same files.
   const fontDir = from('src', 'renderer', 'fonts');
@@ -259,6 +270,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const mb = (summary.bytes / (1024 * 1024)).toFixed(1);
   const demo = summary.demo === 'recorded' ? `recorded run (${summary.demoSteps} steps)` : summary.demo;
   console.log(`Built ${path.relative(process.cwd(), summary.out) || summary.out}: ${summary.files} files, ${mb} MB.`);
-  console.log(`  app: ${summary.app}   demo: ${demo}   samples: ${summary.samples ? 'yes' : 'no'}   video: ${summary.video}   fonts: ${summary.fonts}`);
+  console.log(`  app: ${summary.app}   demo: ${demo}   samples: ${summary.samples ? 'yes' : 'no'}   video: ${summary.video}   fonts: ${summary.fonts}   installer: ${summary.installer ? 'yes' : 'no'}`);
   if (summary.warnings.length) console.log(`  ${summary.warnings.length} warning(s) above.`);
 }

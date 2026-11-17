@@ -69,13 +69,18 @@ mac:
   artifactName: "Jewel-Labs-mac-${arch}.${ext}"
   icon: build/icon.png
   # The hardened runtime stops other programs from injecting code (DYLD_INSERT_LIBRARIES) or attaching a
-  # debugger. electron-builder signs with its usual Electron entitlements (JIT for V8 and WebAssembly, and
+  # debugger. build/entitlements.mac.plist lists what the app may still do (JIT for V8 and WebAssembly, and
   # library validation off, which an ad hoc signature needs to load the Electron framework).
   hardenedRuntime: true
   gatekeeperAssess: false
-  # We have no Apple Developer ID. "-" signs the app ad hoc: without any signature, macOS calls a
-  # downloaded Apple silicon app "damaged" and offers no way to open it. With the ad hoc signature
-  # the person can open it from System Settings > Privacy & Security > Open Anyway.
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # We have no Apple Developer ID yet. "-" signs the app ad hoc: without any signature, macOS calls a
+  # downloaded Apple silicon app "damaged" and offers no way to open it. With the ad hoc signature the person
+  # can open it from System Settings > Privacy & Security > Open Anyway, or install it with site/install.sh.
+  # Once the Apple secrets are in GitHub, the release workflow builds with -c.mac.identity="Developer ID Application"
+  # instead, and electron-builder notarizes by itself because APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER
+  # are set (see "Turning on Apple signing" in README.md). notarize is left unset on purpose.
   identity: "-"
   extendInfo:
     NSDocumentsFolderUsageDescription: Jewel Labs reads the shipment papers in the folder you choose.
@@ -84,6 +89,9 @@ mac:
 
 dmg:
   title: "Jewel Labs ${version}"
+  # The disk image itself stays unsigned: Apple accepts a notarized, stapled app inside an unsigned image, and
+  # electron-builder warns that signing the image clashes with notarization.
+  sign: false
 
 win:
   target:

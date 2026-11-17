@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import fuses from '@electron/fuses';
 import { ROOT, TMP, sleep, tempDir } from './helpers.mjs';
+import { unregisterApp } from '../../scripts/clean-builds.js';
 
 const { getCurrentFuseWire, FuseV1Options } = fuses;
 const FUSE_ON = 49; // the fuse wire's bytes: '1' is on, '0' is off (FuseState in @electron/fuses)
@@ -47,11 +48,13 @@ const reportFile = path.join(TMP, 'packaged', 'report.json');
 fs.rmSync(reportFile, { force: true });
 let child = null;
 let failed = false;
+let appPath = null; // the app inside the mounted image, which macOS lists while it is mounted
 
 try {
   execFileSync('hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mountPoint, dmg], { stdio: 'ignore' });
   const appDir = fs.readdirSync(mountPoint).find((name) => name.endsWith('.app'));
   if (!appDir) throw new Error('The disk image has no .app inside');
+  appPath = path.join(mountPoint, appDir);
   const binary = path.join(mountPoint, appDir, 'Contents', 'MacOS', appDir.replace(/\.app$/, ''));
   const unpacked = path.join(mountPoint, appDir, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules');
   const needed = ['tesseract.js', 'tesseract.js-core', '@tesseract.js-data', 'bmp-js', 'is-url', 'regenerator-runtime', 'wasm-feature-detect', 'pdfjs-dist'];
@@ -109,6 +112,8 @@ try {
 } finally {
   if (child && child.exitCode === null) child.kill('SIGKILL');
   await sleep(500);
+  // Starting the app made macOS list it; forget it, or every run adds one more "Jewel Labs" to the Mac.
+  if (appPath) unregisterApp(appPath);
   try {
     execFileSync('hdiutil', ['detach', mountPoint, '-force'], { stdio: 'ignore' });
   } catch {

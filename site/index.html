@@ -521,10 +521,21 @@
         </article>
       </div>
 
+      <!-- MAC FROM TERMINAL: a file fetched with curl is not marked as downloaded, so the app opens with no warning -->
+      <div class="terminal-install" data-reveal>
+        <p class="first-open__k">Mac: install from Terminal (opens with no warning)</p>
+        <p class="first-open__v">Open Terminal (in Applications &gt; Utilities), paste this line and press Return. It picks Apple silicon or Intel, checks the download against the release checksum, puts Jewel Labs in Applications and opens it. No password needed.</p>
+        <div class="terminal-install__row">
+          <code class="terminal-install__cmd" id="install-cmd">curl -fsSL https://aarushkandukoori.github.io/jewel-labs-desk/install.sh | bash</code>
+          <button class="btn btn--ghost btn--sm terminal-install__copy" type="button" data-copy="install-cmd" aria-label="Copy the install line">Copy</button>
+        </div>
+        <p class="terminal-install__note">Want to read it first? <a href="install.sh" target="_blank" rel="noopener">See the install script</a>.</p>
+      </div>
+
       <div class="first-open" data-reveal>
         <div class="first-open__item">
-          <p class="first-open__k">First open on a Mac</p>
-          <p class="first-open__v">The app is not notarized yet. Right-click the app, choose Open, then Open again (or System Settings &gt; Privacy &amp; Security &gt; Open Anyway).</p>
+          <p class="first-open__k">Downloaded the .dmg on a Mac?</p>
+          <p class="first-open__v">Jewel Labs is not notarized by Apple yet, so the first time macOS says it cannot verify the app is free of malware. Click Done, not Move to Trash. Then open System Settings &gt; Privacy &amp; Security, scroll down, click Open Anyway and then Open. On macOS 15 and later, right-click &gt; Open no longer skips this step.</p>
         </div>
         <div class="first-open__item">
           <p class="first-open__k">First open on Windows</p>
